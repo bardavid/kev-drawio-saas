@@ -389,7 +389,7 @@ describe("composition gate", { concurrency: 1 }, () => {
       return Response.json({
         model: "kev-latest",
         answers: {
-          next: { type: "choice", choice: "noop", confidence: 0.55 },
+          next: { type: "choice", choice: "apply", confidence: 0.55 },
           confirm: { type: "noul", noul: 0.43 },
           color: { type: "choice", choice: "blue" },
         },
@@ -411,11 +411,42 @@ describe("composition gate", { concurrency: 1 }, () => {
       result.steps?.map((step) => step.detail),
       ["Confirm the node outline", "Confirm the edges", "Confirm the diagram style"],
     );
-    assert.equal(result.steps?.every((step) => step.accepted && step.confirm === 0.43 && step.choice === "noop"), true);
+    assert.equal(result.steps?.every((step) => step.accepted && step.confirm === 0.43 && step.choice === "apply"), true);
     const report = assertClean(result.updatedXml);
     assert.deepEqual(content(report.nodes).map((node) => node.label), ["User", "Browser", "Auth Service"]);
     assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
     assert.equal(result.updatedXml.includes("Client"), false);
+  });
+
+  it("sets a template aside when the model says noop", async () => {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string }> };
+      if (body.questions.intent) {
+        return Response.json({
+          answers: {
+            intent: { type: "choice", choice: "noop", confidence: 0.4 },
+            needs_xml_edit: { type: "noul", noul: 0.2 },
+          },
+        });
+      }
+      return Response.json({
+        answers: {
+          next: { type: "choice", choice: "noop", confidence: 0.6 },
+          confirm: { type: "noul", noul: 0.9 },
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: "draw a user login sequence diagram" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(result.intent, "noop");
+    assert.equal(result.updatedXml, STARTER_XML);
+    assert.match(result.reply, /canvas is unchanged/i);
+    assert.match(result.reply, /try again/i);
+    assert.equal(result.steps?.[0]?.accepted, false);
   });
 
   it("draws Redis usage from a blank page in demo mode", async () => {
@@ -459,7 +490,7 @@ describe("composition gate", { concurrency: 1 }, () => {
       return Response.json({
         model: "kev-latest",
         answers: {
-          next: { type: "choice", choice: "noop", confidence: 0.55 },
+          next: { type: "choice", choice: "apply", confidence: 0.55 },
           confirm: { type: "noul", noul: 0.43 },
           color: { type: "choice", choice: "none" },
         },
@@ -474,6 +505,10 @@ describe("composition gate", { concurrency: 1 }, () => {
     for (const state of states) {
       assert.match(state, /Current diagram mxfile/);
       assert.match(state, /<mxfile/);
+    }
+    assert.doesNotMatch(states[0] ?? "", /in-memory cache sitting between/);
+    assert.match(states[0] ?? "", /Reference/);
+    for (const state of states.slice(1)) {
       assert.match(state, /in-memory cache sitting between/);
     }
     assert.match(states[1] ?? "", /Topic context/);
@@ -481,7 +516,7 @@ describe("composition gate", { concurrency: 1 }, () => {
     assert.equal(result.intent, "add_shape");
     assert.equal(result.steps?.[0]?.accepted, true);
     assert.equal(result.steps?.[0]?.confirm, 0.43);
-    assert.equal(result.steps?.[0]?.choice, "noop");
+    assert.equal(result.steps?.[0]?.choice, "apply");
     assert.match(result.reply, /Redis cache/);
     assert.equal(result.reply.includes("Added Redis Diagram Usage"), false);
     assert.notEqual(result.updatedXml, STARTER_XML);
@@ -507,7 +542,7 @@ describe("composition gate", { concurrency: 1 }, () => {
       }
       return Response.json({
         answers: {
-          next: { type: "choice", choice: "clarify", confidence: 0.4 },
+          next: { type: "choice", choice: "apply", confidence: 0.4 },
           confirm: { type: "noul", noul: 0.43 },
           color: { type: "choice", choice: "none" },
         },
@@ -583,6 +618,42 @@ describe("composition gate", { concurrency: 1 }, () => {
     assert.ok(report.edges.some((edge) => edge.from === "App" && edge.to === "Memcached"));
     assert.ok(report.edges.some((edge) => edge.label === "Read on miss"));
     assert.equal(labels.includes("Redis cache"), false);
+  });
+
+  it("does not research a topic when the model is already sure", async () => {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let wiki = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("wikipedia.org")) {
+        wiki += 1;
+        return Response.json({ extract: "This lookup should not run." });
+      }
+      const body = JSON.parse(String(init?.body)) as { questions?: Record<string, { type: string }> };
+      if (body.questions?.intent) {
+        return Response.json({
+          answers: {
+            intent: { type: "choice", choice: "add_shape", confidence: 0.9 },
+            needs_xml_edit: { type: "noul", noul: 0.92 },
+            shape: { type: "choice", choice: "rectangle" },
+            color: { type: "choice", choice: "none" },
+            layout: { type: "choice", choice: "none" },
+            anchor: { type: "choice", choice: "none" },
+          },
+        });
+      }
+      return Response.json({
+        answers: {
+          next: { type: "choice", choice: "apply", confidence: 0.9 },
+          confirm: { type: "noul", noul: 0.9 },
+        },
+      });
+    }) as typeof fetch;
+
+    await runKevTurn({
+      messages: [{ role: "user", content: "Draw a memcached diagram usage" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(wiki, 0);
   });
 });
 

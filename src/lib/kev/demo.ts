@@ -1,9 +1,9 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
-import { BLANK_XML } from "@/lib/drawio/starter";
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations, edgeQuery } from "@/lib/kev/mutate";
-import { compositionDecision, renderComposition, resolveComposition, sameMxfile } from "@/lib/kev/compose";
+import { compositionDecision, renderComposition, resolveComposition, sameMxfile, templateCanvasPlan } from "@/lib/kev/compose";
 import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY } from "@/lib/kev/reply";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
 const COLOR_NAMES = Object.keys(PALETTE).join("|");
@@ -263,31 +263,29 @@ export class DemoKevClient implements KevClient {
   }
 }
 
+function unchanged(xml: string, reply = UNCHANGED_DIAGRAM_REPLY): { decision: KevDecision; xml: string } {
+  return {
+    decision: { intent: "noop", reply, slots: {}, operations: [], updatedXml: null },
+    xml,
+  };
+}
+
 export function previewDemo(message: string, xml: string): { decision: KevDecision; xml: string } {
   const composed = resolveComposition(message);
   if (composed) {
     const rendered = renderComposition(composed);
-    if (sameMxfile(rendered, xml)) {
-      return {
-        decision: { intent: "noop", reply: "No diagram change.", slots: {}, operations: [], updatedXml: null },
-        xml,
-      };
-    }
+    const canvas = templateCanvasPlan(xml, rendered);
+    if (canvas === "unchanged") return unchanged(xml);
+    if (canvas === "keep") return unchanged(xml, KEPT_CANVAS_REPLY);
     return { decision: compositionDecision(composed, rendered), xml: rendered };
   }
   const plan = resolvePlan(message);
   if (plan) {
-    const operations = operationsForPlan(plan, BLANK_XML);
-    if (operations.length > 0) {
-      const rendered = applyOperations(BLANK_XML, operations);
-      if (sameMxfile(rendered, xml)) {
-        return {
-          decision: { intent: "noop", reply: "No diagram change.", slots: {}, operations: [], updatedXml: null },
-          xml,
-        };
-      }
-      return { decision: architectureDecision(plan, operations), xml: rendered };
-    }
+    const operations = operationsForPlan(plan, xml);
+    if (operations.length === 0) return unchanged(xml);
+    const rendered = applyOperations(xml, operations);
+    if (sameMxfile(rendered, xml)) return unchanged(xml);
+    return { decision: architectureDecision(plan, operations), xml: rendered };
   }
   const result = decideDemo(message);
   if (result.operations.length === 0) return { decision: result, xml };

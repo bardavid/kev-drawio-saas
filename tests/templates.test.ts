@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { assessDiagram, type QualityNode, type QualityReport } from "../src/lib/drawio/layout";
-import { STARTER_XML } from "../src/lib/drawio/starter";
+import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { previewDemo } from "../src/lib/kev/demo";
 import { renderComposition } from "../src/lib/kev/compose";
 import { composeFromBrief } from "../src/lib/kev/templates";
@@ -375,16 +375,25 @@ describe("popular diagram templates", () => {
     assert.equal(report.nodes.some((node) => node.role === "cluster"), false);
   });
 
+  it("leaves an existing canvas in place instead of pasting a template over it", () => {
+    const kept = previewDemo("draw a user login sequence diagram", SEEDED_XML);
+    assert.equal(kept.decision.intent, "noop");
+    assert.match(kept.decision.reply, /left it in place/i);
+    assert.equal(kept.xml, SEEDED_XML);
+  });
+
   it("does not redraw when the template is already on the canvas", () => {
     const first = previewDemo("draw a user login sequence diagram", STARTER_XML);
     const second = previewDemo("draw a user login sequence diagram", first.xml);
     assert.equal(second.decision.intent, "noop");
-    assert.equal(second.decision.reply, "No diagram change.");
+    assert.match(second.decision.reply, /canvas is unchanged/i);
+    assert.match(second.decision.reply, /try again/i);
     assert.equal(second.xml, first.xml);
     const tier = previewDemo("draw a 3 tier web app", STARTER_XML);
     const again = previewDemo("draw a 3 tier web app", tier.xml);
     assert.equal(again.decision.intent, "noop");
-    assert.equal(again.decision.reply, "No diagram change.");
+    assert.match(again.decision.reply, /canvas is unchanged/i);
+    assert.match(again.decision.reply, /try again/i);
     assert.equal(again.xml, tier.xml);
   });
 

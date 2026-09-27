@@ -14,6 +14,10 @@ export interface ChatItem {
   intent?: Intent;
   slots?: DiagramSlots;
   repaired?: boolean;
+  /** Diagram XML from before this user message. Undo restores it. */
+  beforeXml?: string;
+  /** Browser history index to rewind to. */
+  historyIndex?: number;
 }
 
 function slotLine(slots: DiagramSlots | undefined): string {
@@ -37,9 +41,10 @@ interface ChatPanelProps {
   pending: boolean;
   onDraft: (value: string) => void;
   onSend: (text: string) => void;
+  onUndo?: (id: string) => void;
 }
 
-export function ChatPanel({ messages, draft, pending, onDraft, onSend }: ChatPanelProps) {
+export function ChatPanel({ messages, draft, pending, onDraft, onSend, onUndo }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -58,8 +63,21 @@ export function ChatPanel({ messages, draft, pending, onDraft, onSend }: ChatPan
         <div className="flex flex-col gap-5 px-4 py-5">
           {messages.map((message) =>
             message.role === "user" ? (
-              <div key={message.id} className="ml-8 break-words border border-border px-3 py-2 text-sm leading-6 sm:ml-10">
-                {message.content}
+              <div key={message.id} className="ml-8 sm:ml-10">
+                <div className="break-words border border-border px-3 py-2 text-sm leading-6">{message.content}</div>
+                {onUndo && message.beforeXml ? (
+                  <div className="mt-1 flex justify-end">
+                    <button
+                      type="button"
+                      className="h-8 px-1 text-xs text-muted-foreground disabled:opacity-40"
+                      disabled={pending}
+                      aria-label="Undo from this message"
+                      onClick={() => onUndo(message.id)}
+                    >
+                      Undo
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <article key={message.id} className="mr-4 flex min-w-0 flex-col gap-1.5 sm:mr-6">
@@ -77,11 +95,6 @@ export function ChatPanel({ messages, draft, pending, onDraft, onSend }: ChatPan
               </article>
             ),
           )}
-          {pending ? (
-            <p className="text-sm text-muted-foreground" aria-live="polite">
-              Updating…
-            </p>
-          ) : null}
           <div ref={bottomRef} />
         </div>
       </div>

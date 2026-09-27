@@ -26,6 +26,8 @@ export interface DiagramFrameHandle {
 
 interface DiagramFrameProps {
   xml: string;
+  /** Block canvas edits while a draw is in flight. */
+  locked?: boolean;
   ignoreEditorUpdatesRef?: RefObject<boolean>;
   onXmlChange: (xml: string) => void;
   onLoad?: (message: DrawioMessage) => void;
@@ -37,7 +39,7 @@ function looksLikeXml(xml: string): boolean {
 }
 
 export const DiagramFrame = forwardRef<DiagramFrameHandle, DiagramFrameProps>(function DiagramFrame(
-  { xml, ignoreEditorUpdatesRef, onXmlChange, onLoad, onError },
+  { xml, locked = false, ignoreEditorUpdatesRef, onXmlChange, onLoad, onError },
   ref,
 ) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -54,7 +56,11 @@ export const DiagramFrame = forwardRef<DiagramFrameHandle, DiagramFrameProps>(fu
   const onErrorRef = useRef(onError);
   const [ready, setReady] = useState(false);
   const [slow, setSlow] = useState(false);
+  const lockedRef = useRef(locked);
 
+  useEffect(() => {
+    lockedRef.current = locked;
+  }, [locked]);
   useEffect(() => {
     onXmlChangeRef.current = onXmlChange;
   }, [onXmlChange]);
@@ -74,7 +80,7 @@ export const DiagramFrame = forwardRef<DiagramFrameHandle, DiagramFrameProps>(fu
     if (!trimmed) return;
     latestRef.current = trimmed;
     loadedRef.current = trimmed;
-    if (suppressRef.current || ignoreEditorUpdatesRef?.current) return;
+    if (suppressRef.current || ignoreEditorUpdatesRef?.current || lockedRef.current) return;
     onXmlChangeRef.current(trimmed);
   }, [ignoreEditorUpdatesRef]);
 
@@ -258,9 +264,21 @@ export const DiagramFrame = forwardRef<DiagramFrameHandle, DiagramFrameProps>(fu
       <iframe
         ref={iframeRef}
         title="draw.io diagram editor"
-        className="absolute inset-0 h-full w-full border-0"
+        inert={locked ? true : undefined}
+        className={locked ? "pointer-events-none absolute inset-0 h-full w-full border-0" : "absolute inset-0 h-full w-full border-0"}
         data-testid="diagram-frame"
       />
+      {locked && ready ? (
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center bg-background/50"
+          aria-busy="true"
+          aria-live="polite"
+          data-testid="diagram-lock"
+        >
+          <span className="size-1.5 animate-pulse rounded-full bg-foreground/40" />
+          <span className="sr-only">Updating diagram</span>
+        </div>
+      ) : null}
       {!ready ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/95 px-6 text-center">
           <span className="size-1.5 animate-pulse rounded-full bg-foreground/40" />

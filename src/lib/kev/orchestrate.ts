@@ -1,5 +1,4 @@
 import { PALETTE, SHAPE_KINDS, isShapeKind } from "@/lib/drawio/styles";
-import { BLANK_XML } from "@/lib/drawio/starter";
 import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
 import {
@@ -9,9 +8,12 @@ import {
   renderComposition,
   resolveComposition,
   sameMxfile,
+  templateCanvasPlan,
   type Composition,
 } from "@/lib/kev/compose";
 import { composeFromBrief } from "@/lib/kev/templates";
+import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
+import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import {
@@ -53,7 +55,11 @@ import type {
  * applied even when the confirm noul is below 0.5 or next is not apply.
  */
 export const MAX_ORCHESTRATOR_STEPS = 6;
-export const ORCHESTRATOR_TIMEOUT_MS = 10_000;
+
+/** Unsure readings are the only reason to look up external topic notes. */
+export function modelIsUnsure(reading: { intent: string; needsXmlEdit: boolean }): boolean {
+  return reading.intent === "clarify" || reading.intent === "noop" || !reading.needsXmlEdit;
+}
 
 const CLARIFY_DRAW = "What should I draw? Name the shapes and how they connect, for example “Client → App → Postgres”.";
 const CLARIFY_NODES = "Which nodes should I draw? For example, “Client → App → Postgres”.";
@@ -188,8 +194,15 @@ export function buildOrchestratorStepRequest(input: {
  */
 export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevTurnResult | null> {
   if (isBareDraw(input.userMessage)) return bareDraw(input);
-  if (drawingFor(input)) return runComposition(input);
-  if (isArchitectureRequest(input.userMessage)) return runArchitecture(input);
+
+  let current = input;
+  if (modelIsUnsure(input.reading) && wikipediaTitle(input.userMessage) && !input.topicContext) {
+    const brief = await researchTopic(input.userMessage, { network: true });
+    if (brief?.summary) current = { ...input, topicContext: brief.summary };
+  }
+
+  if (drawingFor(current)) return runComposition(current);
+  if (isArchitectureRequest(input.userMessage)) return runArchitecture(current);
   if (input.reading.intent === "noop") {
     const demo = decideDemo(input.userMessage);
     if (demo.operations.length > 0) return rescueDemo(input, demo);
@@ -209,7 +222,6 @@ async function bareDraw(input: OrchestratorContext): Promise<KevTurnResult> {
       diagramDiff: input.diagramDiff,
       topicContext: input.topicContext,
     }),
-    ORCHESTRATOR_TIMEOUT_MS,
   );
   const answers = systemOneAnswers(payload);
   if (!answers) throw new KevUnreachableError("Kev returned an unreadable System One response.");
@@ -245,7 +257,7 @@ async function rescueDemo(input: OrchestratorContext, demo: KevDecision): Promis
   };
   if (!gate.accepted) {
     return turn(input, {
-      reply: "No diagram change.",
+      reply: UNCHANGED_DIAGRAM_REPLY,
       updatedXml: input.originalXml,
       intent: "noop",
       slots: withPalette(demo.slots),
@@ -279,9 +291,9 @@ async function rescueDemo(input: OrchestratorContext, demo: KevDecision): Promis
 }
 
 async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResult> {
-  // Direction comes from the user's words. Live Jev reads "3 tier" as a column
-  // and that hint used to stack Client → App → Postgres. An unspecified chain
-  // stays a horizontal row; "vertically" still stacks it.
+  // Direction comes from the user's words, otherwise architecture runs left to right.
+  // Live Jev reads "3 tier" as a column. That hint must not stack the chain.
+  // "Vertically" still stacks it. The open canvas is edited, not replaced.
   const plan = resolvePlan(input.userMessage, {
     colorName: input.reading.slots.colorName,
   });
@@ -296,8 +308,17 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
     });
   }
 
-  // The plan names the whole graph. Patching the open file kept the starter API tier and HTTPS/SQL edges.
-  let working = BLANK_XML;
+  let working = input.currentXml;
+  if (operationsForPlan(plan, working).length === 0) {
+    return turn(input, {
+      reply: UNCHANGED_DIAGRAM_REPLY,
+      updatedXml: input.originalXml,
+      intent: "noop",
+      slots: summarySlots(plan, []),
+      steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
   const applied: DiagramOperation[] = [];
   const appliedDetails: string[] = [];
   const steps: KevStep[] = [];
@@ -404,7 +425,7 @@ export function buildCompositionRequest(input: {
     currentXml: input.currentXml,
     topicContext: input.topicContext,
   });
-  const state = `${base}\n\nThe host already split this drawing into steps. Geometry is applied by the host, not by you.\n${input.plan}`.slice(
+  const state = `${base}\n\nReference template. Use it if it fits, adapt it if the user asked for a change, or set it aside. Geometry is applied by the host, not by you.\n${input.plan}`.slice(
     0,
     12_000,
   );
@@ -482,9 +503,10 @@ function phasePlan(composition: Composition, phase: CompositionPhase): string {
 }
 
 /**
- * Templates and researched topics are drawn by the host. Jev is asked three
- * times: node outline, edges, then style. A lukewarm confirm does not cancel
- * a concrete plan. The mxfile is left alone when the drawing is already there.
+ * Templates and researched topics are a reference. Jev is asked three times:
+ * node outline, edges, then style. Apply uses the template even when confirm
+ * is lukewarm. Noop and clarify leave the mxfile alone. A non-blank canvas is
+ * not replaced by the template.
  */
 async function runComposition(input: OrchestratorContext): Promise<KevTurnResult> {
   const composition = drawingFor(input);
@@ -500,9 +522,20 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
   }
 
   const xml = renderComposition(composition);
-  if (sameMxfile(xml, input.originalXml) || sameMxfile(xml, input.currentXml)) {
+  const canvas = templateCanvasPlan(input.currentXml, xml);
+  if (canvas === "unchanged" || sameMxfile(xml, input.originalXml)) {
     return turn(input, {
-      reply: "No diagram change.",
+      reply: UNCHANGED_DIAGRAM_REPLY,
+      updatedXml: input.originalXml,
+      intent: "noop",
+      slots: withPalette(input.reading.slots),
+      steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
+  if (canvas === "keep") {
+    return turn(input, {
+      reply: KEPT_CANVAS_REPLY,
       updatedXml: input.originalXml,
       intent: "noop",
       slots: withPalette(input.reading.slots),
@@ -526,7 +559,6 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
         diagramDiff: input.diagramDiff,
         topicContext: input.topicContext,
       }),
-      ORCHESTRATOR_TIMEOUT_MS,
     );
     const answers = systemOneAnswers(payload);
     if (!answers) throw new KevUnreachableError("Kev returned an unreadable System One response.");
@@ -537,10 +569,20 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
     steps.push({
       detail: step.detail,
       intent: "add_shape",
-      accepted: acceptArchitectureStep(choice, confirm),
+      accepted: acceptTemplateStep(choice, confirm),
       confirm,
       choice,
     });
+    if (!acceptTemplateStep(choice, confirm)) {
+      return turn(input, {
+        reply: choice === "clarify" ? CLARIFY_NODES : UNCHANGED_DIAGRAM_REPLY,
+        updatedXml: input.originalXml,
+        intent: choice === "clarify" ? "clarify" : "noop",
+        slots: withPalette(input.reading.slots),
+        steps,
+        confidence,
+      });
+    }
   }
 
   const decision = compositionDecision(composition, xml);
@@ -582,7 +624,6 @@ async function gateOperation(
       currentXml: xml,
       diagramDiff: input.diagramDiff,
     }),
-    ORCHESTRATOR_TIMEOUT_MS,
   );
   const answers = systemOneAnswers(payload);
   if (!answers) throw new KevUnreachableError("Kev returned an unreadable System One response.");
@@ -604,6 +645,16 @@ async function gateOperation(
  * whole turn. Slot answers still refine shape, color, and layout. The noul and
  * the next choice do not veto a concrete planned edit.
  */
+/**
+ * A template step is used when the model applies it. A lukewarm confirm does
+ * not veto an explicit apply. Noop and clarify set the template aside.
+ */
+export function acceptTemplateStep(choice: string | null, confirm: number | null): boolean {
+  if (choice === "noop" || choice === "clarify" || choice === "skip") return false;
+  if (choice === "apply") return true;
+  return confirm !== null && confirm >= NOUL_YES;
+}
+
 export function acceptArchitectureStep(choice: string | null, confirm: number | null): boolean {
   // Live Jev returned next !== apply with confirm 0.43. Both are recorded on the step.
   void choice;
@@ -670,7 +721,7 @@ function noopTurn(input: OrchestratorContext): {
   confidence: number | null;
 } {
   return {
-    reply: "No diagram change.",
+    reply: UNCHANGED_DIAGRAM_REPLY,
     updatedXml: input.originalXml,
     intent: "noop",
     slots: withPalette(input.reading.slots),
@@ -690,8 +741,9 @@ function turn(
     confidence?: number | null;
   },
 ): KevTurnResult {
+  const unchanged = sameMxfile(body.updatedXml, input.originalXml);
   const result: KevTurnResult = {
-    reply: body.reply.trim() || "Done.",
+    reply: unchanged ? softenUnchangedReply(body.reply, true) : body.reply.trim() || "Done.",
     updatedXml: body.updatedXml,
     mode: "kev",
     model: input.model ?? input.reading.model,

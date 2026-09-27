@@ -101,6 +101,7 @@ function turnContext(input: {
   previousXml?: string | null;
   diagramDiff?: string;
   topicContext?: string | null;
+  templateReference?: string | null;
   request: string;
   preamble?: string;
 }): string {
@@ -110,7 +111,8 @@ function turnContext(input: {
     diffText: input.diagramDiff?.trim() || "No cell changes since the previous diagram.",
   });
   const topic = input.topicContext?.trim() ? `Topic context:\n${input.topicContext.trim()}` : "";
-  return [input.preamble, topic, diagram, `Request: ${input.request}`].filter(Boolean).join("\n\n");
+  const reference = input.templateReference?.trim() ? `Reference:\n${input.templateReference.trim()}` : "";
+  return [input.preamble, reference, topic, diagram, `Request: ${input.request}`].filter(Boolean).join("\n\n");
 }
 
 export class OpenAIKevClient implements KevClient {
@@ -128,6 +130,7 @@ export class OpenAIKevClient implements KevClient {
           previousXml: input.previousXml,
           diagramDiff: input.diagramDiff,
           topicContext: input.topicContext,
+          templateReference: input.templateReference,
           request: message.content,
         }),
       };
@@ -145,6 +148,7 @@ export async function writeDiagramXml(input: {
   previousXml?: string | null;
   diagramDiff?: string;
   topicContext?: string | null;
+  templateReference?: string | null;
   reading: KevReading;
 }): Promise<KevDecision> {
   const model = env("OPENAI_MODEL") ?? OPENAI_DEFAULT_MODEL;
@@ -166,6 +170,7 @@ export async function writeDiagramXml(input: {
         previousXml: input.previousXml,
         diagramDiff: input.diagramDiff,
         topicContext: input.topicContext,
+        templateReference: input.templateReference,
         request: message.content,
         preamble: `The intent for this turn is already decided. Implement it. Do not change the intent.\n${JSON.stringify(brief)}`,
       }),

@@ -87,8 +87,22 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
     title: extractTitle(text, chain.length >= 2 ? chain : []),
     nodes,
     colorName: namedColor(text),
-    layout: layoutOf(text),
+    layout: layoutOf(text) ?? layoutDefault("architecture"),
   };
+}
+
+/** Direction words in the request. Null when the user did not name one. */
+export function requestedLayout(text: string): "horizontal" | "vertical" | null {
+  return layoutOf(text);
+}
+
+/**
+ * Architecture and workflows run left to right.
+ * Sequences and stacked layers run top to bottom.
+ */
+export function layoutDefault(kind: "architecture" | "sequence" | "workflow" | "layers"): "horizontal" | "vertical" {
+  if (kind === "sequence" || kind === "layers") return "vertical";
+  return "horizontal";
 }
 
 export function resolvePlan(message: string, hints?: PlanHints): ArchitecturePlan | null {
