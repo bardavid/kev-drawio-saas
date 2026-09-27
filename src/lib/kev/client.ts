@@ -18,6 +18,8 @@ export interface KevRequest {
   previousXml?: string | null;
   /** Added, removed, and changed cell ids and values. */
   diagramDiff?: string;
+  /** Factual notes about the subject, when the turn looked one up. */
+  topicContext?: string | null;
 }
 
 /** Language-model or demo classifier. Kev System One is a separate call in front of the XML writer. */

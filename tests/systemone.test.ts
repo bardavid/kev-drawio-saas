@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { DRAWIO_EMBED_URL } from "../src/lib/drawio/protocol";
-import { STARTER_XML } from "../src/lib/drawio/starter";
+import { SEEDED_XML } from "../src/lib/drawio/starter";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 import { decideDemo } from "../src/lib/kev/demo";
 import { KevError } from "../src/lib/kev/client";
@@ -39,11 +39,15 @@ describe("system one contract", () => {
   it("asks Kev for a choice, a noul, and a score", () => {
     const request = buildSystemOneRequest({
       userMessage: "Make the API box red",
-      summary: summarizeDiagram(STARTER_XML),
+      summary: summarizeDiagram(SEEDED_XML),
+      currentXml: SEEDED_XML,
     });
     assert.equal(request.model, "kev-latest");
     assert.match(request.state, /Make the API box red/);
     assert.match(request.state, /API/);
+    assert.match(request.state, /Current diagram mxfile/);
+    assert.match(request.state, /<mxfile/);
+    assert.match(request.state, /value="API"/);
     assert.equal(request.questions.intent.type, "choice");
     assert.match(request.questions.intent.instructions, /What diagram edit does the user want/);
     assert.match(request.questions.intent.instructions, /change the boxes to red/);
@@ -182,7 +186,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
     assert.deepEqual(describeMode(), { mode: "demo", kev: false, openai: false });
     const result = await runKevTurn({
       messages: [{ role: "user", content: "Make the API box red" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.equal(result.mode, "demo");
     assert.equal(result.intent, "style");
@@ -213,6 +217,8 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       const body = JSON.parse(String(init?.body)) as { state: string; questions: { intent: { type: string } } };
       assert.equal(body.questions.intent.type, "choice");
       assert.match(body.state, /Make the API box red/);
+      assert.match(body.state, /Current diagram mxfile/);
+      assert.match(body.state, /value="API"/);
       return jsonResponse({
         model: "kev-latest",
         answers: {
@@ -228,7 +234,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
 
     const result = await runKevTurn({
       messages: [{ role: "user", content: "Make the API box red" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.equal(url, "http://kev.local/v1/systemone");
     assert.equal(auth, "Bearer local-key");
@@ -255,18 +261,18 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       })) as typeof fetch;
     const result = await runKevTurn({
       messages: [{ role: "user", content: "Make the API box red" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.equal(result.mode, "kev");
     assert.equal(result.intent, "clarify");
-    assert.equal(result.updatedXml, STARTER_XML);
+    assert.equal(result.updatedXml, SEEDED_XML);
   });
 
   it("asks the model to write xml from Kev's intent", async () => {
     blankEnv();
     process.env.KEV_BASE_URL = "http://kev.local";
     process.env.OPENAI_API_KEY = "sk-test";
-    const painted = STARTER_XML.replace("#d5e8d4", "#f8cecc").replace("#82b366", "#b85450");
+    const painted = SEEDED_XML.replace("#d5e8d4", "#f8cecc").replace("#82b366", "#b85450");
     const calls: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -321,7 +327,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
 
     const result = await runKevTurn({
       messages: [{ role: "user", content: "Make the API box red" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.deepEqual(
       calls.map((url) => new URL(url).pathname),
@@ -361,12 +367,12 @@ describe("configured pipeline", { concurrency: 1 }, () => {
 
     const result = await runKevTurn({
       messages: [{ role: "user", content: "hello" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.equal(result.mode, "openai");
     assert.equal(result.fallback, true);
     assert.equal(result.intent, "noop");
-    assert.equal(result.updatedXml, STARTER_XML);
+    assert.equal(result.updatedXml, SEEDED_XML);
   });
 
   it("surfaces a Kev outage when no language model is configured", async () => {
@@ -377,7 +383,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       () =>
         runKevTurn({
           messages: [{ role: "user", content: "hello" }],
-          currentXml: STARTER_XML,
+          currentXml: SEEDED_XML,
         }),
       (error: unknown) => error instanceof KevUnreachableError,
     );
@@ -399,7 +405,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       () =>
         runKevTurn({
           messages: [{ role: "user", content: "hello" }],
-          currentXml: STARTER_XML,
+          currentXml: SEEDED_XML,
         }),
       (error: unknown) => error instanceof KevError && !(error instanceof KevUnreachableError) && /bad questions/.test(error.message),
     );
@@ -432,12 +438,12 @@ describe("configured pipeline", { concurrency: 1 }, () => {
 
     const result = await runKevTurn({
       messages: [{ role: "user", content: "draw" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.deepEqual(calls, ["anchor,color,disruption,intent,layout,needs_xml_edit,place,shape,source,target", "next,specific"]);
     assert.equal(result.mode, "kev");
     assert.equal(result.intent, "clarify");
-    assert.equal(result.updatedXml, STARTER_XML);
+    assert.equal(result.updatedXml, SEEDED_XML);
     assert.match(result.reply, /What should I draw/);
     assert.equal(result.reply.includes("No diagram change"), false);
     assert.equal(result.steps?.length, 1);
@@ -486,7 +492,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
 
       const result = await runKevTurn({
         messages: [{ role: "user", content: prompt }],
-        currentXml: STARTER_XML,
+        currentXml: SEEDED_XML,
       });
       assert.equal(urls.some((url) => url.includes("/chat/completions")), false);
       assert.ok(urls.length >= 4, `expected several System One calls, got ${urls.length}`);
@@ -506,7 +512,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       assert.equal(result.reply.includes("No diagram change"), false);
       assert.ok((result.steps ?? []).length >= 3);
       assert.equal(result.steps?.every((step) => step.accepted), true);
-      assert.notEqual(result.updatedXml, STARTER_XML);
+      assert.notEqual(result.updatedXml, SEEDED_XML);
 
       const summary = summarizeDiagram(result.updatedXml);
       assert.ok(summary.vertices.some((vertex) => vertex.label === "App"));
@@ -554,7 +560,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       messages: [
         { role: "user", content: "draw a Complex 3 Tier Web App: Client → Postgres, orange, horizontal" },
       ],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.equal(result.intent, "add_shape");
     assert.equal(result.reply.includes("Which nodes"), false);
@@ -569,7 +575,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
     assert.ok(summary.edges.some((edge) => edge.from === "App" && edge.to === "Postgres"));
     assert.ok(summary.vertices.every((vertex) => vertex.style.includes("fillColor=#ffe6cc")));
     assert.equal(new Set(summary.vertices.map((vertex) => vertex.y)).size, 1);
-    assert.notEqual(result.updatedXml, STARTER_XML);
+    assert.notEqual(result.updatedXml, SEEDED_XML);
   });
 
   it("gates a concrete edit that the first reading called noop", async () => {
@@ -598,7 +604,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
 
     const result = await runKevTurn({
       messages: [{ role: "user", content: "Add a Redis cache in front of the database" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.equal(calls, 2);
     assert.equal(result.intent, "add_shape");
@@ -628,7 +634,7 @@ describe("configured pipeline", { concurrency: 1 }, () => {
 
     const result = await runKevTurn({
       messages: [{ role: "user", content: "Connect the client to Postgres" }],
-      currentXml: STARTER_XML,
+      currentXml: SEEDED_XML,
     });
     assert.equal(calls, 1);
     assert.equal(result.intent, "connect");

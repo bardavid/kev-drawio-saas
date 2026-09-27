@@ -63,7 +63,12 @@ function clip(xml: string, max: number): string {
 export function diagramState(
   userMessage: string,
   summary: DiagramSummary,
-  notes?: { diffText?: string; previousXml?: string | null; currentXml?: string },
+  notes?: {
+    diffText?: string;
+    previousXml?: string | null;
+    currentXml?: string;
+    topicContext?: string | null;
+  },
 ): string {
   const vertices =
     summary.vertices
@@ -74,9 +79,11 @@ export function diagramState(
       .map((edge) => `- ${edge.from || "?"} → ${edge.to || "?"}${edge.label ? ` (${edge.label})` : ""}`)
       .join("\n") || "- (none)";
   const diff = notes?.diffText?.trim();
+  const topic = notes?.topicContext?.trim();
   const parts = [
     "The host places shapes and routes edges. Answer the questions. Do not invent coordinates or XML.",
     `User message:\n${userMessage.trim()}`,
+    topic ? `Topic context:\n${topic}` : "",
     diff ? `Diagram diff (added, removed, and changed cells):\n${diff}` : "",
     notes?.previousXml && notes.currentXml && notes.previousXml !== notes.currentXml
       ? `Previous diagram mxfile (before the manual edit):\n${clip(notes.previousXml, 2500)}`
@@ -121,6 +128,10 @@ export function buildSystemOneRequest(input: {
   userMessage: string;
   summary: DiagramSummary;
   model?: string;
+  currentXml?: string;
+  previousXml?: string | null;
+  diagramDiff?: string;
+  topicContext?: string | null;
 }): SystemOneRequest {
   const labels = vertexLabels(input.summary);
   const shapes: Record<string, string> = { [NONE]: "Do not choose a shape kind" };
@@ -132,7 +143,12 @@ export function buildSystemOneRequest(input: {
   }
   const vertices = vertexCriteria(labels);
   return {
-    state: diagramState(input.userMessage, input.summary),
+    state: diagramState(input.userMessage, input.summary, {
+      diffText: input.diagramDiff,
+      previousXml: input.previousXml,
+      currentXml: input.currentXml,
+      topicContext: input.topicContext,
+    }),
     model: input.model?.trim() || KEV_DEFAULT_MODEL,
     questions: {
       intent: {
@@ -302,6 +318,7 @@ export async function askKev(
     currentXml: string;
     previousXml?: string | null;
     diagramDiff?: string;
+    topicContext?: string | null;
   },
   options?: { timeoutMs?: number },
 ): Promise<KevReading> {
@@ -312,11 +329,14 @@ export async function askKev(
     summary = { vertices: [], edges: [] };
   }
   const model = env("KEV_MODEL") ?? KEV_DEFAULT_MODEL;
-  const body = buildSystemOneRequest({ userMessage: input.userMessage, summary, model });
-  body.state = diagramState(input.userMessage, summary, {
-    diffText: input.diagramDiff,
-    previousXml: input.previousXml,
+  const body = buildSystemOneRequest({
+    userMessage: input.userMessage,
+    summary,
+    model,
     currentXml: input.currentXml,
+    previousXml: input.previousXml,
+    diagramDiff: input.diagramDiff,
+    topicContext: input.topicContext,
   });
 
   const payload = await callSystemOne(body, options?.timeoutMs ?? 50_000);

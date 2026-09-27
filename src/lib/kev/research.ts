@@ -1,0 +1,107 @@
+/**
+ * Short factual notes for diagram topics the planner may not know.
+ * Wikipedia's public summary API needs no key. Failures fall back to a
+ * built-in brief so demo mode and offline tests never wait on the network.
+ */
+
+export interface TopicBrief {
+  topic: string;
+  summary: string;
+  source: "builtin" | "web";
+}
+
+export const REDIS_USAGE_BRIEF =
+  "Redis is an in-memory data store commonly used as a cache. A client calls an application, which reads Redis first and returns a hit. On a miss the application loads the database and writes the value back into Redis. A Redis server replicates to a replica and persists with RDB snapshots or an append-only file.";
+
+const WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/";
+const FETCH_TIMEOUT_MS = 1500;
+
+export function redisDiagramRequest(message: string): boolean {
+  if (!/\bredis\b/i.test(message)) return false;
+  if (/\bsequence\b/i.test(message)) return false;
+  if (/\b(workflow|flowchart)\b/i.test(message)) return false;
+  if (/\bin front of\b/i.test(message)) return false;
+  return /\b(usage|diagram|architecture)\b/i.test(message);
+}
+
+/** Wikipedia page title for a draw-a-topic-diagram request, or null when research should not run. */
+export function wikipediaTitle(message: string): string | null {
+  if (redisDiagramRequest(message)) return "Redis";
+  if (!/\b(draw|sketch)\b/i.test(message) || !/\bdiagram\b/i.test(message)) return null;
+  if (!/\b(usage|architecture)\b/i.test(message)) return null;
+  if (/\bsequence\b/i.test(message) || /\b(workflow|flowchart)\b/i.test(message)) return null;
+  const subject = message
+    .replace(/^(?:please\s+)?(?:draw|sketch)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "")
+    .replace(/\b(diagram|usage|architecture)\b/gi, " ")
+    .replace(/[^a-z0-9 .+_-]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!subject || subject.length < 2 || subject.length > 60) return null;
+  if (/^(complex|tier|web|app|system|sequence)$/i.test(subject)) return null;
+  return subject
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+export function builtinBrief(message: string): TopicBrief | null {
+  if (!redisDiagramRequest(message)) return null;
+  return { topic: "Redis", summary: REDIS_USAGE_BRIEF, source: "builtin" };
+}
+
+function clipBrief(text: string): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= 480) return clean;
+  const cut = clean.slice(0, 480);
+  const stop = cut.lastIndexOf(". ");
+  return stop > 160 ? cut.slice(0, stop + 1) : `${cut.trim()}…`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/** GET a short Wikipedia summary. Returns null on any failure, including offline. */
+export async function fetchTopicBrief(title: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const page = title.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9 .()+_-]{0,80}$/.test(page)) return null;
+  const url = `${WIKI_SUMMARY}${encodeURIComponent(page.replace(/ /g, "_"))}`;
+  try {
+    const response = await fetchImpl(url, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: {
+        accept: "application/json",
+        "user-agent": "draw.ai (https://github.com/bardavid/kev-drawio-saas)",
+      },
+    });
+    if (!response.ok) return null;
+    const payload: unknown = await response.json().catch(() => null);
+    const record = asRecord(payload);
+    const extract = typeof record?.extract === "string" ? record.extract : "";
+    const summary = clipBrief(extract);
+    if (summary.length < 40) return null;
+    return summary;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Built-in brief immediately when `network` is false or the lookup fails.
+ * Unknown topics return a web summary only, or null offline.
+ */
+export async function researchTopic(
+  message: string,
+  options?: { network?: boolean; fetch?: typeof fetch },
+): Promise<TopicBrief | null> {
+  const title = wikipediaTitle(message);
+  const builtin = builtinBrief(message);
+  if (!title && !builtin) return null;
+  if (options?.network && title) {
+    const live = await fetchTopicBrief(title, options.fetch ?? fetch);
+    if (live) return { topic: title, summary: live, source: "web" };
+  }
+  return builtin;
+}
