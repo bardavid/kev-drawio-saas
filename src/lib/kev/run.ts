@@ -2,6 +2,7 @@ import { diffDiagrams, formatDiagramDiff } from "@/lib/drawio/diff";
 import { assertLoadableMxfile, summarizeDiagram } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
 import { KevError } from "@/lib/kev/client";
+import { compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
@@ -241,6 +242,25 @@ function finish(
   }
 }
 
+function localDiagram(
+  userMessage: string,
+  currentXml: string,
+  originalXml: string,
+  mode: KevMode,
+  model?: string,
+): KevTurnResult | null {
+  const composed = resolveComposition(userMessage);
+  if (composed) {
+    const xml = renderComposition(composed);
+    return result(compositionDecision(composed, xml), mode, model, xml, false);
+  }
+  const plan = resolvePlan(userMessage);
+  if (!plan) return null;
+  const operations = operationsForPlan(plan, currentXml);
+  if (operations.length === 0) return null;
+  return finish(architectureDecision(plan, operations), mode, model, originalXml, currentXml);
+}
+
 export async function runKevTurn(input: {
   messages: ChatMessage[];
   currentXml: string;
@@ -264,25 +284,20 @@ export async function runKevTurn(input: {
     diagramDiff: context.diagramDiff,
   };
 
-  if (described.mode === "demo") {
-    const plan = resolvePlan(userMessage);
-    if (plan) {
-      const operations = operationsForPlan(plan, currentXml);
-      if (operations.length > 0) {
-        return finish(architectureDecision(plan, operations), "demo", undefined, input.currentXml, currentXml);
-      }
+  if (described.mode === "demo" || described.mode === "openai") {
+    const local = localDiagram(userMessage, currentXml, input.currentXml, described.mode, described.model);
+    if (local) return local;
+    if (described.mode === "demo") {
+      return finish(decideDemo(userMessage), "demo", undefined, input.currentXml, currentXml);
     }
-    return finish(decideDemo(userMessage), "demo", undefined, input.currentXml, currentXml);
-  }
-
-  if (described.mode === "openai") {
     const client = new OpenAIKevClient();
     const decision = await client.decide(request);
     return finish(decision, "openai", client.model, input.currentXml, currentXml);
   }
 
   let reading: KevReading;
-  const loopTimeout = isArchitectureRequest(userMessage) || isBareDraw(userMessage);
+  const loopTimeout =
+    isArchitectureRequest(userMessage) || isBareDraw(userMessage) || resolveComposition(userMessage) !== null;
   try {
     reading = await askKev(
       {
@@ -294,10 +309,14 @@ export async function runKevTurn(input: {
       loopTimeout ? { timeoutMs: 10_000 } : undefined,
     );
   } catch (error) {
-    if (error instanceof KevUnreachableError && described.openai) {
-      const client = new OpenAIKevClient();
-      const decision = await client.decide(request);
-      return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
+    if (error instanceof KevUnreachableError) {
+      const drawn = localDiagram(userMessage, currentXml, input.currentXml, "kev", described.model);
+      if (drawn) return drawn;
+      if (described.openai) {
+        const client = new OpenAIKevClient();
+        const decision = await client.decide(request);
+        return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
+      }
     }
     throw error;
   }
@@ -317,10 +336,14 @@ export async function runKevTurn(input: {
     });
     if (orchestrated) return orchestrated;
   } catch (error) {
-    if (error instanceof KevUnreachableError && described.openai) {
-      const client = new OpenAIKevClient();
-      const decision = await client.decide(request);
-      return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
+    if (error instanceof KevUnreachableError) {
+      const drawn = localDiagram(userMessage, currentXml, input.currentXml, "kev", model);
+      if (drawn) return drawn;
+      if (described.openai) {
+        const client = new OpenAIKevClient();
+        const decision = await client.decide(request);
+        return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
+      }
     }
     throw error;
   }

@@ -1,7 +1,8 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations } from "@/lib/kev/mutate";
-import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan } from "@/lib/kev/plan";
+import { compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
+import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
 const COLOR_NAMES = Object.keys(PALETTE).join("|");
@@ -77,7 +78,11 @@ function isVagueTarget(value: string): boolean {
 }
 
 function isAllTarget(value: string): boolean {
-  return /^(all|everything|every shape|them|all shapes|all of them)$/i.test(value.trim());
+  const text = value.trim().toLowerCase().replace(/[?.!,]+$/g, "").replace(/\s+/g, " ");
+  return (
+    /^(?:(?:all|every|the|of|a|an)\s+)*(?:boxes|shapes|nodes|them|everything|diagram)$/.test(text) ||
+    /^(?:all|every)\s+(?:box|shape|node)$/.test(text)
+  );
 }
 
 function shapeSlots(label: string, text: string): DiagramSlots {
@@ -145,23 +150,30 @@ export function decideDemo(message: string): KevDecision {
 
   const colorCommand = text.match(
     new RegExp(
-      `\\b(?:make|turn|paint|color|colour|style|set)\\s+(?:the\\s+)?(.+?)\\s+(?:(?:color|colour)\\s+to\\s+)?(${COLOR_NAMES}|#[0-9a-fA-F]{6})\\b`,
+      `\\b(?:change|make|turn|paint|color|colour|recolor|recolour|style|set)\\s+(?:the\\s+)?(.+?)\\s+(?:(?:to|(?:color|colour))\\s+)?(${COLOR_NAMES}|#[0-9a-fA-F]{6})\\b`,
       "i",
     ),
   );
   if (colorCommand?.[1] && colorCommand[2] && !/\b(add|create|insert|draw)\b/.test(lower)) {
-    const rawTarget = titleLabel(colorCommand[1]);
+    const rawTarget = colorCommand[1].trim();
+    if (isAllTarget(rawTarget)) {
+      const colorToken = colorCommand[2].toLowerCase();
+      const hex = colorToken.startsWith("#") ? colorToken : null;
+      const slots = withPalette({ target: null, colorName: hex ? null : colorToken, fillColor: hex });
+      return decision("style", `Set every shape to ${colorToken}.`, slots, [{ intent: "style", slots }]);
+    }
+    const namedTarget = titleLabel(rawTarget);
     const colorToken = colorCommand[2].toLowerCase();
     const hex = colorToken.startsWith("#") ? colorToken : null;
     const colorName = hex ? null : colorToken;
-    if (isVagueTarget(rawTarget)) {
+    if (isVagueTarget(namedTarget)) {
       return decision("clarify", `Which shape should be ${colorToken}? Name it, for example “Make the API red.”`);
     }
-    const slots: DiagramSlots = {
-      target: isAllTarget(rawTarget) ? null : rawTarget,
+    const slots = withPalette({
+      target: isAllTarget(namedTarget) ? null : namedTarget,
       colorName,
       fillColor: hex,
-    };
+    });
     const subject = slots.target ?? "every shape";
     return decision("style", `Set ${subject} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
   }
@@ -240,6 +252,11 @@ export class DemoKevClient implements KevClient {
 }
 
 export function previewDemo(message: string, xml: string): { decision: KevDecision; xml: string } {
+  const composed = resolveComposition(message);
+  if (composed) {
+    const rendered = renderComposition(composed);
+    return { decision: compositionDecision(composed, rendered), xml: rendered };
+  }
   const plan = resolvePlan(message);
   if (plan) {
     const operations = operationsForPlan(plan, xml);

@@ -23,6 +23,7 @@ import {
   openDiagram,
   serializeDiagram,
 } from "@/lib/drawio/xml";
+import { polishDiagram } from "@/lib/drawio/layout";
 import type { DiagramOperation, DiagramSlots } from "@/lib/kev/types";
 
 export { DiagramXmlError };
@@ -347,7 +348,7 @@ function styleShapes(doc: XmlDocument, slots: DiagramSlots) {
     throw new DiagramXmlError("Name a color, for example “Make the API red.”");
   }
   const query = slots.target || slots.label;
-  const vertices = query ? [requireVertex(doc, query)] : listVertices(doc);
+  const vertices = query ? [requireVertex(doc, query)] : listVertices(doc).filter((vertex) => !isChrome(vertex));
   if (vertices.length === 0) throw new DiagramXmlError("There are no shapes to restyle.");
   for (const vertex of vertices) {
     vertex.setAttribute(
@@ -355,6 +356,10 @@ function styleShapes(doc: XmlDocument, slots: DiagramSlots) {
       applyColors(vertex.getAttribute("style") || SHAPE_STYLE.rectangle, palette.fill, palette.stroke, palette.font),
     );
   }
+}
+
+function isChrome(vertex: XmlElement): boolean {
+  return /(?:^|;)drawai=(?:lifeline|cluster|anchor)(?:;|$)/.test(vertex.getAttribute("style") ?? "");
 }
 
 function layoutDiagram(doc: XmlDocument, slots: DiagramSlots) {
@@ -426,5 +431,7 @@ function applyOperation(doc: XmlDocument, operation: DiagramOperation) {
 export function applyOperations(xml: string, operations: DiagramOperation[]): string {
   const doc = openDiagram(xml);
   for (const operation of operations) applyOperation(doc, operation);
+  const structural = operations.some((operation) => operation.intent !== "style");
+  if (structural) polishDiagram(doc);
   return serializeDiagram(doc);
 }

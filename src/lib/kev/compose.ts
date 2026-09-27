@@ -1,0 +1,654 @@
+import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
+import { openDiagram, serializeDiagram } from "@/lib/drawio/xml";
+import { withPalette } from "@/lib/kev/plan";
+import type { KevDecision } from "@/lib/kev/types";
+
+type XmlElement = import("@xmldom/xmldom").Element;
+type XmlDocument = import("@xmldom/xmldom").Document;
+
+const WIRE_FILL = "#ffffff";
+const WIRE_STROKE = "#334155";
+const WIRE_FONT = "#0f172a";
+const CLUSTER_HEADER = "#f1f5f9";
+const CLUSTER_BODY = "#ffffff";
+const CLUSTER_STROKE = "#cbd5e1";
+
+const COLUMN = 230;
+const LANE = 68;
+
+export type CompositionKind = "sequence" | "workflow" | "layers";
+
+interface PalettePaint {
+  fill: string;
+  stroke: string;
+  font: string;
+}
+
+export interface SequenceParticipant {
+  id: string;
+  label: string;
+  shape: ShapeKind;
+}
+
+export interface SequenceMessage {
+  from: string;
+  to: string;
+  label: string;
+  dashed?: boolean;
+}
+
+export interface SequenceSpec {
+  kind: "sequence";
+  title: string;
+  reply: string;
+  participants: SequenceParticipant[];
+  messages: SequenceMessage[];
+}
+
+export interface FlowNode {
+  id: string;
+  label: string;
+  shape: ShapeKind;
+  column: number;
+  row: number;
+}
+
+export interface FlowEdge {
+  from: string;
+  to: string;
+  label?: string;
+  /** Leave the source from this side. Defaults to a straight neighbor link. */
+  exit?: "top" | "bottom" | "right" | "left";
+}
+
+export interface WorkflowSpec {
+  kind: "workflow";
+  title: string;
+  reply: string;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+}
+
+export interface LayerNode {
+  id: string;
+  label: string;
+  shape: ShapeKind;
+}
+
+export interface LayerGroup {
+  id: string;
+  label: string;
+  nodes: LayerNode[];
+}
+
+export interface LayerEdge {
+  from: string;
+  to: string;
+  label: string;
+  /** Draw beside the stack so a return arrow does not sit on the forward arrow. */
+  side?: boolean;
+}
+
+export interface LayerSpec {
+  kind: "layers";
+  title: string;
+  reply: string;
+  groups: LayerGroup[];
+  edges: LayerEdge[];
+}
+
+export type CompositionSpec = SequenceSpec | WorkflowSpec | LayerSpec;
+
+export interface Composition {
+  spec: CompositionSpec;
+  colorName: string | null;
+}
+
+interface Placed {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  style: string;
+}
+
+interface DrawnEdge {
+  from: string;
+  to: string;
+  label: string;
+  style: string;
+  points: Array<{ x: number; y: number }>;
+}
+
+const COLOR_RE = new RegExp(`\\b(${Object.keys(PALETTE).join("|")})\\b`, "i");
+
+export function colorInMessage(message: string): string | null {
+  return message.match(COLOR_RE)?.[1]?.toLowerCase() ?? null;
+}
+
+function wantsPicture(text: string): boolean {
+  return /\b(draw|sketch|diagram|show|illustrate|map)\b/i.test(text);
+}
+
+function isIoUring(text: string): boolean {
+  return /\bio[\s_-]?uring\b/i.test(text) && (/\bxfs\b/i.test(text) || /\bfilesystem\b/i.test(text));
+}
+
+function isLoginSequence(text: string): boolean {
+  return /\bsequence\b/i.test(text) && /\b(login|log[\s-]?in|sign[\s-]?in|signin|auth(?:entication)?)\b/i.test(text);
+}
+
+function isSequence(text: string): boolean {
+  return /\bsequence(\s+diagram)?\b/i.test(text);
+}
+
+function isTaxWorkflow(text: string): boolean {
+  return /\b(workflow|flowchart|process)\b/i.test(text) && /\b(tax|irs|1040|filing)\b/i.test(text);
+}
+
+function isWorkflow(text: string): boolean {
+  return /\b(workflow|flowchart)\b/i.test(text);
+}
+
+/** Sequence, workflow, and layered diagrams the chain planner cannot express. */
+export function resolveComposition(message: string, hints?: { colorName?: string | null }): Composition | null {
+  const text = message.trim();
+  if (!text || !wantsPicture(text)) return null;
+  const spec = specFor(text);
+  if (!spec) return null;
+  const named = colorInMessage(text);
+  return { spec, colorName: named ?? hints?.colorName ?? null };
+}
+
+export function describeComposition(composition: Composition): string {
+  const lines = plannedSteps(composition.spec);
+  return [`Diagram: ${composition.spec.kind}`, "Steps:", ...lines.map((line, index) => `${index + 1}. ${line}`)].join("\n");
+}
+
+export function compositionDecision(composition: Composition, xml: string): KevDecision {
+  const layout = composition.spec.kind === "layers" ? "vertical" : "horizontal";
+  return {
+    intent: "add_shape",
+    reply: composition.spec.reply,
+    slots: withPalette({
+      label: composition.spec.title,
+      shape: "rectangle",
+      colorName: composition.colorName,
+      layout,
+    }),
+    operations: [],
+    updatedXml: xml,
+  };
+}
+
+export function renderComposition(composition: Composition): string {
+  const paint = paintFor(composition.colorName);
+  const drawn = drawSpec(composition.spec, paint);
+  return xmlFor(drawn.nodes, drawn.edges, composition.spec.title);
+}
+
+function specFor(text: string): CompositionSpec | null {
+  if (isIoUring(text)) return ioUringSpec();
+  if (isLoginSequence(text)) return loginSequence();
+  if (isSequence(text)) return genericSequence(text);
+  if (isTaxWorkflow(text)) return taxWorkflow();
+  if (isWorkflow(text)) return genericWorkflow(text);
+  return null;
+}
+
+function plannedSteps(spec: CompositionSpec): string[] {
+  if (spec.kind === "sequence") {
+    return [
+      ...spec.participants.map((participant) => `Add lifeline ${participant.label}`),
+      ...spec.messages.map((message) => `Message ${message.from} → ${message.to}: ${message.label}`),
+      "Place participants in a row and stack messages top to bottom",
+    ];
+  }
+  if (spec.kind === "workflow") {
+    return [
+      ...spec.nodes.map((node) => `Add stage ${node.label}`),
+      ...spec.edges.map((edge) => `Connect ${edge.from} to ${edge.to}${edge.label ? ` (${edge.label})` : ""}`),
+      "Lay stages left to right and route branches off the decision",
+    ];
+  }
+  return [
+    ...spec.groups.flatMap((group) => [`Open cluster ${group.label}`, ...group.nodes.map((node) => `Add ${node.label}`)]),
+    ...spec.edges.map((edge) => `Connect ${edge.from} to ${edge.to}: ${edge.label}`),
+    "Stack clusters vertically and route the return edge beside the stack",
+  ];
+}
+
+function loginSequence(): SequenceSpec {
+  return {
+    kind: "sequence",
+    title: "User login",
+    reply: "Drew a login sequence: User, Browser, and Auth Service.",
+    participants: [
+      { id: "user", label: "User", shape: "actor" },
+      { id: "browser", label: "Browser", shape: "rectangle" },
+      { id: "auth", label: "Auth Service", shape: "rectangle" },
+    ],
+    messages: [
+      { from: "user", to: "browser", label: "Enter credentials" },
+      { from: "browser", to: "auth", label: "POST /login" },
+      { from: "auth", to: "browser", label: "Session", dashed: true },
+      { from: "browser", to: "user", label: "Logged in", dashed: true },
+    ],
+  };
+}
+
+function genericSequence(message: string): SequenceSpec {
+  const topic = message
+    .replace(/^(?:please\s+)?(?:draw|sketch|diagram|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "")
+    .replace(/\bsequence(\s+diagram)?\b/i, "")
+    .replace(/\bdiagram\b/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const name = topic || "request";
+  return {
+    kind: "sequence",
+    title: name,
+    reply: `Drew a sequence for ${name}.`,
+    participants: [
+      { id: "user", label: "User", shape: "actor" },
+      { id: "service", label: "Service", shape: "rectangle" },
+    ],
+    messages: [
+      { from: "user", to: "service", label: `Request ${name}`.trim() },
+      { from: "service", to: "user", label: "Response", dashed: true },
+    ],
+  };
+}
+
+function taxWorkflow(): WorkflowSpec {
+  return {
+    kind: "workflow",
+    title: "US tax filing",
+    reply: "Drew the US tax filing workflow, from collecting documents through payment or refund.",
+    nodes: [
+      { id: "docs", label: "Collect documents", shape: "document", column: 0, row: 0 },
+      { id: "form", label: "Complete Form 1040", shape: "document", column: 1, row: 0 },
+      { id: "review", label: "Review return", shape: "rectangle", column: 2, row: 0 },
+      { id: "file", label: "E-file", shape: "rectangle", column: 3, row: 0 },
+      { id: "due", label: "Balance due?", shape: "diamond", column: 4, row: 0 },
+      { id: "pay", label: "Pay the IRS", shape: "rectangle", column: 5, row: -1 },
+      { id: "refund", label: "Receive refund", shape: "rectangle", column: 5, row: 1 },
+    ],
+    edges: [
+      { from: "docs", to: "form" },
+      { from: "form", to: "review" },
+      { from: "review", to: "file" },
+      { from: "file", to: "due" },
+      { from: "due", to: "pay", label: "Yes", exit: "top" },
+      { from: "due", to: "refund", label: "No", exit: "bottom" },
+    ],
+  };
+}
+
+function genericWorkflow(message: string): WorkflowSpec {
+  const topic = message
+    .replace(/^(?:please\s+)?(?:draw|sketch|diagram|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "")
+    .replace(/\b(workflow|flowchart|diagram|process)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const name = topic || "Workflow";
+  return {
+    kind: "workflow",
+    title: name,
+    reply: `Drew a workflow for ${name}.`,
+    nodes: [
+      { id: "start", label: "Start", shape: "rectangle", column: 0, row: 0 },
+      { id: "work", label: name, shape: "rectangle", column: 1, row: 0 },
+      { id: "done", label: "Done", shape: "rectangle", column: 2, row: 0 },
+    ],
+    edges: [
+      { from: "start", to: "work" },
+      { from: "work", to: "done" },
+    ],
+  };
+}
+
+function ioUringSpec(): LayerSpec {
+  return {
+    kind: "layers",
+    title: "io_uring on XFS",
+    reply: "Drew io_uring on XFS: the application submits SQEs, XFS serves the I/O, and completions return on the CQ.",
+    groups: [
+      { id: "user", label: "Userspace", nodes: [{ id: "app", label: "Application", shape: "rectangle" }] },
+      {
+        id: "kernel",
+        label: "Kernel",
+        nodes: [
+          { id: "uring", label: "io_uring", shape: "rectangle" },
+          { id: "xfs", label: "XFS", shape: "rectangle" },
+        ],
+      },
+      { id: "storage", label: "Storage", nodes: [{ id: "block", label: "Block device", shape: "cylinder" }] },
+    ],
+    edges: [
+      { from: "app", to: "uring", label: "Submit SQE" },
+      { from: "uring", to: "app", label: "Complete CQE", side: true },
+      { from: "uring", to: "xfs", label: "Read / write" },
+      { from: "xfs", to: "block", label: "Block I/O" },
+    ],
+  };
+}
+
+function paintFor(colorName: string | null): PalettePaint {
+  const named = colorName ? PALETTE[colorName] : undefined;
+  if (!named) return { fill: WIRE_FILL, stroke: WIRE_STROKE, font: WIRE_FONT };
+  return { fill: named.fill, stroke: named.stroke, font: named.font ?? WIRE_FONT };
+}
+
+function nodeStyle(shape: ShapeKind, paint: PalettePaint, role: string): string {
+  const base = applyColors(SHAPE_STYLE[shape], paint.fill, paint.stroke, paint.font);
+  return `${base}fontSize=13;fontFamily=Helvetica;drawai=${role};`;
+}
+
+function sizeFor(shape: ShapeKind): { width: number; height: number } {
+  if (shape === "actor") return { width: 48, height: 72 };
+  if (shape === "diamond") return { width: 156, height: 92 };
+  if (shape === "cylinder") return { width: 168, height: 80 };
+  if (shape === "document") return { width: 176, height: 72 };
+  return { width: 176, height: 64 };
+}
+
+function drawSpec(spec: CompositionSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+  if (spec.kind === "sequence") return drawSequence(spec, paint);
+  if (spec.kind === "workflow") return drawWorkflow(spec, paint);
+  return drawLayers(spec, paint);
+}
+
+function drawSequence(spec: SequenceSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+  const header = 56;
+  const width = 150;
+  const height = header + 48 + spec.messages.length * LANE + 28;
+  const nodes: Placed[] = spec.participants.map((participant, index) => ({
+    id: participant.id,
+    label: participant.label,
+    x: 64 + index * COLUMN,
+    y: 40,
+    width,
+    height,
+    style:
+      `shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;` +
+      `recursiveResize=0;outlineConnect=0;portConstraint=eastwest;size=${header};` +
+      `fillColor=${paint.fill};strokeColor=${paint.stroke};fontColor=${paint.font};` +
+      `fontSize=13;fontFamily=Helvetica;drawai=node;`,
+  }));
+
+  const edges: DrawnEdge[] = spec.messages.map((message, index) => {
+    const frac = (header + 40 + index * LANE) / height;
+    const arrow = message.dashed ? "endArrow=open;endFill=0;dashed=1;" : "endArrow=classic;endFill=1;";
+    return {
+      from: message.from,
+      to: message.to,
+      label: message.label,
+      points: [],
+      style:
+        `edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;${arrow}` +
+        `exitX=0.5;exitY=${frac.toFixed(3)};entryX=0.5;entryY=${frac.toFixed(3)};` +
+        `strokeColor=${WIRE_STROKE};fontColor=${WIRE_FONT};fontSize=12;labelBackgroundColor=#ffffff;` +
+        "drawai=message;drawai=routed;",
+    };
+  });
+  return { nodes, edges };
+}
+
+function drawWorkflow(spec: WorkflowSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+  const slot = 228;
+  const mainY = 220;
+  const nodes: Placed[] = spec.nodes.map((node) => {
+    const size = sizeFor(node.shape);
+    const x = 40 + node.column * slot + (slot - size.width) / 2;
+    let y = mainY;
+    if (node.row < 0) y = mainY - size.height - 72;
+    if (node.row > 0) y = mainY + 92 + 72;
+    return {
+      id: node.id,
+      label: node.label,
+      x,
+      y,
+      width: size.width,
+      height: size.height,
+      style: nodeStyle(node.shape, paint, "node"),
+    };
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edges: DrawnEdge[] = spec.edges.map((edge) => {
+    const source = byId.get(edge.from);
+    const target = byId.get(edge.to);
+    if (!source || !target) {
+      return { from: edge.from, to: edge.to, label: edge.label ?? "", points: [], style: edgeStyle() };
+    }
+    return link(source, target, edge);
+  });
+  return { nodes, edges };
+}
+
+function link(source: Placed, target: Placed, edge: FlowEdge): DrawnEdge {
+  if (edge.exit === "top" || edge.exit === "bottom") {
+    const exitY = edge.exit === "top" ? 0 : 1;
+    const targetMidY = target.y + target.height / 2;
+    return {
+      from: source.id,
+      to: target.id,
+      label: edge.label ?? "",
+      points: [{ x: source.x + source.width / 2, y: targetMidY }],
+      style:
+        edgeStyle() +
+        `exitX=0.5;exitY=${exitY};entryX=0;entryY=0.5;` +
+        `drawai=routed;`,
+    };
+  }
+  const y = Math.min(
+    source.y + Math.min(32, source.height / 2),
+    target.y + target.height - 16,
+    source.y + source.height - 16,
+  );
+  const yInSource = Math.min(Math.max(y, source.y + 12), source.y + source.height - 12);
+  const yInTarget = Math.min(Math.max(yInSource, target.y + 12), target.y + target.height - 12);
+  const shared = yInSource === yInTarget ? yInSource : source.y + 32;
+  const exitY = (shared - source.y) / source.height;
+  const entryY = (Math.min(Math.max(shared, target.y + 12), target.y + target.height - 12) - target.y) / target.height;
+  return {
+    from: source.id,
+    to: target.id,
+    label: edge.label ?? "",
+    points: [],
+    style: edgeStyle() + `exitX=1;exitY=${exitY.toFixed(3)};entryX=0;entryY=${entryY.toFixed(3)};drawai=routed;`,
+  };
+}
+
+function drawLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+  const innerW = 188;
+  const padX = 28;
+  const header = 34;
+  const padY = 20;
+  const gap = 28;
+  const clusterGap = 40;
+  const clusterW = padX + innerW + padX;
+  const clusterX = 180;
+  const nodes: Placed[] = [];
+  let cursor = 40;
+
+  for (const group of spec.groups) {
+    const sizes = group.nodes.map((node) => sizeFor(node.shape));
+    const body = sizes.reduce((sum, size) => sum + size.height, 0) + gap * Math.max(0, sizes.length - 1);
+    const clusterH = header + padY + body + padY;
+    nodes.push({
+      id: group.id,
+      label: group.label,
+      x: clusterX,
+      y: cursor,
+      width: clusterW,
+      height: clusterH,
+      style:
+        `swimlane;whiteSpace=wrap;html=1;startSize=${header};rounded=1;arcSize=8;` +
+        `fillColor=${CLUSTER_HEADER};swimlaneFillColor=${CLUSTER_BODY};strokeColor=${CLUSTER_STROKE};` +
+        `fontColor=#475569;fontSize=12;fontStyle=1;fontFamily=Helvetica;drawai=cluster;`,
+    });
+    let nodeY = cursor + header + padY;
+    group.nodes.forEach((node, index) => {
+      const size = sizes[index] ?? sizeFor(node.shape);
+      nodes.push({
+        id: node.id,
+        label: node.label,
+        x: clusterX + (clusterW - size.width) / 2,
+        y: nodeY,
+        width: size.width,
+        height: size.height,
+        style: nodeStyle(node.shape, paint, "node"),
+      });
+      nodeY += size.height + gap;
+    });
+    cursor += clusterH + clusterGap;
+  }
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const laneX = clusterX + clusterW + 56;
+  const edges: DrawnEdge[] = spec.edges.map((edge) => {
+    const source = byId.get(edge.from);
+    const target = byId.get(edge.to);
+    if (!source || !target) {
+      return { from: edge.from, to: edge.to, label: edge.label, points: [], style: edgeStyle() };
+    }
+    if (edge.side) {
+      const startY = source.y + source.height / 2;
+      const endY = target.y + target.height / 2;
+      return {
+        from: source.id,
+        to: target.id,
+        label: edge.label,
+        points: [
+          { x: laneX, y: startY },
+          { x: laneX, y: endY },
+        ],
+        style:
+          "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=open;endFill=0;" +
+          "exitX=1;exitY=0.500;entryX=1;entryY=0.500;" +
+          "strokeColor=#64748b;fontColor=#334155;fontSize=12;labelBackgroundColor=#ffffff;drawai=routed;",
+      };
+    }
+    const sourceCx = source.x + source.width / 2;
+    const targetCx = target.x + target.width / 2;
+    const sharedX = Math.abs(sourceCx - targetCx) < 2 ? sourceCx : (sourceCx + targetCx) / 2;
+    const exitX = (sharedX - source.x) / source.width;
+    const entryX = (sharedX - target.x) / target.width;
+    const downward = target.y >= source.y;
+    return {
+      from: source.id,
+      to: target.id,
+      label: edge.label,
+      points: [],
+      style:
+        edgeStyle() +
+        `exitX=${exitX.toFixed(3)};exitY=${downward ? 1 : 0};entryX=${entryX.toFixed(3)};entryY=${downward ? 0 : 1};drawai=routed;`,
+    };
+  });
+  return { nodes, edges };
+}
+
+function edgeStyle(): string {
+  return (
+    "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" +
+    "endArrow=classic;endFill=1;strokeColor=#64748b;fontColor=#334155;fontSize=12;labelBackgroundColor=#ffffff;"
+  );
+}
+
+function xmlFor(nodes: Placed[], edges: DrawnEdge[], title: string): string {
+  const doc = openDiagram(BLANK);
+  const model = doc.getElementsByTagName("mxGraphModel")[0];
+  const diagram = doc.getElementsByTagName("diagram")[0];
+  if (diagram) {
+    diagram.setAttribute("id", "diagram");
+    diagram.setAttribute("name", title);
+  }
+  const root = doc.getElementsByTagName("root")[0];
+  if (!root) return serializeDiagram(doc);
+  let next = 2;
+  const ids = new Map<string, string>();
+  let maxX = 1169;
+  let maxY = 827;
+  for (const node of nodes) {
+    const id = String(next);
+    next += 1;
+    ids.set(node.id, id);
+    root.appendChild(vertex(doc, id, node));
+    maxX = Math.max(maxX, node.x + node.width + 80);
+    maxY = Math.max(maxY, node.y + node.height + 80);
+  }
+  for (const edge of edges) {
+    const source = ids.get(edge.from);
+    const target = ids.get(edge.to);
+    if (!source || !target) continue;
+    root.appendChild(edgeCell(doc, String(next), source, target, edge));
+    next += 1;
+    for (const point of edge.points) {
+      maxX = Math.max(maxX, point.x + 40);
+      maxY = Math.max(maxY, point.y + 40);
+    }
+  }
+  if (model) {
+    model.setAttribute("pageWidth", String(Math.ceil(maxX / 10) * 10));
+    model.setAttribute("pageHeight", String(Math.ceil(maxY / 10) * 10));
+  }
+  return serializeDiagram(doc);
+}
+
+function vertex(doc: XmlDocument, id: string, node: Placed): XmlElement {
+  const cell = doc.createElement("mxCell");
+  cell.setAttribute("id", id);
+  cell.setAttribute("value", node.label);
+  cell.setAttribute("style", node.style);
+  cell.setAttribute("vertex", "1");
+  cell.setAttribute("parent", "1");
+  const geometry = doc.createElement("mxGeometry");
+  geometry.setAttribute("x", String(Math.round(node.x)));
+  geometry.setAttribute("y", String(Math.round(node.y)));
+  geometry.setAttribute("width", String(Math.round(node.width)));
+  geometry.setAttribute("height", String(Math.round(node.height)));
+  geometry.setAttribute("as", "geometry");
+  cell.appendChild(geometry);
+  return cell;
+}
+
+function edgeCell(doc: XmlDocument, id: string, source: string, target: string, edge: DrawnEdge): XmlElement {
+  const cell = doc.createElement("mxCell");
+  cell.setAttribute("id", id);
+  cell.setAttribute("value", edge.label);
+  cell.setAttribute("style", edge.style);
+  cell.setAttribute("edge", "1");
+  cell.setAttribute("parent", "1");
+  cell.setAttribute("source", source);
+  cell.setAttribute("target", target);
+  const geometry = doc.createElement("mxGeometry");
+  geometry.setAttribute("relative", "1");
+  geometry.setAttribute("as", "geometry");
+  if (edge.points.length > 0) {
+    const array = doc.createElement("Array");
+    array.setAttribute("as", "points");
+    for (const point of edge.points) {
+      const mx = doc.createElement("mxPoint");
+      mx.setAttribute("x", String(Math.round(point.x)));
+      mx.setAttribute("y", String(Math.round(point.y)));
+      array.appendChild(mx);
+    }
+    geometry.appendChild(array);
+  }
+  cell.appendChild(geometry);
+  return cell;
+}
+
+const BLANK = `<mxfile host="embed.diagrams.net" agent="draw.ai" type="device">
+  <diagram id="diagram" name="Diagram">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>`;
