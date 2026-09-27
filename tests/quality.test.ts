@@ -660,6 +660,88 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     );
   });
 
+  function installKevDirection(layout: "horizontal" | "vertical") {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions?: Record<string, { type: string }> };
+      if (body.questions?.intent) {
+        return Response.json({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "noop", confidence: 0.4 },
+            needs_xml_edit: { type: "noul", noul: 0.2 },
+            color: { type: "choice", choice: "none" },
+            shape: { type: "choice", choice: "none" },
+            layout: { type: "choice", choice: layout },
+            anchor: { type: "choice", choice: "none" },
+          },
+        });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          next: { type: "choice", choice: "apply", confidence: 0.93 },
+          confirm: { type: "noul", noul: 0.97 },
+          shape: { type: "choice", choice: "none" },
+          color: { type: "choice", choice: "none" },
+          layout: { type: "choice", choice: layout },
+        },
+      });
+    }) as typeof fetch;
+  }
+
+  it("keeps a 3 tier web app horizontal when Jev reads it as a column", async () => {
+    installKevDirection("vertical");
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "draw a 3 tier web app" }],
+      currentXml: STARTER_XML,
+    });
+    const report = assertClean(drawn.updatedXml);
+    assert.deepEqual(
+      report.nodes.map((node) => node.label),
+      ["Client", "App", "Postgres"],
+    );
+    assert.deepEqual(
+      report.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Postgres"],
+    );
+    assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
+    const gaps = rowGaps(report.nodes);
+    assert.ok(gaps.every((gap) => gap >= 48));
+    assert.ok(Math.max(...gaps) - Math.min(...gaps) <= 1);
+    assert.doesNotMatch(drawn.reply, /stacked vertically/i);
+    assert.equal(
+      drawn.steps?.some((step) => /vertical column/i.test(step.detail)),
+      false,
+    );
+  });
+
+  it("still stacks a 3 tier web app when the user asks for it vertically", async () => {
+    installKevDirection("horizontal");
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "draw a 3 tier web app vertically" }],
+      currentXml: STARTER_XML,
+    });
+    const report = assertClean(drawn.updatedXml);
+    assert.deepEqual(
+      report.nodes.map((node) => node.label),
+      ["Client", "App", "Postgres"],
+    );
+    assert.deepEqual(
+      report.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Postgres"],
+    );
+    assert.equal(new Set(report.nodes.map((node) => node.x)).size, 1);
+    const ys = report.nodes.map((node) => node.y);
+    assert.deepEqual(ys, [...ys].sort((a, b) => a - b));
+    assert.ok(ys[1]! > ys[0]! && ys[2]! > ys[1]!);
+    assert.match(drawn.reply, /stacked vertically/i);
+    assert.equal(
+      drawn.steps?.some((step) => /vertical column/i.test(step.detail)),
+      true,
+    );
+  });
+
   it("keeps architecture geometry when a style writer moves a node", async () => {
     let source = "";
     let written = "";
