@@ -14,7 +14,7 @@ export const INTENT_CRITERIA = {
   delete_shape: "Remove a shape",
   connect: "Add an edge between shapes",
   layout: "Rearrange positions",
-  style: "Restyle without changing topology",
+  style: "Restyle fills or edge strokes without changing topology. Arrows, edges, connectors, and lines are edges.",
   clarify: "Need more info from the user",
   noop: "No diagram change",
 } as const;
@@ -154,7 +154,7 @@ export function buildSystemOneRequest(input: {
       intent: {
         type: "choice",
         instructions:
-          "What diagram edit does the user want? Recoloring every box, including “change the boxes to red”, is style. A bare draw with no subject is clarify.",
+          "What diagram edit does the user want? Recoloring every box, including “change the boxes to red”, is style. Recoloring arrows, edges, connectors, or lines is style, not a missing shape. A bare draw with no subject is clarify.",
         criteria: { ...INTENT_CRITERIA },
       },
       needs_xml_edit: {
@@ -163,7 +163,7 @@ export function buildSystemOneRequest(input: {
       },
       shape: choiceQuestion("Which shape kind should be used, if any?", shapes),
       color: choiceQuestion(
-        "Which named color should fills use? Choose none when the user did not name a color. “Change the boxes to red” is red.",
+        "Which named color should be applied? Choose none when the user did not name a color. “Change the boxes to red” is red. “Make the arrows blue” is blue.",
         colors,
       ),
       layout: choiceQuestion("How should shapes be arranged, if the user asked for a layout? Choose none when the host should place shapes.", {
@@ -177,7 +177,7 @@ export function buildSystemOneRequest(input: {
         none: "No relative placement",
       }),
       anchor: choiceQuestion(
-        "Which existing shape is the subject of this edit? Choose none when every box should change.",
+        "Which existing shape is the subject of this edit? Choose none when every box should change. Choose none for arrows, edges, connectors, or lines.",
         vertices,
       ),
       source: choiceQuestion("Which existing shape is the edge source, if any?", vertices),

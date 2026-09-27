@@ -4,6 +4,7 @@ import { parseBody } from "../src/app/api/chat/route";
 import { assessDiagram, finalizeDiagram, type QualityNode } from "../src/lib/drawio/layout";
 import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { previewDemo } from "../src/lib/kev/demo";
+import { applyOperations } from "../src/lib/kev/mutate";
 import { runKevTurn } from "../src/lib/kev/run";
 
 const ENV_KEYS = ["KEV_BASE_URL", "KEV_API_KEY", "KEV_MODEL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"] as const;
@@ -262,6 +263,73 @@ describe("diagram quality", () => {
     assert.match(node("Redis cache")?.style ?? "", /cylinder3/);
     assert.ok(content(report.nodes).length >= 4);
     assert.equal(report.nodes.some((node) => node.label === "Redis Diagram Usage"), false);
+  });
+
+  it("restyles arrows and edges to a color without moving the login sequence", async () => {
+    const drawn = previewDemo("draw a user login sequence diagram", STARTER_XML).xml;
+    const before = geometrySignature(drawn);
+    const beforeReport = assessDiagram(drawn);
+    const phrases = ["make the arrows blue", "make the edges blue", "make the connectors blue", "make the lines blue"];
+    for (const phrase of phrases) {
+      const restyled = await runKevTurn({
+        messages: [{ role: "user", content: phrase }],
+        currentXml: drawn,
+      });
+      assert.equal(restyled.intent, "style", phrase);
+      assert.equal(restyled.slots.colorName, "blue", phrase);
+      assert.doesNotMatch(restyled.reply, /shape named/i, phrase);
+      assert.deepEqual(geometrySignature(restyled.updatedXml), before, phrase);
+      const after = assessDiagram(restyled.updatedXml);
+      assert.ok(after.edges.length >= 4, phrase);
+      assert.ok(
+        after.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")),
+        phrase,
+      );
+      assert.ok(
+        after.nodes.filter((node) => node.role === "node").every((node) => node.style.includes("fillColor=#ffffff")),
+        phrase,
+      );
+      assert.ok(
+        after.nodes.filter((node) => node.role === "node").every((node) => node.style.includes("strokeColor=#334155")),
+        phrase,
+      );
+      const beforeMessages = beforeReport.edges
+        .filter((edge) => edge.label)
+        .sort((a, b) => exitY(a.style) - exitY(b.style));
+      const messages = after.edges.filter((edge) => edge.label).sort((a, b) => exitY(a.style) - exitY(b.style));
+      assert.deepEqual(
+        messages.map((edge) => edge.label),
+        beforeMessages.map((edge) => edge.label),
+        phrase,
+      );
+      assert.deepEqual(
+        messages.map((edge) => exitY(edge.style)),
+        beforeMessages.map((edge) => exitY(edge.style)),
+        phrase,
+      );
+      assert.ok(messages.slice(0, 2).every((edge) => !edge.style.includes("dashed=1")), phrase);
+      assert.ok(messages.slice(2).every((edge) => edge.style.includes("dashed=1")), phrase);
+      assert.deepEqual(
+        after.edges.map((edge) => edge.points),
+        beforeReport.edges.map((edge) => edge.points),
+        phrase,
+      );
+    }
+
+    const titled = applyOperations(drawn, [
+      {
+        intent: "style",
+        slots: { target: "Arrows", colorName: "blue", fillColor: "#dae8fc", strokeColor: "#6c8ebf" },
+      },
+    ]);
+    assert.deepEqual(geometrySignature(titled), before);
+    assert.ok(assessDiagram(titled).edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+
+    const renamed = applyOperations(drawn, [
+      { intent: "edit_shape", slots: { target: "Connectors", colorName: "blue" } },
+    ]);
+    assert.deepEqual(geometrySignature(renamed), before);
+    assert.ok(assessDiagram(renamed).edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
   });
 
   it("restyles every box red without moving the login sequence", () => {

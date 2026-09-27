@@ -1,7 +1,7 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
 import { BLANK_XML } from "@/lib/drawio/starter";
 import type { KevClient } from "@/lib/kev/client";
-import { applyOperations } from "@/lib/kev/mutate";
+import { applyOperations, edgeQuery } from "@/lib/kev/mutate";
 import { compositionDecision, renderComposition, resolveComposition, sameMxfile } from "@/lib/kev/compose";
 import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
@@ -157,6 +157,17 @@ export function decideDemo(message: string): KevDecision {
   );
   if (colorCommand?.[1] && colorCommand[2] && !/\b(add|create|insert|draw)\b/.test(lower)) {
     const rawTarget = colorCommand[1].trim();
+    const edges = edgeQuery(rawTarget);
+    if (edges) {
+      const colorToken = colorCommand[2].toLowerCase();
+      const hex = colorToken.startsWith("#") ? colorToken : null;
+      const slots = withPalette({
+        target: edges,
+        colorName: hex ? null : colorToken,
+        fillColor: hex,
+      });
+      return decision("style", `Set the ${edges} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
+    }
     if (isAllTarget(rawTarget)) {
       const colorToken = colorCommand[2].toLowerCase();
       const hex = colorToken.startsWith("#") ? colorToken : null;

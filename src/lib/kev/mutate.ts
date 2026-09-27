@@ -95,6 +95,36 @@ function requireVertex(doc: XmlDocument, query: string): XmlElement {
   return found;
 }
 
+const EDGE_QUERY =
+  /^(?:(?:all|every|the|of|a|an|these|those|my|their|its)\s+)*(arrows?|edges?|connectors?|lines?)(?:\s+(?:color|colour))?$/;
+
+/** arrows / edges / connectors / lines name the diagram edges, not a vertex. */
+export function edgeQuery(value: string): string | null {
+  const text = value
+    .trim()
+    .toLowerCase()
+    .replace(/[?.!,;:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.match(EDGE_QUERY)?.[1] ?? null;
+}
+
+function edgeColor(slots: DiagramSlots): string | null {
+  const named = slots.colorName ? PALETTE[slots.colorName] : undefined;
+  if (named) return slots.strokeColor || named.stroke;
+  if (slots.strokeColor) return slots.strokeColor;
+  if (slots.fillColor) return slots.fillColor;
+  return null;
+}
+
+function setStyleProp(style: string, key: string, value: string): string {
+  const pattern = new RegExp(`(^|;)${key}=[^;]*`);
+  if (pattern.test(style)) return style.replace(pattern, `$1${key}=${value}`);
+  const body = style.trim();
+  if (!body) return `${key}=${value};`;
+  return `${body.endsWith(";") ? body : `${body};`}${key}=${value};`;
+}
+
 function resolvePalette(slots: DiagramSlots): { fill: string | null; stroke: string | null; font: string | null } {
   const named = slots.colorName ? PALETTE[slots.colorName] : undefined;
   if (named) {
@@ -282,6 +312,10 @@ function addShape(doc: XmlDocument, slots: DiagramSlots) {
 function editShape(doc: XmlDocument, slots: DiagramSlots) {
   const query = slots.target || slots.label;
   if (!query) throw new DiagramXmlError("Name the shape to edit.");
+  if (edgeQuery(query)) {
+    styleEdges(doc, slots);
+    return;
+  }
   const hasChange = Boolean(slots.newLabel || slots.shape || slots.colorName || slots.fillColor || slots.strokeColor);
   if (!hasChange) throw new DiagramXmlError("Say what should change on that shape.");
   const target = requireVertex(doc, query);
@@ -342,12 +376,30 @@ function connect(doc: XmlDocument, slots: DiagramSlots) {
   connectCells(doc, requireVertex(doc, slots.from), requireVertex(doc, slots.to), slots.edgeLabel ?? "");
 }
 
+function styleEdges(doc: XmlDocument, slots: DiagramSlots) {
+  const color = edgeColor(slots);
+  if (!color) {
+    throw new DiagramXmlError("Name a color, for example “Make the arrows blue.”");
+  }
+  const edges = listEdges(doc);
+  if (edges.length === 0) throw new DiagramXmlError("There are no arrows to restyle.");
+  for (const edge of edges) {
+    const current = edge.getAttribute("style") || EDGE_STYLE;
+    const next = setStyleProp(setStyleProp(current, "strokeColor", color), "fillColor", color);
+    edge.setAttribute("style", next);
+  }
+}
+
 function styleShapes(doc: XmlDocument, slots: DiagramSlots) {
+  const query = slots.target || slots.label;
+  if (query && edgeQuery(query)) {
+    styleEdges(doc, slots);
+    return;
+  }
   const palette = resolvePalette(slots);
   if (!palette.fill && !palette.stroke) {
     throw new DiagramXmlError("Name a color, for example “Make the API red.”");
   }
-  const query = slots.target || slots.label;
   const vertices = query ? [requireVertex(doc, query)] : listVertices(doc).filter((vertex) => !isChrome(vertex));
   if (vertices.length === 0) throw new DiagramXmlError("There are no shapes to restyle.");
   for (const vertex of vertices) {
