@@ -1,10 +1,12 @@
-# Kev Diagram
+# draw.ai
 
-Kev Diagram is a small SaaS workspace for architecture drawings. Chat on the left, a live [diagrams.net](https://www.diagrams.net/) editor on the right. You describe a change in plain language. The app turns that sentence into draw.io / mxGraph XML and loads it into the canvas.
+draw.ai is chat beside a live [diagrams.net](https://www.diagrams.net/) editor. Describe a change. The app writes draw.io / mxGraph XML and loads it into the canvas.
 
-**Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. Jev is TypeSafe’s hosted model. Kev is the open-source server you can run yourself. This app asks Kev for the intent, then asks a separate language model to write the mxfile.
+The site opens into the tool at `/`. `/app` redirects there.
 
-The first screen is a starter architecture — Client, API, Postgres — so the canvas is never blank.
+**Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. This app asks Kev for the intent, then asks a separate language model to write the mxfile. With neither `KEV_BASE_URL` nor `OPENAI_API_KEY`, demo mode applies a few edits locally.
+
+The canvas opens on Client, API, and Postgres.
 
 ## Local setup
 
@@ -14,7 +16,7 @@ cp .env.example .env.local   # optional
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) for the marketing page and [http://localhost:3000/app](http://localhost:3000/app) for the workspace.
+Open [http://localhost:3000](http://localhost:3000).
 
 ```bash
 npm test
@@ -76,7 +78,7 @@ The server prefers the model’s `updatedXml` when it parses, keeps root cells `
 
 ## Draw.io embed and the XML loop
 
-The workspace embeds exactly:
+The editor embeds exactly:
 
 `https://embed.diagrams.net/?embed=1&proto=json&configure=1&libraries=1&ui=min`
 
@@ -103,35 +105,17 @@ Compressed pages (base64 of raw deflate of a URI-encoded `mxGraphModel`, the dia
 ## Project layout
 
 ```
-src/app/page.tsx            marketing site
-src/app/app/page.tsx        /app workspace
+src/app/page.tsx            product (chat + diagram)
 src/app/api/chat/route.ts   chat turn
-src/components/workspace    chat panel and diagrams.net frame
+src/components/editor       chat panel and diagrams.net frame
+public/logo.svg             draw.ai mark
 src/lib/drawio              embed protocol, starter XML, mxfile codec
 src/lib/kev                 System One client, XML writer, demo parser, mutator
 ```
 
-## GitHub
-
-Target repository: [github.com/bardavid/kev-drawio-saas](https://github.com/bardavid/kev-drawio-saas).
-
-This environment could not create it. `gh` is not logged in, and the connected GitHub token returned `403 Resource not accessible by personal access token` for both a private and a public `POST /user/repos`. After a token that can create repositories is available:
-
-```bash
-gh auth login
-gh repo create bardavid/kev-drawio-saas --private --source=. --remote=github --push
-```
-
-If the empty repository already exists:
-
-```bash
-git remote add github https://github.com/bardavid/kev-drawio-saas.git
-git push -u github main
-```
+`/app` redirects to `/`.
 
 ## Vercel
-
-The Vercel CLI is not installed here and no Vercel account is logged in, so production was not deployed. From a machine that is logged in:
 
 ```bash
 npx vercel --prod

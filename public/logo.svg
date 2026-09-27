@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="390 165 530 355" fill="none" role="img" aria-labelledby="logoTitle">
+  <title id="logoTitle">draw.ai</title>
+  <g stroke="#171717" stroke-width="11" stroke-linejoin="miter" stroke-linecap="butt">
+    <rect x="403" y="183.5" width="184" height="122"/>
+    <rect x="403" y="388" width="143" height="113.5"/>
+    <rect x="737.5" y="315" width="161.5" height="122.5"/>
+    <line x1="552" y1="306" x2="649" y2="389"/>
+    <line x1="649" y1="376.5" x2="737.5" y2="376.5"/>
+    <line x1="546" y1="440.5" x2="649" y2="440.5"/>
+    <line x1="649" y1="389" x2="649" y2="440.5"/>
+    <line x1="649" y1="389" x2="649" y2="350"/>
+    <line x1="649" y1="389" x2="675" y2="361"/>
+    <line x1="649" y1="389" x2="675" y2="417"/>
+    <line x1="649" y1="389" x2="623" y2="416"/>
+  </g>
+  <circle cx="649" cy="389" r="12" fill="#171717"/>
+</svg>

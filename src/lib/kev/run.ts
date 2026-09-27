@@ -153,7 +153,7 @@ export function mergeKevWithDemo(reading: KevReading, demo: KevDecision): KevDec
 function declinedReply(reading: KevReading, demo: KevDecision): string {
   if (reading.intent === "noop") return "No diagram change.";
   if (reading.intent === "clarify") return demo.reply.trim() || "What should I change on the diagram?";
-  return "Kev decided not to modify the diagram yet. Name the shape and the change.";
+  return "Name the shape and the change.";
 }
 
 function result(

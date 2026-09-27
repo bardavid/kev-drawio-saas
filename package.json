@@ -1,8 +1,8 @@
 {
-  "name": "kev-drawio-saas",
+  "name": "draw.ai",
   "version": "0.1.0",
   "private": true,
-  "description": "Kev Diagram — natural-language edits for a live draw.io canvas, via typesafe System One decisions.",
+  "description": "draw.ai — chat and a live diagram.",
   "license": "MIT",
   "scripts": {
     "dev": "next dev",

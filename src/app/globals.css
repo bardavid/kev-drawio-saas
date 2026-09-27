@@ -95,6 +95,11 @@
     @apply font-sans;
     color-scheme: light;
   }
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
   ::selection {
     background: oklch(0.92 0 0);
   }

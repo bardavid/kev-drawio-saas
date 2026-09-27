@@ -2,7 +2,7 @@
  * Small starter architecture so the first open is never a blank page.
  * Uncompressed mxfile — draw.io accepts this directly via the load action.
  */
-export const STARTER_XML = `<mxfile host="embed.diagrams.net" agent="Kev Diagram" version="24.7.17" type="device">
+export const STARTER_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" version="24.7.17" type="device">
   <diagram id="architecture" name="Architecture">
     <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
       <root>

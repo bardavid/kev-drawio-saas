@@ -1,17 +1,16 @@
 "use client";
 
-import Link from "next/link";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { BrandMark } from "@/components/brand-mark";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { ChatPanel, type ChatItem } from "@/components/workspace/chat-panel";
-import { DiagramFrame, type DiagramFrameHandle } from "@/components/workspace/diagram-frame";
+import { ChatPanel, type ChatItem } from "@/components/editor/chat-panel";
+import { DiagramFrame, type DiagramFrameHandle } from "@/components/editor/diagram-frame";
+import { Button } from "@/components/ui/button";
 import { STARTER_XML } from "@/lib/drawio/starter";
 import { noteEditorXml, noteHostXml, previousForTurn, type DiagramSync } from "@/lib/drawio/sync";
 import type { DiagramSlots, Intent, KevMode, KevTurnResult } from "@/lib/kev/types";
+import { cn } from "@/lib/utils";
 
 interface ModeInfo {
   mode: KevMode;
@@ -19,11 +18,33 @@ interface ModeInfo {
   fallback?: boolean;
 }
 
+type Pane = "chat" | "diagram";
+
 function looksLikeDiagram(xml: string): boolean {
   return xml.includes("<mxfile") || xml.includes("<mxGraphModel");
 }
 
-export function Workspace() {
+function modeLabel(mode: ModeInfo | null): string {
+  if (!mode) return "";
+  if (mode.mode === "demo") return "Demo";
+  if (mode.mode === "kev") return mode.model || "Kev";
+  if (mode.fallback) return "Fallback";
+  return mode.model || "";
+}
+
+function useMdUp() {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 768px)");
+    const apply = () => setMatches(query.matches);
+    apply();
+    query.addEventListener("change", apply);
+    return () => query.removeEventListener("change", apply);
+  }, []);
+  return matches;
+}
+
+export function Editor() {
   const frameRef = useRef<DiagramFrameHandle>(null);
   const sendingRef = useRef(false);
   const applyingRef = useRef(false);
@@ -37,6 +58,9 @@ export function Workspace() {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [mode, setMode] = useState<ModeInfo | null>(null);
+  const [pane, setPane] = useState<Pane>("chat");
+  const mdUp = useMdUp();
+  const label = modeLabel(mode);
 
   function commitSync(next: DiagramSync) {
     syncRef.current = next;
@@ -63,10 +87,17 @@ export function Workspace() {
         if (body?.mode) setMode(body);
       })
       .catch(() => {
-        /* The badge falls back to a neutral label. Chat still posts. */
+        /* Chat still posts if the mode badge never arrives. */
       });
     return () => controller.abort();
   }, []);
+
+  function showPane(next: Pane) {
+    setPane(next);
+    if (next === "diagram") {
+      requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
+    }
+  }
 
   async function send(text: string) {
     if (sendingRef.current) return;
@@ -76,7 +107,7 @@ export function Workspace() {
     const userMessage: ChatItem = { id: crypto.randomUUID(), role: "user", content: text };
     const history = [...messages, userMessage];
     setMessages(history);
-    frameRef.current?.setSpinner("Kev is editing the diagram…");
+    frameRef.current?.setSpinner("Updating diagram…");
 
     let currentXml = syncRef.current.currentXml;
     try {
@@ -102,11 +133,11 @@ export function Workspace() {
       });
       const body = (await response.json().catch(() => null)) as (KevTurnResult & { error?: string }) | null;
       if (!response.ok || !body || body.error || !body.updatedXml) {
-        toast.error(body?.error || "Kev could not update the diagram. The previous drawing is unchanged.");
+        toast.error(body?.error || "Could not update the diagram.");
         return;
       }
       if (!looksLikeDiagram(body.updatedXml)) {
-        toast.error("Kev returned XML the editor cannot load. The previous drawing is unchanged.");
+        toast.error("Could not load that diagram.");
         return;
       }
       const assistant: ChatItem = {
@@ -127,14 +158,14 @@ export function Workspace() {
           const next = looksLikeDiagram(confirmed) ? confirmed : body.updatedXml;
           adoptHostXml(next);
         } catch {
-          toast.error("draw.io could not load that XML. The previous drawing is unchanged.");
+          toast.error("Could not load that diagram.");
           commitSync({ ...syncRef.current, currentXml });
         } finally {
           applyingRef.current = false;
         }
       }
     } catch {
-      toast.error("The request to Kev failed. The previous drawing is unchanged.");
+      toast.error("Could not update the diagram.");
     } finally {
       frameRef.current?.setSpinner(null);
       sendingRef.current = false;
@@ -148,75 +179,104 @@ export function Workspace() {
     try {
       const confirmed = (await frameRef.current?.applyAndConfirm(STARTER_XML)) ?? STARTER_XML;
       adoptHostXml(looksLikeDiagram(confirmed) ? confirmed : STARTER_XML);
-      toast.success("Diagram reset to the starter architecture.");
+      toast.success("Diagram reset.");
     } catch {
       adoptHostXml(STARTER_XML);
       frameRef.current?.load(STARTER_XML);
-      toast.error("draw.io could not reload the starter diagram.");
+      toast.error("Could not load that diagram.");
     } finally {
       applyingRef.current = false;
     }
   }
 
-  const modeLabel =
-    mode?.mode === "demo"
-      ? "Demo mode"
-      : mode?.mode === "kev"
-        ? `Kev · ${mode.model || "kev-latest"}`
-        : mode?.fallback
-          ? "Kev unreachable"
-          : mode?.model
-            ? mode.model
-            : "Kev";
-
   return (
-    <div className="flex h-dvh flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b px-3 sm:px-4">
+    <div className="flex h-dvh max-w-full flex-col overflow-hidden overscroll-none bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
+      <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 sm:px-4">
         <BrandMark />
-        <div className="flex items-center gap-2">
-          <span
-            className="hidden text-xs text-muted-foreground sm:inline"
-            title={
-              mode?.mode === "demo"
-                ? "Neither KEV_BASE_URL nor OPENAI_API_KEY is set. A few phrases edit the diagram locally."
-                : mode?.mode === "kev"
-                  ? "Kev classifies the intent at KEV_BASE_URL/v1/systemone. A language model writes the mxfile when OPENAI_API_KEY is set."
-                  : mode?.fallback
-                    ? "Kev could not be reached. The language model classified this turn."
-                    : "The language model classifies the intent and writes the mxfile."
-            }
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {label ? <span className="hidden max-w-36 truncate text-xs text-muted-foreground md:inline">{label}</span> : null}
+          <Button
+            type="button"
+            variant="outline"
+            className="h-11 gap-1.5 px-3 md:h-8"
+            onClick={() => void resetDiagram()}
+            disabled={pending}
+            aria-label="Reset diagram"
           >
-            {modeLabel}
-          </span>
-          <Button type="button" variant="outline" size="sm" onClick={() => void resetDiagram()} disabled={pending}>
             <RotateCcw />
-            <span className="hidden sm:inline">Reset diagram</span>
+            <span className="hidden sm:inline">Reset</span>
           </Button>
-          <Link href="/" className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}>
-            Home
-          </Link>
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-11 gap-1.5 px-3 md:h-8"
+            onClick={() => setMessages([])}
+            disabled={pending || messages.length === 0}
+            aria-label="Clear chat"
+          >
+            <Trash2 />
+            <span className="hidden sm:inline">Clear</span>
+          </Button>
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-        <section className="flex h-[46%] min-h-0 w-full shrink-0 flex-col border-b lg:h-full lg:w-[340px] lg:border-r lg:border-b-0">
-          <ChatPanel
-            messages={messages}
-            draft={draft}
-            pending={pending}
-            mode={mode?.mode ?? null}
-            model={mode?.model}
-            fallback={mode?.fallback}
-            onDraft={setDraft}
-            onSend={send}
-            onClear={() => setMessages([])}
-          />
+      <div className="flex h-11 shrink-0 border-b md:hidden" role="tablist" aria-label="Panels">
+        <button
+          type="button"
+          role="tab"
+          id="tab-chat"
+          aria-selected={pane === "chat"}
+          aria-controls="chat-panel"
+          className={cn(
+            "h-11 flex-1 touch-manipulation text-sm",
+            pane === "chat" ? "border-b border-foreground text-foreground" : "text-muted-foreground",
+          )}
+          onClick={() => showPane("chat")}
+        >
+          Chat
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-diagram"
+          aria-selected={pane === "diagram"}
+          aria-controls="diagram-panel"
+          className={cn(
+            "h-11 flex-1 touch-manipulation text-sm",
+            pane === "diagram" ? "border-b border-foreground text-foreground" : "text-muted-foreground",
+          )}
+          onClick={() => showPane("diagram")}
+        >
+          Diagram
+        </button>
+        {label ? (
+          <span className="flex max-w-24 items-center truncate px-3 text-xs text-muted-foreground">{label}</span>
+        ) : null}
+      </div>
+
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
+        <section
+          id="chat-panel"
+          role="tabpanel"
+          aria-labelledby="tab-chat"
+          aria-hidden={!mdUp && pane !== "chat"}
+          className={cn(
+            "min-h-0 min-w-0 flex-col md:h-full md:w-[min(42%,22rem)] md:shrink-0 md:grow-0 md:border-r",
+            pane === "chat" ? "flex flex-1 md:flex-none" : "hidden md:flex",
+          )}
+        >
+          <ChatPanel messages={messages} draft={draft} pending={pending} onDraft={setDraft} onSend={send} />
         </section>
-        <section className="flex min-h-0 w-full flex-1 flex-col lg:h-full">
-          <div className="flex h-8 shrink-0 items-center justify-between border-b px-3 text-xs text-muted-foreground">
-            <span>Diagram</span>
-            <span>Editable</span>
-          </div>
+        <section
+          id="diagram-panel"
+          role="tabpanel"
+          aria-labelledby="tab-diagram"
+          aria-hidden={!mdUp && pane !== "diagram"}
+          className={cn(
+            "absolute inset-0 z-0 flex min-h-0 min-w-0 flex-col md:static md:z-auto md:h-full md:min-w-0 md:flex-1",
+            pane === "diagram" ? "pointer-events-auto" : "invisible pointer-events-none md:visible md:pointer-events-auto",
+          )}
+        >
           <DiagramFrame
             ref={frameRef}
             xml={xml}
@@ -231,7 +291,7 @@ export function Workspace() {
             }}
             onError={(message) => {
               if (applyingRef.current) return;
-              toast.error(message || "draw.io could not load that XML. The previous drawing is unchanged.");
+              toast.error(message || "Could not load that diagram.");
               const previous = syncRef.current.baselineXml;
               commitSync(noteHostXml(syncRef.current, previous));
               frameRef.current?.load(previous);

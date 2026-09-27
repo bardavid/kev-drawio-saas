@@ -264,12 +264,7 @@ export const DiagramFrame = forwardRef<DiagramFrameHandle, DiagramFrameProps>(fu
       {!ready ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/95 px-6 text-center">
           <span className="size-1.5 animate-pulse rounded-full bg-foreground/40" />
-          <p className="text-sm text-foreground">Opening the diagram editor</p>
-          <p className="max-w-sm text-xs leading-5 text-muted-foreground">
-            {slow
-              ? "embed.diagrams.net is taking a while. The chat still works; the canvas will appear when the editor connects."
-              : "The canvas stays editable. Autosave keeps the chat on the latest mxfile."}
-          </p>
+          <p className="text-sm text-foreground">{slow ? "Still loading…" : "Loading diagram…"}</p>
         </div>
       ) : null}
     </div>

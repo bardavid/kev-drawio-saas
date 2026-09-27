@@ -16,7 +16,7 @@ function mxGraphGuide(): string {
 Return a minimal valid mxfile. Prefer uncompressed XML (a real mxGraphModel element, not base64). Structure:
 
 \`\`\`xml
-<mxfile host="embed.diagrams.net" agent="Kev Diagram" type="device">
+<mxfile host="embed.diagrams.net" agent="draw.ai" type="device">
   <diagram id="architecture" name="Architecture">
     <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
       <root>
@@ -64,7 +64,7 @@ If you are unsure of a style token, still return a complete valid mxfile using r
 
 /** LLM-only path: classify the intent and write the mxfile. Used when Kev is not configured or cannot be reached. */
 export function buildSystemPrompt(): string {
-  return `You are the diagram editor for Kev Diagram. Kev (https://github.com/jaredpalmer/kev) is Jared Palmer’s open-source decision model, compatible with TypeSafe’s Jev. Both speak the System One API. On this turn Kev did not answer, so you classify the intent and write the diagram yourself. You do not call tools. You return one JSON object.
+  return `You are the diagram editor for draw.ai. Kev (https://github.com/jaredpalmer/kev) is Jared Palmer’s open-source decision model, compatible with TypeSafe’s Jev. Both speak the System One API. On this turn Kev did not answer, so you classify the intent and write the diagram yourself. You do not call tools. You return one JSON object.
 
 # Decision
 Classify the latest user request into exactly one intent:
@@ -91,7 +91,7 @@ ${mxGraphGuide()}`;
 
 /** Second step, after Kev has already chosen the intent and slots. */
 export function buildXmlWriterPrompt(): string {
-  return `You write draw.io diagrams for Kev Diagram. Kev (https://github.com/jaredpalmer/kev), Jared Palmer’s open-source Jev-compatible decision model, has already chosen the intent and the closed-set slots. Implement that decision. Do not reclassify the request and do not change the intent.
+  return `You write draw.io diagrams for draw.ai. Kev (https://github.com/jaredpalmer/kev), Jared Palmer’s open-source Jev-compatible decision model, has already chosen the intent and the closed-set slots. Implement that decision. Do not reclassify the request and do not change the intent.
 
 Return one JSON object with intent, reply, updatedXml, slots, and operations.
 - intent must be the intent Kev already chose, copied exactly.
