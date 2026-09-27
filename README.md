@@ -4,7 +4,7 @@ draw.ai is chat beside a live [diagrams.net](https://www.diagrams.net/) editor. 
 
 The site opens into the tool at `/`. `/app` redirects there.
 
-**Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. One call cannot plan a multi-shape diagram, so a Kev turn loops: propose the next edit, ask Jev to fill closed-set slots and gate it, apply that edit to the mxfile, then re-summarize. With neither `KEV_BASE_URL` nor `OPENAI_API_KEY`, demo mode applies the same architecture plans locally.
+**Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. One call cannot plan a multi-shape diagram. A chain is applied edit by edit. A known diagram is a typed template: Jev confirms the node outline, then the edges, then the style, and the host writes the mxfile. With neither `KEV_BASE_URL` nor `OPENAI_API_KEY`, demo mode draws those same templates locally.
 
 The canvas opens on a blank page. A draw replaces that page instead of patching a leftover sample. Topics such as Redis are sketched from a short Wikipedia summary when the network is available, and from a built-in brief when it is not. No API key is sent for that lookup.
 
@@ -74,6 +74,9 @@ The real request also asks Choice questions for shape, color, layout, placement,
    - A draw/build/create request that names a chain, a tier count, or several nodes is planned locally into ordered edits (add the missing shapes, connect them, then color and reflow when those words are in the request). “3 tier” with only the endpoints named inserts an App tier between them.
    - Each edit is its own `POST /v1/systemone`. The state is the user message plus the diagram *after earlier edits this turn*. Questions are `next` (apply / clarify / noop), `confirm` (noul), and closed choices for shape, color, or layout. Explicit color and direction words in the user message win over a conflicting choice. Jev’s shape, color, and layout answers still fill those slots.
    - For an explicit architecture plan, the planner applies every concrete step. A mid-range confirm (live Jev returned 0.43 on “add App”) and a `next` choice other than apply, including noop, do not cancel the drawing. The loop re-summarizes after each edit and stops when the plan is done, the file stops changing, or six steps have run. Single-edit gates are unchanged: those still need `next: apply` and a confirm noul of at least 0.5.
+   - Typed templates cover the frequent asks: microservices, CQRS, event-driven (and Kafka), cache-aside, CDN, load balancer, checkout, OAuth, API call, approval / business process, ER / data model, AWS VPC (ALB → ECS → RDS), Kubernetes, state machine, DMZ / firewall, and system or API architecture, plus the existing login sequence, tax workflow, io_uring layers, and Redis cache. Each template is three System One calls — outline (`next` + `confirm`), structure (`next` + `confirm`), style (`next` + `confirm` + color). The host places every shape. A lukewarm confirm does not cancel the plan. A named color in the user message wins; otherwise the drawing stays the wireframe palette.
+   - An unknown “draw a … diagram usage/architecture” prompt is researched first (Wikipedia, then a built-in brief). The brief becomes a small layered diagram — cache, queue, or client/topic/store — and runs through the same three gates. Redis keeps its own template.
+   - If the rendered mxfile already matches the canvas, the turn is a noop. The reply does not claim an edit.
    - A single add, connect, rename, delete, reflow, or restyle that the first reading already describes is applied immediately (one call). If that reading is `noop` but the sentence is still a concrete edit, one gate call can still apply it.
 
    Named colors are resolved to palette `fillColor` and `strokeColor` before the response is returned. The optional `steps` array lists each gate. Jev is not asked to emit mxfile XML.
@@ -82,7 +85,7 @@ The real request also asks Choice questions for shape, color, layout, placement,
 
 4. **Language-model fallback.** If Kev is not configured, the model classifies the intent and writes the XML in one structured JSON response. If Kev is unreachable (network, timeout, or 401/403/404/408/429/5xx) and an OpenAI key is set, that path runs and the turn is marked `fallback: true`.
 
-5. **Demo**, when neither `KEV_BASE_URL` nor `OPENAI_API_KEY` is set. The same architecture planner runs locally, and a deterministic parser handles single edits (add, connect, restyle, rename, delete, reflow). No network call.
+5. **Demo**, when neither `KEV_BASE_URL` nor `OPENAI_API_KEY` is set. The same templates and architecture planner run locally, and a deterministic parser handles single edits (add, connect, restyle, rename, delete, reflow). No network call. Unknown topics are not invented offline.
 
 The server prefers a model’s `updatedXml` when it parses, keeps root cells `0` and `1`, and does not drop shapes the operations did not delete. Otherwise it applies the operations and sets `repaired: true`.
 

@@ -490,6 +490,8 @@ export function assessDiagram(xml: string, pad = NODE_GAP): QualityReport {
     for (const node of nodes) {
       if (node.id === edge.fromId || node.id === edge.toId) continue;
       if (node.role === "cluster" || node.role === "lifeline" || node.role === "anchor") continue;
+      // A UML lifeline is a thin line, not a solid box. Messages are meant to cross it.
+      if (/umlLifeline/.test(node.style)) continue;
       const blocked = path.some((start, index) => {
         const end = path[index + 1];
         return end ? segmentHitsBox(start, end, node) : false;

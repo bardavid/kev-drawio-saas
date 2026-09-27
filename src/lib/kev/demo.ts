@@ -2,7 +2,7 @@ import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/s
 import { BLANK_XML } from "@/lib/drawio/starter";
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations } from "@/lib/kev/mutate";
-import { compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
+import { compositionDecision, renderComposition, resolveComposition, sameMxfile } from "@/lib/kev/compose";
 import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
@@ -256,14 +256,26 @@ export function previewDemo(message: string, xml: string): { decision: KevDecisi
   const composed = resolveComposition(message);
   if (composed) {
     const rendered = renderComposition(composed);
+    if (sameMxfile(rendered, xml)) {
+      return {
+        decision: { intent: "noop", reply: "No diagram change.", slots: {}, operations: [], updatedXml: null },
+        xml,
+      };
+    }
     return { decision: compositionDecision(composed, rendered), xml: rendered };
   }
   const plan = resolvePlan(message);
   if (plan) {
     const operations = operationsForPlan(plan, BLANK_XML);
     if (operations.length > 0) {
-      const decision = architectureDecision(plan, operations);
-      return { decision, xml: applyOperations(BLANK_XML, operations) };
+      const rendered = applyOperations(BLANK_XML, operations);
+      if (sameMxfile(rendered, xml)) {
+        return {
+          decision: { intent: "noop", reply: "No diagram change.", slots: {}, operations: [], updatedXml: null },
+          xml,
+        };
+      }
+      return { decision: architectureDecision(plan, operations), xml: rendered };
     }
   }
   const result = decideDemo(message);

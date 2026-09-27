@@ -2,7 +2,16 @@ import { PALETTE, SHAPE_KINDS, isShapeKind } from "@/lib/drawio/styles";
 import { BLANK_XML } from "@/lib/drawio/starter";
 import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
-import { describeComposition, compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
+import {
+  colorInMessage,
+  describeComposition,
+  compositionDecision,
+  renderComposition,
+  resolveComposition,
+  sameMxfile,
+  type Composition,
+} from "@/lib/kev/compose";
+import { composeFromBrief } from "@/lib/kev/templates";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import {
@@ -179,7 +188,7 @@ export function buildOrchestratorStepRequest(input: {
  */
 export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevTurnResult | null> {
   if (isBareDraw(input.userMessage)) return bareDraw(input);
-  if (resolveComposition(input.userMessage)) return runComposition(input);
+  if (drawingFor(input)) return runComposition(input);
   if (isArchitectureRequest(input.userMessage)) return runArchitecture(input);
   if (input.reading.intent === "noop") {
     const demo = decideDemo(input.userMessage);
@@ -374,6 +383,8 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
   });
 }
 
+export type CompositionPhase = "outline" | "structure" | "style";
+
 export function buildCompositionRequest(input: {
   userMessage: string;
   summary: DiagramSummary;
@@ -383,6 +394,7 @@ export function buildCompositionRequest(input: {
   currentXml?: string;
   diagramDiff?: string;
   topicContext?: string | null;
+  phase?: CompositionPhase;
 }): SystemOneRequest {
   const base = diagramState(input.userMessage, input.summary, {
     diffText: input.diagramDiff,
@@ -394,46 +406,86 @@ export function buildCompositionRequest(input: {
     0,
     12_000,
   );
+  const phase = input.phase ?? "style";
   const colors: Record<string, string> = { none: "The user did not name a color" };
   for (const name of Object.keys(PALETTE)) {
     if (name === "grey") continue;
     colors[name] = `The user asked for ${name}`;
   }
+  const apply =
+    phase === "outline"
+      ? "Use the proposed nodes"
+      : phase === "structure"
+        ? "Use the proposed edges"
+        : "Draw the planned diagram";
+  const questions: Record<string, SystemOneQuestion> = {
+    next: {
+      type: "choice",
+      instructions:
+        phase === "outline"
+          ? "The host proposed the nodes for this diagram. What should happen next?"
+          : phase === "structure"
+            ? "The host proposed the edges for this diagram. What should happen next?"
+            : "The host will draw this planned diagram and lay it out. What should happen next?",
+      criteria: {
+        apply,
+        clarify: "Ask the user a clarifying question before drawing",
+        noop: "Do not change the diagram",
+      },
+    },
+    confirm: {
+      type: "noul",
+      instructions:
+        phase === "outline"
+          ? "Are these the right nodes for the diagram?"
+          : phase === "structure"
+            ? "Are these the right edges for the diagram?"
+            : "Should this planned diagram be written into the diagram XML now?",
+    },
+  };
+  if (phase === "style") {
+    questions.color = {
+      type: "choice",
+      instructions: "Which named color did the user ask for? Choose none when they did not name one.",
+      criteria: colors,
+    };
+  }
   return {
     state,
     model: input.model?.trim() || env("KEV_MODEL") || KEV_DEFAULT_MODEL,
-    questions: {
-      next: {
-        type: "choice",
-        instructions: "The host will draw this planned diagram and lay it out. What should happen next?",
-        criteria: {
-          apply: "Draw the planned diagram",
-          clarify: "Ask the user a clarifying question before drawing",
-          noop: "Do not change the diagram",
-        },
-      },
-      confirm: {
-        type: "noul",
-        instructions: "Should this planned diagram be written into the diagram XML now?",
-      },
-      color: {
-        type: "choice",
-        instructions: "Which named color did the user ask for? Choose none when they did not name one.",
-        criteria: colors,
-      },
-    },
+    questions,
   };
 }
 
+const COMPOSITION_PHASES: Array<{ phase: CompositionPhase; detail: string }> = [
+  { phase: "outline", detail: "Confirm the node outline" },
+  { phase: "structure", detail: "Confirm the edges" },
+  { phase: "style", detail: "Confirm the diagram style" },
+];
+
+function drawingFor(input: OrchestratorContext): Composition | null {
+  const composition =
+    resolveComposition(input.userMessage, { context: input.topicContext }) ??
+    composeFromBrief(input.userMessage, input.topicContext ?? "");
+  if (!composition || composition.colorName) return composition;
+  const named = colorInMessage(input.userMessage);
+  return named ? { ...composition, colorName: named } : composition;
+}
+
+function phasePlan(composition: Composition, phase: CompositionPhase): string {
+  const body = describeComposition(composition);
+  if (phase === "outline") return `Phase: outline\nConfirm these nodes before any edges are drawn.\n\n${body}`;
+  if (phase === "structure") return `Phase: structure\nConfirm these edges and the layout.\n\n${body}`;
+  return `Phase: style\nConfirm the drawing. Apply a named color only when the user asked for one.\n\n${body}`;
+}
+
 /**
- * Sequence, workflow, and layered drawings are planned as mini-steps, then
- * drawn in one deterministic pass. Jev fills the color slot and the confirm
- * noul. A lukewarm confirm does not cancel a concrete plan.
+ * Templates and researched topics are drawn by the host. Jev is asked three
+ * times: node outline, edges, then style. A lukewarm confirm does not cancel
+ * a concrete plan. The mxfile is left alone when the drawing is already there.
  */
 async function runComposition(input: OrchestratorContext): Promise<KevTurnResult> {
-  const composition = resolveComposition(input.userMessage, {
-    context: input.topicContext,
-  });
+  const composition = drawingFor(input);
   if (!composition) {
     return turn(input, {
       reply: CLARIFY_NODES,
@@ -445,41 +497,58 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
     });
   }
 
-  const plan = describeComposition(composition);
-  const payload = await callSystemOne(
-    buildCompositionRequest({
-      userMessage: input.userMessage,
-      summary: safeSummary(input.currentXml),
-      plan,
-      model: input.model,
-      previousXml: input.previousXml,
-      currentXml: input.currentXml,
-      diagramDiff: input.diagramDiff,
-    }),
-    ORCHESTRATOR_TIMEOUT_MS,
-  );
-  const answers = systemOneAnswers(payload);
-  if (!answers) throw new KevUnreachableError("Kev returned an unreadable System One response.");
-  const next = readChoiceAnswer(answers.next);
-  const confirm = readNoulAnswer(answers.confirm);
-  const choice = next?.choice.toLowerCase() ?? null;
   const xml = renderComposition(composition);
+  if (sameMxfile(xml, input.originalXml) || sameMxfile(xml, input.currentXml)) {
+    return turn(input, {
+      reply: "No diagram change.",
+      updatedXml: input.originalXml,
+      intent: "noop",
+      slots: withPalette(input.reading.slots),
+      steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
+
+  const steps: KevStep[] = [];
+  let confidence = input.reading.confidence;
+  for (const step of COMPOSITION_PHASES) {
+    const payload = await callSystemOne(
+      buildCompositionRequest({
+        userMessage: input.userMessage,
+        summary: safeSummary(input.currentXml),
+        plan: phasePlan(composition, step.phase),
+        phase: step.phase,
+        model: input.model,
+        previousXml: input.previousXml,
+        currentXml: input.currentXml,
+        diagramDiff: input.diagramDiff,
+        topicContext: input.topicContext,
+      }),
+      ORCHESTRATOR_TIMEOUT_MS,
+    );
+    const answers = systemOneAnswers(payload);
+    if (!answers) throw new KevUnreachableError("Kev returned an unreadable System One response.");
+    const next = readChoiceAnswer(answers.next);
+    const confirm = readNoulAnswer(answers.confirm);
+    const choice = next?.choice.toLowerCase() ?? null;
+    if (typeof next?.confidence === "number") confidence = next.confidence;
+    steps.push({
+      detail: step.detail,
+      intent: "add_shape",
+      accepted: acceptArchitectureStep(choice, confirm),
+      confirm,
+      choice,
+    });
+  }
+
   const decision = compositionDecision(composition, xml);
   return turn(input, {
     reply: decision.reply,
     updatedXml: xml,
     intent: decision.intent,
     slots: decision.slots,
-    steps: [
-      {
-        detail: plan,
-        intent: "add_shape",
-        accepted: acceptArchitectureStep(choice, confirm),
-        confirm,
-        choice,
-      },
-    ],
-    confidence: next?.confidence ?? input.reading.confidence,
+    steps,
+    confidence,
   });
 }
 
