@@ -155,8 +155,12 @@ function isApproval(text: string): boolean {
   return /\b(approval|approve|expense|purchase request|business process)\b/i.test(text);
 }
 
-function isStateMachine(text: string): boolean {
+export function isStateMachineRequest(text: string): boolean {
   return /\b(state machine|state diagram|lifecycle|uml state)\b/i.test(text);
+}
+
+function isStateMachine(text: string): boolean {
+  return isStateMachineRequest(text);
 }
 
 function isEr(text: string): boolean {
@@ -440,6 +444,18 @@ function stateMachine(text: string): TemplateMatch {
       },
     };
   }
+  // Login and orders are presets. A bare or document lifecycle stays Draft/Review/Published.
+  // Any other topic is composed from named states or the subject, not forced onto documents.
+  const named = statesNamedIn(text);
+  if (named.length >= 2) return chainStates(stateMachineSubject(text), named);
+  const subject = stateMachineSubject(text);
+  if (isDocumentSubject(subject)) return documentLifecycle();
+  if (isStarterFeeding(subject)) return starterFeeding(subject);
+  if (/\b(feed|feeding)\b/i.test(subject)) return genericFeeding(subject);
+  return chainStates(subject, stagesFromSubject(subject));
+}
+
+function documentLifecycle(): TemplateMatch {
   return {
     context: "A document waits in draft, is reviewed, and is either published or rejected.",
     spec: {
@@ -459,6 +475,202 @@ function stateMachine(text: string): TemplateMatch {
       ],
     },
   };
+}
+
+const STATE_NOISE =
+  /^(?:please|draw|sketch|show|illustrate|map|me|a|an|the|as|of|for|and|with|into|on|to|from|state|states|stage|stages|machine|diagram|lifecycle|uml|schedule|process)$/i;
+
+const STAGE_STOP = new Set([
+  "a",
+  "an",
+  "the",
+  "as",
+  "of",
+  "for",
+  "and",
+  "with",
+  "into",
+  "on",
+  "to",
+  "from",
+  "schedule",
+  "process",
+  "flow",
+  "diagram",
+  "using",
+  "via",
+]);
+
+function stateMachineSubject(text: string): string {
+  return text
+    .replace(/^(?:please\s+)?(?:draw|sketch|diagram|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "")
+    .replace(/\b(?:as|into|like)\s+(?:a|an|the)\s+(?:state\s+machine|state\s+diagram|uml\s+state|lifecycle)\b/gi, " ")
+    .replace(/\b(?:state\s+machine|state\s+diagram|uml\s+state|lifecycle|diagram)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isDocumentSubject(subject: string): boolean {
+  if (!subject) return true;
+  const words = subject
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => word.replace(/[^a-z]/g, ""))
+    .filter(Boolean);
+  if (words.length === 0) return true;
+  return words.every((word) => /^(document|documents|doc|docs|draft|drafts|article|articles|page|pages)$/.test(word));
+}
+
+function isStarterFeeding(subject: string): boolean {
+  if (/\b(sourdough|levain)\b/i.test(subject)) return true;
+  return /\bstarter\b/i.test(subject) && /\b(feed|feeding)\b/i.test(subject);
+}
+
+function starterFeeding(subject: string): TemplateMatch {
+  return chainStates(
+    subject,
+    ["Hungry", "Discard", "Feed", "Ferment", "Peak"],
+    ["Refresh", "Flour and water", "Rest", "Doubled"],
+    "A sourdough starter feeding cycle: a hungry starter is refreshed by discarding some, feeding flour and water, fermenting until it peaks, then feeding again.",
+  );
+}
+
+function genericFeeding(subject: string): TemplateMatch {
+  return chainStates(
+    subject,
+    ["Due", "Prepare", "Feed", "Rest"],
+    ["Time", "Portion", "Offer"],
+    "A feeding schedule moves from due, through preparing and feeding, to rest before the next feeding.",
+  );
+}
+
+function statesNamedIn(text: string): string[] {
+  const arrows = text.split(/\s*(?:→|->|=>|—>|-->|–>)\s*/);
+  if (arrows.length >= 2) {
+    const labels = uniqueStateLabels(arrows.map(cleanStateFragment).filter(Boolean));
+    if (labels.length >= 2) return labels;
+  }
+  const listed = text.match(/\b(?:states|stages)\b\s*[:\-]?\s+(.+)$/i);
+  if (listed?.[1]) {
+    const labels = uniqueStateLabels(splitStateList(listed[1]));
+    if (labels.length >= 2) return labels;
+  }
+  const colon = text.match(/:\s*(.+)$/);
+  if (colon?.[1] && /,|\band\b/i.test(colon[1])) {
+    const labels = uniqueStateLabels(splitStateList(colon[1]));
+    if (labels.length >= 2) return labels;
+  }
+  const fromTo = text.match(/\bfrom\s+(.+)$/i);
+  if (fromTo?.[1] && /\bto\b/i.test(fromTo[1])) {
+    const labels = uniqueStateLabels(fromTo[1].split(/\s+\bto\b\s+/i).map(cleanStateFragment).filter(Boolean));
+    if (labels.length >= 2) return labels;
+  }
+  return [];
+}
+
+function splitStateList(text: string): string[] {
+  return text
+    .split(/\s*,\s*|\s+\band\b\s+|\s*(?:→|->|=>)\s*/i)
+    .map(cleanStateFragment)
+    .filter(Boolean);
+}
+
+function cleanStateFragment(fragment: string): string {
+  const words = fragment
+    .replace(/[?:.!]+/g, " ")
+    .split(/\s+/)
+    .map((word) => word.replace(/[^a-z0-9'+-]/gi, ""))
+    .filter((word) => word && !STATE_NOISE.test(word));
+  if (words.length === 0 || words.length > 4) return "";
+  return words.map(titleWord).join(" ");
+}
+
+function stagesFromSubject(subject: string): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of subject.split(/\s+/)) {
+    const word = raw.replace(/[^a-z0-9']/gi, "");
+    if (word.length < 2 || STAGE_STOP.has(word.toLowerCase())) continue;
+    const label = titleWord(word);
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+    if (labels.length === 5) break;
+  }
+  if (labels.length >= 2) return labels;
+  const topic = labels[0] ?? "Item";
+  return ["Start", topic, "Done"];
+}
+
+function chainStates(subject: string, labels: string[], edgeLabels?: string[], context?: string): TemplateMatch {
+  const states = uniqueStateLabels(labels).slice(0, 6);
+  const title = titleFor(subject, states);
+  const ids: string[] = [];
+  const used = new Set<string>();
+  for (const label of states) ids.push(stateId(label, used));
+  const chain = states.join(" → ");
+  return {
+    context: context ?? `${title} moves through ${chain}.`,
+    spec: {
+      kind: "workflow",
+      title,
+      reply: `Drew a state machine for ${title}: ${chain}.`,
+      nodes: states.map((label, index) => ({
+        id: ids[index]!,
+        label,
+        shape: "rectangle" as const,
+        column: index,
+        row: 0,
+      })),
+      edges: ids.slice(1).map((to, index) => ({
+        from: ids[index]!,
+        to,
+        label: edgeLabels?.[index] ?? "Next",
+      })),
+    },
+  };
+}
+
+function titleFor(subject: string, labels: string[]): string {
+  const skip = new Set(labels.map((label) => label.toLowerCase()));
+  const words = subject
+    .replace(/[→:>\-]+/g, " ")
+    .split(/\s+/)
+    .map((word) => word.replace(/[^a-z0-9']/gi, ""))
+    .filter((word) => word && !skip.has(word.toLowerCase()) && !/^(a|an|the|as|of|for|and|with|into|on|to|from)$/i.test(word));
+  const title = words.map(titleWord).join(" ").trim();
+  if (title.length < 3) return "State machine";
+  return title.length > 48 ? `${title.slice(0, 47).trim()}…` : title;
+}
+
+function uniqueStateLabels(labels: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const label of labels) {
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(label);
+  }
+  return unique;
+}
+
+function stateId(label: string, used: Set<string>): string {
+  const base = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "state";
+  let id = base;
+  let n = 2;
+  while (used.has(id)) {
+    id = `${base}-${n}`;
+    n += 1;
+  }
+  used.add(id);
+  return id;
+}
+
+function titleWord(word: string): string {
+  if (word.length > 1 && word === word.toUpperCase() && /[A-Z]/.test(word)) return word;
+  return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
 }
 
 function erDiagram(text: string): TemplateMatch {
@@ -834,22 +1046,25 @@ function richWebTiers(): TemplateMatch {
 
 function kubernetes(): TemplateMatch {
   return {
-    context: "Ingress enters the cluster, a Service spreads traffic across pods, and a volume holds state.",
+    context:
+      "Ingress enters the cluster, a Service selects the pods, and a Deployment keeps those pods running. A volume holds state.",
     spec: layers(
       "Kubernetes",
-      "Drew a Kubernetes deploy: User → Ingress → Service → pods, with a volume.",
+      "Drew a Kubernetes deploy: User → Ingress → Service → Deployment → pods, with a volume.",
       [
         col("clients", "Clients", [node("user", "User", "rectangle")]),
         col("edge", "Edge", [node("ingress", "Ingress", "hexagon")]),
         col("svc", "Service", [node("service", "Service", "rectangle")]),
+        col("deploy", "Deployment", [node("deployment", "Deployment", "rectangle")]),
         row("pods", "Pods", [node("podA", "Pod A", "rectangle"), node("podB", "Pod B", "rectangle")]),
         col("storage", "Storage", [node("volume", "Volume", "cylinder")]),
       ],
       [
         edge("user", "ingress", "HTTPS"),
         edge("ingress", "service", "Route"),
-        edge("service", "podA", "Forward"),
-        edge("service", "podB", "Forward"),
+        edge("service", "deployment", "Forward"),
+        edge("deployment", "podA", "Run"),
+        edge("deployment", "podB", "Run"),
         edge("podA", "volume", "Mount"),
         edge("podB", "volume", "Mount"),
       ],

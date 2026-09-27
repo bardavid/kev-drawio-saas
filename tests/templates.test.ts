@@ -273,12 +273,13 @@ const FIXTURES: Fixture[] = [
   },
   {
     prompt: "draw a kubernetes deployment",
-    labels: ["User", "Ingress", "Service", "Pod A", "Pod B", "Volume"],
+    labels: ["User", "Ingress", "Service", "Deployment", "Pod A", "Pod B", "Volume"],
     edges: [
       ["User", "Ingress", "HTTPS"],
       ["Ingress", "Service", "Route"],
-      ["Service", "Pod A", "Forward"],
-      ["Service", "Pod B", "Forward"],
+      ["Service", "Deployment", "Forward"],
+      ["Deployment", "Pod A", "Run"],
+      ["Deployment", "Pod B", "Run"],
       ["Pod A", "Volume", "Mount"],
       ["Pod B", "Volume", "Mount"],
     ],
@@ -286,10 +287,11 @@ const FIXTURES: Fixture[] = [
     above: [
       ["User", "Ingress"],
       ["Ingress", "Service"],
-      ["Service", "Pod A"],
+      ["Service", "Deployment"],
+      ["Deployment", "Pod A"],
       ["Pod A", "Volume"],
     ],
-    clusters: ["Clients", "Edge", "Service", "Pods", "Storage"],
+    clusters: ["Clients", "Edge", "Service", "Deployment", "Pods", "Storage"],
   },
   {
     prompt: "draw an order state machine",
@@ -573,6 +575,16 @@ describe("popular diagram templates", () => {
     assert.ok(clusters.every((node) => node.style.includes("fillColor=#f1f5f9")));
   });
 
+  it("includes Deployment when a Kubernetes prompt names Ingress, Service, Deployment, and Pods", () => {
+    const report = assertClean(
+      previewDemo(
+        "draw a Kubernetes deployment with Ingress, Service, Deployment, and Pods",
+        STARTER_XML,
+      ).xml,
+    );
+    for (const label of ["Ingress", "Service", "Deployment", "Pod A", "Pod B"]) box(report, label);
+  });
+
   it("draws Kafka, a blog model, a business process, and a document lifecycle", () => {
     const kafka = assertClean(previewDemo("draw a kafka architecture", STARTER_XML).xml);
     assert.ok(content(kafka.nodes).some((node) => node.label === "Kafka"));
@@ -591,6 +603,42 @@ describe("popular diagram templates", () => {
     linked(states, "Draft", "Review", "Submit");
     linked(states, "Review", "Published", "Approve");
     linked(states, "Review", "Rejected", "Reject");
+  });
+
+  it("draws a sourdough feeding schedule as states, not a document lifecycle", () => {
+    const drawn = previewDemo("draw a sourdough starter feeding schedule as a state machine", STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /Client → App → Postgres/);
+    assert.doesNotMatch(drawn.decision.reply, /Draft/);
+    const report = assertClean(drawn.xml);
+    assert.deepEqual(content(report.nodes).map((node) => node.label), [
+      "Hungry",
+      "Discard",
+      "Feed",
+      "Ferment",
+      "Peak",
+    ]);
+    linked(report, "Hungry", "Discard", "Refresh");
+    linked(report, "Feed", "Ferment", "Rest");
+    linked(report, "Ferment", "Peak", "Doubled");
+  });
+
+  it("uses states named in the request instead of a document lifecycle", () => {
+    const report = assertClean(previewDemo("draw a state machine: Mix → Bulk → Proof → Bake", STARTER_XML).xml);
+    assert.deepEqual(
+      content(report.nodes).map((node) => node.label),
+      ["Mix", "Bulk", "Proof", "Bake"],
+    );
+    linked(report, "Mix", "Bulk", "Next");
+    linked(report, "Proof", "Bake", "Next");
+  });
+
+  it("does not force an unrelated lifecycle onto documents", () => {
+    const report = assertClean(previewDemo("draw a subscription lifecycle", STARTER_XML).xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.ok(labels.some((label) => /subscription/i.test(label)));
+    assert.equal(labels.includes("Draft"), false);
+    assert.equal(labels.includes("Published"), false);
   });
 
   it("keeps a bare Pub/Sub ask on the event-driven template", () => {
