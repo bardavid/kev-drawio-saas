@@ -37,11 +37,18 @@ export async function POST(request: Request) {
   }
 }
 
-function parseBody(
+function firstDiagramXml(record: { currentXml?: unknown; diagramXml?: unknown; xml?: unknown }): string | null {
+  for (const value of [record.currentXml, record.diagramXml, record.xml]) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+export function parseBody(
   body: unknown,
 ): { ok: true; value: { messages: ChatMessage[]; currentXml: string; previousXml?: string } } | { ok: false; error: string } {
   if (!body || typeof body !== "object") return { ok: false, error: "Request body must be an object." };
-  const record = body as { messages?: unknown; currentXml?: unknown; previousXml?: unknown };
+  const record = body as { messages?: unknown; currentXml?: unknown; diagramXml?: unknown; xml?: unknown; previousXml?: unknown };
   if (!Array.isArray(record.messages) || record.messages.length === 0) {
     return { ok: false, error: "messages must be a non-empty array." };
   }
@@ -66,8 +73,7 @@ function parseBody(
   if (!messages.some((message) => message.role === "user")) {
     return { ok: false, error: "Include at least one user message." };
   }
-  const currentXml =
-    typeof record.currentXml === "string" && record.currentXml.trim() ? record.currentXml : STARTER_XML;
+  const currentXml = firstDiagramXml(record) ?? STARTER_XML;
   if (currentXml.length > MAX_XML) return { ok: false, error: "The diagram XML is too large." };
   let previousXml: string | undefined;
   if (record.previousXml !== undefined && record.previousXml !== null) {

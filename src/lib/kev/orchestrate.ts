@@ -1,4 +1,5 @@
 import { PALETTE, SHAPE_KINDS, isShapeKind } from "@/lib/drawio/styles";
+import { BLANK_XML } from "@/lib/drawio/starter";
 import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
 import { describeComposition, compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
@@ -265,7 +266,8 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
     });
   }
 
-  let working = input.currentXml;
+  // The plan names the whole graph. Patching the open file kept the starter API tier and HTTPS/SQL edges.
+  let working = BLANK_XML;
   const applied: DiagramOperation[] = [];
   const appliedDetails: string[] = [];
   const steps: KevStep[] = [];

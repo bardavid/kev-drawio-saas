@@ -27,3 +27,15 @@ export const STARTER_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" ve
     </mxGraphModel>
   </diagram>
 </mxfile>`;
+
+/** Empty page used when a draw replaces the canvas instead of patching the starter. */
+export const BLANK_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" type="device">
+  <diagram id="diagram" name="Diagram">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>`;

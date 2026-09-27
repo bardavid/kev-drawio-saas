@@ -1,4 +1,5 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
+import { BLANK_XML } from "@/lib/drawio/starter";
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations } from "@/lib/kev/mutate";
 import { compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
@@ -259,10 +260,10 @@ export function previewDemo(message: string, xml: string): { decision: KevDecisi
   }
   const plan = resolvePlan(message);
   if (plan) {
-    const operations = operationsForPlan(plan, xml);
+    const operations = operationsForPlan(plan, BLANK_XML);
     if (operations.length > 0) {
       const decision = architectureDecision(plan, operations);
-      return { decision, xml: applyOperations(xml, operations) };
+      return { decision, xml: applyOperations(BLANK_XML, operations) };
     }
   }
   const result = decideDemo(message);
