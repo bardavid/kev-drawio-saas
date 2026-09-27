@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { assessDiagram, type QualityNode, type QualityReport } from "../src/lib/drawio/layout";
 import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
+import { describeComposition, renderComposition, resolveComposition } from "../src/lib/kev/compose";
 import { previewDemo } from "../src/lib/kev/demo";
-import { renderComposition } from "../src/lib/kev/compose";
-import { composeFromBrief } from "../src/lib/kev/templates";
+import { composeFromBrief, matchTemplate } from "../src/lib/kev/templates";
 
 function content(nodes: QualityNode[]): QualityNode[] {
   return nodes.filter((node) => node.role !== "lifeline" && node.role !== "cluster" && node.role !== "anchor");
@@ -242,6 +242,21 @@ const FIXTURES: Fixture[] = [
     above: [["Order", "Payment"]],
   },
   {
+    prompt: "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB",
+    labels: ["Client", "API Gateway", "Lambda", "DynamoDB"],
+    edges: [
+      ["Client", "API Gateway", "HTTPS"],
+      ["API Gateway", "Lambda", "Invoke"],
+      ["Lambda", "DynamoDB", "Read / write"],
+    ],
+    above: [
+      ["Client", "API Gateway"],
+      ["API Gateway", "Lambda"],
+      ["Lambda", "DynamoDB"],
+    ],
+    clusters: ["Clients", "Edge", "Compute", "Data"],
+  },
+  {
     prompt: "draw an AWS VPC architecture with an ALB, ECS, and RDS",
     labels: ["Internet", "ALB", "ECS", "RDS"],
     edges: [
@@ -454,6 +469,69 @@ describe("popular diagram templates", () => {
       }
     });
   }
+
+  it("routes AWS serverless asks to API Gateway, Lambda, and DynamoDB before the VPC sketch", () => {
+    const prompt = "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB";
+    const matched = matchTemplate(prompt);
+    assert.equal(matched?.spec.title, "AWS serverless");
+    const composition = resolveComposition(prompt);
+    assert.ok(composition);
+    const outline = describeComposition(composition);
+    assert.match(outline, /API Gateway/);
+    assert.match(outline, /Lambda/);
+    assert.match(outline, /DynamoDB/);
+    assert.doesNotMatch(outline, /\bALB\b/);
+    assert.doesNotMatch(outline, /\bECS\b/);
+    assert.doesNotMatch(outline, /\bRDS\b/);
+
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.match(drawn.xml, /<mxfile[\s>]/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["API Gateway", "Lambda", "DynamoDB"]) assert.ok(labels.includes(label), label);
+    for (const stolen of ["ALB", "ECS", "RDS", "Application Load Balancer"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+
+    for (const variant of [
+      "draw a serverless architecture",
+      "draw an API with API Gateway and Lambda",
+      "draw an AWS architecture that uses DynamoDB",
+      "sketch Amazon API Gateway calling Lambda",
+    ]) {
+      assert.equal(matchTemplate(variant)?.spec.title, "AWS serverless", variant);
+      const variantLabels = content(assertClean(previewDemo(variant, STARTER_XML).xml).nodes).map((node) => node.label);
+      assert.ok(variantLabels.includes("API Gateway"), variant);
+      assert.ok(variantLabels.includes("Lambda"), variant);
+      assert.ok(variantLabels.includes("DynamoDB"), variant);
+      assert.equal(variantLabels.includes("ALB"), false, variant);
+    }
+
+    assert.equal(
+      matchTemplate("draw an AWS VPC architecture with an ALB, ECS, and RDS")?.spec.title,
+      "AWS VPC",
+    );
+    assert.equal(matchTemplate("draw a cloud architecture")?.spec.title, "AWS VPC");
+    assert.equal(matchTemplate("draw a kubernetes deployment")?.spec.title, "Kubernetes");
+    assert.equal(matchTemplate("draw a kubernetes serverless deployment")?.spec.title, "Kubernetes");
+    assert.equal(matchTemplate("draw a GCP architecture")?.spec.title, "GCP");
+    assert.equal(matchTemplate("draw a GCP serverless architecture with Cloud Functions")?.spec.title, "GCP");
+    assert.equal(matchTemplate("draw a Serverless VPC Access connector")?.spec.title, "GCP");
+    assert.equal(matchTemplate("draw Cloud Functions")?.spec.title, "GCP");
+    const gcp = content(
+      assertClean(
+        previewDemo(
+          "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
+          STARTER_XML,
+        ).xml,
+      ).nodes,
+    ).map((node) => node.label);
+    assert.ok(gcp.includes("Cloud Run"));
+    assert.equal(gcp.includes("Lambda"), false);
+    assert.equal(gcp.includes("DynamoDB"), false);
+  });
 
   it("keeps a 3-tier web app on the chain planner", () => {
     const report = assertClean(previewDemo("draw a 3 tier system architecture", STARTER_XML).xml);

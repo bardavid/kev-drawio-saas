@@ -42,6 +42,8 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isGcp(text)) return gcpArchitecture(text);
   if (isEventDriven(text)) return eventDriven(text);
   if (isMicroservices(text)) return microservices();
+  // API Gateway, Lambda, and DynamoDB are not an ALB / ECS / RDS VPC.
+  if (isAwsServerless(text)) return awsServerless();
   if (isCloud(text)) return cloudVpc(text);
   if (isKubernetes(text)) return kubernetes();
   if (isDmz(text)) return dmz();
@@ -183,6 +185,30 @@ function isCloud(text: string): boolean {
     /\bcloud architecture\b/i.test(text) ||
     (/\balb\b/i.test(text) && /\b(ecs|rds|fargate)\b/i.test(text))
   );
+}
+
+function mentionsApiGateway(text: string): boolean {
+  return /\bapi[\s-]?gateway\b/i.test(text);
+}
+
+function mentionsLambda(text: string): boolean {
+  return /\blambda\b/i.test(text);
+}
+
+function mentionsDynamoDb(text: string): boolean {
+  return /\bdynamodb\b|\bdynamo\s+db\b/i.test(text);
+}
+
+/**
+ * AWS serverless asks name the service, the API Gateway + Lambda pair, or DynamoDB.
+ * Checked before the generic VPC sketch. GCP (including Serverless VPC Access and
+ * Cloud Functions) and Kubernetes keep their own templates.
+ */
+function isAwsServerless(text: string): boolean {
+  if (isGcp(text) || isKubernetes(text)) return false;
+  if (/\bserverless\b/i.test(text)) return true;
+  if (mentionsApiGateway(text) && mentionsLambda(text)) return true;
+  return mentionsDynamoDb(text) && /\b(aws|amazon(?:\s+web\s+services)?|serverless)\b/i.test(text);
 }
 
 function isKubernetes(text: string): boolean {
@@ -694,6 +720,28 @@ function microservices(): TemplateMatch {
         edge("orders", "ordersDb", "SQL"),
         edge("catalog", "catalogDb", "SQL"),
         edge("payments", "paymentsDb", "SQL"),
+      ],
+    ),
+  };
+}
+
+function awsServerless(): TemplateMatch {
+  return {
+    context:
+      "AWS serverless: API Gateway accepts HTTPS, invokes Lambda, and Lambda reads and writes DynamoDB. There is no load balancer, container service, or relational database.",
+    spec: layers(
+      "AWS serverless",
+      "Drew an AWS serverless architecture: Client → API Gateway → Lambda → DynamoDB.",
+      [
+        col("clients", "Clients", [node("client", "Client", "rectangle")]),
+        col("edge", "Edge", [node("gateway", "API Gateway", "hexagon")]),
+        col("compute", "Compute", [node("lambda", "Lambda", "rectangle")]),
+        col("data", "Data", [node("dynamo", "DynamoDB", "cylinder")]),
+      ],
+      [
+        edge("client", "gateway", "HTTPS"),
+        edge("gateway", "lambda", "Invoke"),
+        edge("lambda", "dynamo", "Read / write"),
       ],
     ),
   };

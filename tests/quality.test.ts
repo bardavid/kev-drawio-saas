@@ -933,6 +933,7 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw an API call sequence diagram",
       "draw an approval workflow",
       "draw an e-commerce data model",
+      "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB",
       "draw an AWS VPC architecture with an ALB, ECS, and RDS",
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
       "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.",
@@ -951,5 +952,21 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       assert.deepEqual(geometrySignature(result.updatedXml), geometrySignature(expected), prompt);
       assertClean(result.updatedXml);
     }
+  });
+
+  it("draws the AWS serverless prompt as API Gateway, Lambda, and DynamoDB", async () => {
+    installKev();
+    const prompt = "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB";
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: prompt }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(result.intent, "add_shape");
+    assert.equal(result.reply.includes("Which nodes should I draw"), false);
+    assert.match(result.updatedXml, /<mxfile[\s>]/);
+    const labels = assessDiagram(result.updatedXml).nodes.map((node) => node.label);
+    for (const label of ["API Gateway", "Lambda", "DynamoDB"]) assert.ok(labels.includes(label), label);
+    for (const stolen of ["ALB", "ECS", "RDS"]) assert.equal(labels.includes(stolen), false, stolen);
+    assertClean(result.updatedXml);
   });
 });
