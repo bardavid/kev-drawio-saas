@@ -521,36 +521,54 @@ describe("configured pipeline", { concurrency: 1 }, () => {
     }
   });
 
-  it("asks for nodes when Jev refuses the architecture plan", async () => {
+  it("draws the 3-tier plan when Jev returns confirm 0.43 and next is not apply", async () => {
     blankEnv();
     process.env.KEV_BASE_URL = "http://kev.local";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string }> };
       if (body.questions.intent) {
         return jsonResponse({
+          model: "kev-latest",
           answers: {
             intent: { type: "choice", choice: "style", confidence: 0.4 },
             needs_xml_edit: { type: "noul", noul: 0.8 },
             color: { type: "choice", choice: "orange" },
+            layout: { type: "choice", choice: "horizontal" },
           },
         });
       }
       return jsonResponse({
+        model: "kev-latest",
         answers: {
-          next: { type: "choice", choice: "noop", confidence: 0.6 },
-          confirm: { type: "noul", noul: 0.1 },
+          next: { type: "choice", choice: "noop", confidence: 0.55 },
+          confirm: { type: "noul", noul: 0.43 },
+          shape: { type: "choice", choice: "none" },
+          color: { type: "choice", choice: "none" },
+          layout: { type: "choice", choice: "none" },
         },
       });
     }) as typeof fetch;
 
     const result = await runKevTurn({
-      messages: [{ role: "user", content: "draw a Complex 3 Tier Web App: Client → Postgres, orange, horizontal" }],
+      messages: [
+        { role: "user", content: "draw a Complex 3 Tier Web App: Client → Postgres, orange, horizontal" },
+      ],
       currentXml: STARTER_XML,
     });
-    assert.equal(result.intent, "clarify");
-    assert.equal(result.updatedXml, STARTER_XML);
-    assert.match(result.reply, /Which nodes/);
-    assert.equal(result.steps?.[0]?.accepted, false);
+    assert.equal(result.intent, "add_shape");
+    assert.equal(result.reply.includes("Which nodes"), false);
+    assert.match(result.reply, /Client → App → Postgres/);
+    assert.equal(result.steps?.[0]?.accepted, true);
+    assert.equal(result.steps?.[0]?.confirm, 0.43);
+    assert.equal(result.steps?.[0]?.choice, "noop");
+    assert.equal(result.steps?.every((step) => step.accepted && step.confirm === 0.43 && step.choice === "noop"), true);
+    const summary = summarizeDiagram(result.updatedXml);
+    assert.ok(summary.vertices.some((vertex) => vertex.label === "App"));
+    assert.ok(summary.edges.some((edge) => edge.from === "Client" && edge.to === "App"));
+    assert.ok(summary.edges.some((edge) => edge.from === "App" && edge.to === "Postgres"));
+    assert.ok(summary.vertices.every((vertex) => vertex.style.includes("fillColor=#ffe6cc")));
+    assert.equal(new Set(summary.vertices.map((vertex) => vertex.y)).size, 1);
+    assert.notEqual(result.updatedXml, STARTER_XML);
   });
 
   it("gates a concrete edit that the first reading called noop", async () => {

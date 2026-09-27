@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { STARTER_XML } from "../src/lib/drawio/starter";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 import { previewDemo } from "../src/lib/kev/demo";
-import { buildOrchestratorStepRequest, buildSpecificityRequest } from "../src/lib/kev/orchestrate";
+import { acceptArchitectureStep, buildOrchestratorStepRequest, buildSpecificityRequest } from "../src/lib/kev/orchestrate";
 import { isArchitectureRequest, isBareDraw, parseArchitecture, planOperations } from "../src/lib/kev/plan";
 
 const PROMPTS = [
@@ -112,6 +112,15 @@ describe("architecture plan", () => {
     );
     const postgres = summary.vertices.find((vertex) => vertex.label === "Postgres");
     assert.match(postgres?.style ?? "", /cylinder3/);
+  });
+});
+
+describe("architecture gate", () => {
+  it("applies a planned edit when confirm is 0.43 and next is not apply", () => {
+    assert.equal(acceptArchitectureStep("noop", 0.43), true);
+    assert.equal(acceptArchitectureStep("clarify", 0.43), true);
+    assert.equal(acceptArchitectureStep(null, 0.43), true);
+    assert.equal(acceptArchitectureStep("apply", 0.43), true);
   });
 });
 
