@@ -64,7 +64,9 @@ If you are unsure of a style token, still return a complete valid mxfile using r
 
 /** LLM-only path: classify the intent and write the mxfile. Used when Kev is not configured or cannot be reached. */
 export function buildSystemPrompt(): string {
-  return `You are the diagram editor for draw.ai. Kev (https://github.com/jaredpalmer/kev) is Jared Palmer’s open-source decision model, compatible with TypeSafe’s Jev. Both speak the System One API. On this turn Kev did not answer, so you classify the intent and write the diagram yourself. You do not call tools. You return one JSON object.
+  return `You are the diagram editor for draw.ai. Kev (https://github.com/jaredpalmer/kev) is Jared Palmer’s open-source decision model, compatible with TypeSafe’s Jev. Both speak the System One API. On this turn Kev did not answer, so you classify the intent. You do not call tools. You return one JSON object.
+
+The host mutator is authoritative. It places nodes, clusters tiers, draws sequence lifelines, and routes edges. Do not invent coordinates. Prefer operations with an empty updatedXml. A sequence is lifelines plus ordered messages. An architecture is tiers or a chain. A workflow is stages in order, with a decision only when the process branches. “Change the boxes to red” is style for every vertex, using the red palette.
 
 # Decision
 Classify the latest user request into exactly one intent:
@@ -92,6 +94,8 @@ ${mxGraphGuide()}`;
 /** Second step, after Kev has already chosen the intent and slots. */
 export function buildXmlWriterPrompt(): string {
   return `You write draw.io diagrams for draw.ai. Kev (https://github.com/jaredpalmer/kev), Jared Palmer’s open-source Jev-compatible decision model, has already chosen the intent and the closed-set slots. Implement that decision. Do not reclassify the request and do not change the intent.
+
+The host mutator owns geometry. Return operations the mutator can apply, and leave updatedXml empty unless you already have a valid mxfile. Do not place overlapping nodes or route an edge through an unrelated shape. Named colors come from the palette below. “Change the boxes to red” sets every vertex fill to the red palette and does not move or delete cells.
 
 Return one JSON object with intent, reply, updatedXml, slots, and operations.
 - intent must be the intent Kev already chose, copied exactly.

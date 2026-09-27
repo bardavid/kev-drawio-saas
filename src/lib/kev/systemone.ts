@@ -75,6 +75,7 @@ export function diagramState(
       .join("\n") || "- (none)";
   const diff = notes?.diffText?.trim();
   const parts = [
+    "The host places shapes and routes edges. Answer the questions. Do not invent coordinates or XML.",
     `User message:\n${userMessage.trim()}`,
     diff ? `Diagram diff (added, removed, and changed cells):\n${diff}` : "",
     notes?.previousXml && notes.currentXml && notes.previousXml !== notes.currentXml
@@ -136,7 +137,8 @@ export function buildSystemOneRequest(input: {
     questions: {
       intent: {
         type: "choice",
-        instructions: "What diagram edit does the user want?",
+        instructions:
+          "What diagram edit does the user want? Recoloring every box, including “change the boxes to red”, is style. A bare draw with no subject is clarify.",
         criteria: { ...INTENT_CRITERIA },
       },
       needs_xml_edit: {
@@ -144,8 +146,11 @@ export function buildSystemOneRequest(input: {
         instructions: "Should the diagram XML be modified?",
       },
       shape: choiceQuestion("Which shape kind should be used, if any?", shapes),
-      color: choiceQuestion("Which named color should be applied, if any?", colors),
-      layout: choiceQuestion("How should shapes be arranged, if the user asked for a layout?", {
+      color: choiceQuestion(
+        "Which named color should fills use? Choose none when the user did not name a color. “Change the boxes to red” is red.",
+        colors,
+      ),
+      layout: choiceQuestion("How should shapes be arranged, if the user asked for a layout? Choose none when the host should place shapes.", {
         horizontal: "Lay shapes in a horizontal row",
         vertical: "Lay shapes in a vertical column",
         none: "Do not rearrange",
@@ -155,7 +160,10 @@ export function buildSystemOneRequest(input: {
         after: "Behind the anchor, on the outgoing side",
         none: "No relative placement",
       }),
-      anchor: choiceQuestion("Which existing shape is the subject of this edit?", vertices),
+      anchor: choiceQuestion(
+        "Which existing shape is the subject of this edit? Choose none when every box should change.",
+        vertices,
+      ),
       source: choiceQuestion("Which existing shape is the edge source, if any?", vertices),
       target: choiceQuestion("Which existing shape is the edge target, if any?", vertices),
       disruption: {

@@ -1,6 +1,7 @@
 import { PALETTE, SHAPE_KINDS, isShapeKind } from "@/lib/drawio/styles";
 import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
+import { describeComposition, compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import {
@@ -166,6 +167,7 @@ export function buildOrchestratorStepRequest(input: {
  */
 export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevTurnResult | null> {
   if (isBareDraw(input.userMessage)) return bareDraw(input);
+  if (resolveComposition(input.userMessage)) return runComposition(input);
   if (isArchitectureRequest(input.userMessage)) return runArchitecture(input);
   if (input.reading.intent === "noop") {
     const demo = decideDemo(input.userMessage);
@@ -348,6 +350,111 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
     slots: described.slots,
     steps,
     confidence,
+  });
+}
+
+export function buildCompositionRequest(input: {
+  userMessage: string;
+  summary: DiagramSummary;
+  plan: string;
+  model?: string;
+  previousXml?: string | null;
+  currentXml?: string;
+  diagramDiff?: string;
+}): SystemOneRequest {
+  const base = diagramState(input.userMessage, input.summary, {
+    diffText: input.diagramDiff,
+    previousXml: input.previousXml,
+    currentXml: input.currentXml,
+  });
+  const state = `${base}\n\nThe host already split this drawing into steps. Geometry is applied by the host, not by you.\n${input.plan}`.slice(
+    0,
+    12_000,
+  );
+  const colors: Record<string, string> = { none: "The user did not name a color" };
+  for (const name of Object.keys(PALETTE)) {
+    if (name === "grey") continue;
+    colors[name] = `The user asked for ${name}`;
+  }
+  return {
+    state,
+    model: input.model?.trim() || env("KEV_MODEL") || KEV_DEFAULT_MODEL,
+    questions: {
+      next: {
+        type: "choice",
+        instructions: "The host will draw this planned diagram and lay it out. What should happen next?",
+        criteria: {
+          apply: "Draw the planned diagram",
+          clarify: "Ask the user a clarifying question before drawing",
+          noop: "Do not change the diagram",
+        },
+      },
+      confirm: {
+        type: "noul",
+        instructions: "Should this planned diagram be written into the diagram XML now?",
+      },
+      color: {
+        type: "choice",
+        instructions: "Which named color did the user ask for? Choose none when they did not name one.",
+        criteria: colors,
+      },
+    },
+  };
+}
+
+/**
+ * Sequence, workflow, and layered drawings are planned as mini-steps, then
+ * drawn in one deterministic pass. Jev fills the color slot and the confirm
+ * noul. A lukewarm confirm does not cancel a concrete plan.
+ */
+async function runComposition(input: OrchestratorContext): Promise<KevTurnResult> {
+  const composition = resolveComposition(input.userMessage);
+  if (!composition) {
+    return turn(input, {
+      reply: CLARIFY_NODES,
+      updatedXml: input.originalXml,
+      intent: "clarify",
+      slots: withPalette(input.reading.slots),
+      steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
+
+  const plan = describeComposition(composition);
+  const payload = await callSystemOne(
+    buildCompositionRequest({
+      userMessage: input.userMessage,
+      summary: safeSummary(input.currentXml),
+      plan,
+      model: input.model,
+      previousXml: input.previousXml,
+      currentXml: input.currentXml,
+      diagramDiff: input.diagramDiff,
+    }),
+    ORCHESTRATOR_TIMEOUT_MS,
+  );
+  const answers = systemOneAnswers(payload);
+  if (!answers) throw new KevUnreachableError("Kev returned an unreadable System One response.");
+  const next = readChoiceAnswer(answers.next);
+  const confirm = readNoulAnswer(answers.confirm);
+  const choice = next?.choice.toLowerCase() ?? null;
+  const xml = renderComposition(composition);
+  const decision = compositionDecision(composition, xml);
+  return turn(input, {
+    reply: decision.reply,
+    updatedXml: xml,
+    intent: decision.intent,
+    slots: decision.slots,
+    steps: [
+      {
+        detail: plan,
+        intent: "add_shape",
+        accepted: acceptArchitectureStep(choice, confirm),
+        confirm,
+        choice,
+      },
+    ],
+    confidence: next?.confidence ?? input.reading.confidence,
   });
 }
 

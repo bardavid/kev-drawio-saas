@@ -45,7 +45,8 @@ describe("system one contract", () => {
     assert.match(request.state, /Make the API box red/);
     assert.match(request.state, /API/);
     assert.equal(request.questions.intent.type, "choice");
-    assert.equal(request.questions.intent.instructions, "What diagram edit does the user want?");
+    assert.match(request.questions.intent.instructions, /What diagram edit does the user want/);
+    assert.match(request.questions.intent.instructions, /change the boxes to red/);
     assert.deepEqual(request.questions.intent.criteria, INTENT_CRITERIA);
     assert.deepEqual(request.questions.needs_xml_edit, {
       type: "noul",
