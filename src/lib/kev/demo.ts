@@ -7,8 +7,7 @@ const COLOR_NAMES = Object.keys(PALETTE).join("|");
 const COLOR_RE = new RegExp(`\\b(${COLOR_NAMES})\\b`, "i");
 const HEX_RE = /#([0-9a-f]{6})\b/i;
 
-const HELP =
-  "I can add a shape, connect two shapes, restyle or rename one, delete one, or reflow the layout. Try “Add a Redis cache in front of the database.”";
+const HELP = "Describe a diagram change.";
 
 function decision(
   intent: KevDecision["intent"],
@@ -103,7 +102,7 @@ export function decideDemo(message: string): KevDecision {
   ) {
     return decision(
       "clarify",
-      "I'm Kev. I turn a sentence into a typed diagram edit and apply it to the draw.io canvas. " + HELP,
+      HELP,
     );
   }
 

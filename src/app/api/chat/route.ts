@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     const result = await runKevTurn(parsed.value);
     return Response.json(result);
   } catch (error) {
-    const message = error instanceof KevError ? error.message : "Kev could not update the diagram.";
+    const message = error instanceof KevError ? error.message : "Could not update the diagram.";
     const status = error instanceof KevError ? error.status : 500;
     if (status >= 500) console.error("Kev request failed:", message);
     return Response.json({ error: message }, { status });

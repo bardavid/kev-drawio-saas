@@ -86,7 +86,7 @@ function serialize(doc: XmlDocument): string {
 }
 
 function wrapModel(modelXml: string): string {
-  return `<mxfile host="embed.diagrams.net" agent="Kev Diagram" type="device"><diagram id="architecture" name="Architecture">${modelXml.trim()}</diagram></mxfile>`;
+  return `<mxfile host="embed.diagrams.net" agent="draw.ai" type="device"><diagram id="architecture" name="Architecture">${modelXml.trim()}</diagram></mxfile>`;
 }
 
 function firstElementChild(parent: XmlElement): XmlElement | null {
@@ -144,7 +144,7 @@ export function normalizeMxfile(xml: string): string {
   }
   assertRoots(doc);
   const file = doc.getElementsByTagName("mxfile")[0];
-  if (file && !file.getAttribute("agent")) file.setAttribute("agent", "Kev Diagram");
+  if (file && !file.getAttribute("agent")) file.setAttribute("agent", "draw.ai");
   return serialize(doc);
 }
 
