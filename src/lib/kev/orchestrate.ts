@@ -57,6 +57,8 @@ export interface OrchestratorContext {
   originalXml: string;
   previousXml?: string | null;
   diagramDiff?: string;
+  /** Factual notes fetched before planning. Builtin text when the lookup is offline. */
+  topicContext?: string | null;
   reading: KevReading;
   model?: string;
 }
@@ -65,9 +67,18 @@ export function buildSpecificityRequest(input: {
   userMessage: string;
   summary: DiagramSummary;
   model?: string;
+  currentXml?: string;
+  previousXml?: string | null;
+  diagramDiff?: string;
+  topicContext?: string | null;
 }): SystemOneRequest {
   return {
-    state: diagramState(input.userMessage, input.summary),
+    state: diagramState(input.userMessage, input.summary, {
+      diffText: input.diagramDiff,
+      previousXml: input.previousXml,
+      currentXml: input.currentXml,
+      topicContext: input.topicContext,
+    }),
     model: input.model?.trim() || env("KEV_MODEL") || KEV_DEFAULT_MODEL,
     questions: {
       specific: {
@@ -180,7 +191,15 @@ export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevT
 async function bareDraw(input: OrchestratorContext): Promise<KevTurnResult> {
   const summary = safeSummary(input.currentXml);
   const payload = await callSystemOne(
-    buildSpecificityRequest({ userMessage: input.userMessage, summary, model: input.model }),
+    buildSpecificityRequest({
+      userMessage: input.userMessage,
+      summary,
+      model: input.model,
+      currentXml: input.currentXml,
+      previousXml: input.previousXml,
+      diagramDiff: input.diagramDiff,
+      topicContext: input.topicContext,
+    }),
     ORCHESTRATOR_TIMEOUT_MS,
   );
   const answers = systemOneAnswers(payload);
@@ -363,11 +382,13 @@ export function buildCompositionRequest(input: {
   previousXml?: string | null;
   currentXml?: string;
   diagramDiff?: string;
+  topicContext?: string | null;
 }): SystemOneRequest {
   const base = diagramState(input.userMessage, input.summary, {
     diffText: input.diagramDiff,
     previousXml: input.previousXml,
     currentXml: input.currentXml,
+    topicContext: input.topicContext,
   });
   const state = `${base}\n\nThe host already split this drawing into steps. Geometry is applied by the host, not by you.\n${input.plan}`.slice(
     0,
@@ -410,7 +431,9 @@ export function buildCompositionRequest(input: {
  * noul. A lukewarm confirm does not cancel a concrete plan.
  */
 async function runComposition(input: OrchestratorContext): Promise<KevTurnResult> {
-  const composition = resolveComposition(input.userMessage);
+  const composition = resolveComposition(input.userMessage, {
+    context: input.topicContext,
+  });
   if (!composition) {
     return turn(input, {
       reply: CLARIFY_NODES,

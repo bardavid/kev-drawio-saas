@@ -6,7 +6,7 @@ The site opens into the tool at `/`. `/app` redirects there.
 
 **Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. One call cannot plan a multi-shape diagram, so a Kev turn loops: propose the next edit, ask Jev to fill closed-set slots and gate it, apply that edit to the mxfile, then re-summarize. With neither `KEV_BASE_URL` nor `OPENAI_API_KEY`, demo mode applies the same architecture plans locally.
 
-The canvas opens on Client, API, and Postgres.
+The canvas opens on a blank page. A draw replaces that page instead of patching a leftover sample. Topics such as Redis are sketched from a short Wikipedia summary when the network is available, and from a built-in brief when it is not. No API key is sent for that lookup.
 
 ## Local setup
 

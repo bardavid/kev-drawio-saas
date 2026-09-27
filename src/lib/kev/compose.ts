@@ -1,6 +1,7 @@
 import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
 import { openDiagram, serializeDiagram } from "@/lib/drawio/xml";
 import { withPalette } from "@/lib/kev/plan";
+import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import type { KevDecision } from "@/lib/kev/types";
 
 type XmlElement = import("@xmldom/xmldom").Element;
@@ -102,6 +103,10 @@ export type CompositionSpec = SequenceSpec | WorkflowSpec | LayerSpec;
 export interface Composition {
   spec: CompositionSpec;
   colorName: string | null;
+  /** Factual notes included in the planner prompt. */
+  context: string | null;
+  /** Wikipedia title to refresh `context` from. Null skips the network. */
+  researchQuery: string | null;
 }
 
 interface Placed {
@@ -153,18 +158,29 @@ function isWorkflow(text: string): boolean {
 }
 
 /** Sequence, workflow, and layered diagrams the chain planner cannot express. */
-export function resolveComposition(message: string, hints?: { colorName?: string | null }): Composition | null {
+export function resolveComposition(
+  message: string,
+  hints?: { colorName?: string | null; context?: string | null },
+): Composition | null {
   const text = message.trim();
   if (!text || !wantsPicture(text)) return null;
   const spec = specFor(text);
   if (!spec) return null;
   const named = colorInMessage(text);
-  return { spec, colorName: named ?? hints?.colorName ?? null };
+  const brief = builtinBrief(text);
+  return {
+    spec,
+    colorName: named ?? hints?.colorName ?? null,
+    context: hints?.context ?? brief?.summary ?? null,
+    researchQuery: brief ? "Redis" : null,
+  };
 }
 
 export function describeComposition(composition: Composition): string {
   const lines = plannedSteps(composition.spec);
-  return [`Diagram: ${composition.spec.kind}`, "Steps:", ...lines.map((line, index) => `${index + 1}. ${line}`)].join("\n");
+  const steps = [`Diagram: ${composition.spec.kind}`, "Steps:", ...lines.map((line, index) => `${index + 1}. ${line}`)];
+  if (!composition.context) return steps.join("\n");
+  return [`Topic context:\n${composition.context}`, "", ...steps].join("\n");
 }
 
 export function compositionDecision(composition: Composition, xml: string): KevDecision {
@@ -191,6 +207,7 @@ export function renderComposition(composition: Composition): string {
 
 function specFor(text: string): CompositionSpec | null {
   if (isIoUring(text)) return ioUringSpec();
+  if (redisDiagramRequest(text)) return redisUsageSpec();
   if (isLoginSequence(text)) return loginSequence();
   if (isSequence(text)) return genericSequence(text);
   if (isTaxWorkflow(text)) return taxWorkflow();
@@ -306,6 +323,36 @@ function genericWorkflow(message: string): WorkflowSpec {
     edges: [
       { from: "start", to: "work" },
       { from: "work", to: "done" },
+    ],
+  };
+}
+
+function redisUsageSpec(): LayerSpec {
+  return {
+    kind: "layers",
+    title: "Redis cache usage",
+    reply:
+      "Drew Redis cache usage: Client → App → Redis cache, with replication, persistence, and a database read on miss.",
+    groups: [
+      { id: "clients", label: "Clients", nodes: [{ id: "client", label: "Client", shape: "rectangle" }] },
+      { id: "application", label: "Application", nodes: [{ id: "app", label: "App", shape: "rectangle" }] },
+      {
+        id: "redis",
+        label: "Redis",
+        nodes: [
+          { id: "cache", label: "Redis cache", shape: "cylinder" },
+          { id: "replica", label: "Replica", shape: "cylinder" },
+          { id: "persist", label: "Persistence", shape: "cylinder" },
+        ],
+      },
+      { id: "data", label: "Data", nodes: [{ id: "db", label: "Database", shape: "cylinder" }] },
+    ],
+    edges: [
+      { from: "client", to: "app", label: "Request" },
+      { from: "app", to: "cache", label: "GET / SET" },
+      { from: "cache", to: "replica", label: "Replicate" },
+      { from: "cache", to: "persist", label: "Persist", side: true },
+      { from: "app", to: "db", label: "Read on miss", side: true },
     ],
   };
 }

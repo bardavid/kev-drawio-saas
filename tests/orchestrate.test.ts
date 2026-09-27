@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { STARTER_XML } from "../src/lib/drawio/starter";
+import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 import { previewDemo } from "../src/lib/kev/demo";
 import { acceptArchitectureStep, buildOrchestratorStepRequest, buildSpecificityRequest } from "../src/lib/kev/orchestrate";
@@ -63,8 +63,8 @@ describe("architecture plan", () => {
     assert.deepEqual(parseArchitecture("draw a 3 tier web app")?.nodes, ["Client", "App", "Postgres"]);
   });
 
-  it("plans a new middle tier, a missing edge, orange, and a horizontal reflow on the starter", () => {
-    const operations = planOperations(PROMPTS[0]!, STARTER_XML);
+  it("plans a new middle tier, a missing edge, orange, and a horizontal reflow on an existing architecture", () => {
+    const operations = planOperations(PROMPTS[0]!, SEEDED_XML);
     assert.deepEqual(
       operations.map((operation) => operation.intent),
       ["add_shape", "connect", "style", "layout"],
@@ -126,15 +126,18 @@ describe("architecture gate", () => {
 
 describe("orchestrator questions", () => {
   it("asks Jev to apply or refuse one proposed edit and to fill shape and color", () => {
-    const [proposal] = planOperations(PROMPTS[1]!, STARTER_XML);
+    const [proposal] = planOperations(PROMPTS[1]!, SEEDED_XML);
     assert.ok(proposal);
     const request = buildOrchestratorStepRequest({
       userMessage: PROMPTS[1]!,
-      summary: summarizeDiagram(STARTER_XML),
+      summary: summarizeDiagram(SEEDED_XML),
       proposal,
       remaining: 3,
       applied: [],
+      currentXml: SEEDED_XML,
     });
+    assert.match(request.state, /Current diagram mxfile/);
+    assert.match(request.state, /value="API"/);
     assert.match(request.state, /Proposed next edit/);
     assert.match(request.state, /App/);
     assert.equal(request.questions.next?.type, "choice");

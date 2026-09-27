@@ -1,8 +1,27 @@
 /**
- * Small starter architecture so the first open is never a blank page.
+ * Empty page. The editor opens here so the first draw is not patching a
+ * leftover Client / API / Postgres sample.
  * Uncompressed mxfile — draw.io accepts this directly via the load action.
  */
-export const STARTER_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" version="24.7.17" type="device">
+export const BLANK_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" type="device">
+  <diagram id="diagram" name="Diagram">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>`;
+
+/** Default canvas and the XML used when a chat request omits the current diagram. */
+export const STARTER_XML = BLANK_XML;
+
+/**
+ * Populated sample for edits against an existing architecture.
+ * Not loaded on open.
+ */
+export const SEEDED_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" version="24.7.17" type="device">
   <diagram id="architecture" name="Architecture">
     <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
       <root>
@@ -23,18 +42,6 @@ export const STARTER_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" ve
         <mxCell id="6" value="SQL" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=classic;endFill=1;strokeColor=#64748b;fontColor=#334155;" edge="1" parent="1" source="3" target="4">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-      </root>
-    </mxGraphModel>
-  </diagram>
-</mxfile>`;
-
-/** Empty page used when a draw replaces the canvas instead of patching the starter. */
-export const BLANK_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai" type="device">
-  <diagram id="diagram" name="Diagram">
-    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
-      <root>
-        <mxCell id="0"/>
-        <mxCell id="1" parent="0"/>
       </root>
     </mxGraphModel>
   </diagram>

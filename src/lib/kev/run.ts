@@ -9,6 +9,7 @@ import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { architectureDecision, isArchitectureRequest, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
 import {
   isMutatingIntent,
@@ -46,6 +47,13 @@ export function describeMode(): ModeDescription {
 
 function latestUser(messages: ChatMessage[]): string {
   return [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
+}
+
+/** Lookup runs only for diagram-usage prompts, and only outside demo mode. */
+async function topicContextFor(message: string, network: boolean): Promise<string | null> {
+  if (!wikipediaTitle(message)) return null;
+  const brief = await researchTopic(message, { network });
+  return brief?.summary ?? null;
 }
 
 function editContext(currentXml: string, previousXml: string | null | undefined): { previousXml: string | null; diagramDiff: string } {
@@ -300,11 +308,13 @@ export async function runKevTurn(input: {
     if (described.mode === "demo") {
       return finish(decideDemo(userMessage), "demo", undefined, input.currentXml, currentXml);
     }
+    const topicContext = await topicContextFor(userMessage, true);
     const client = new OpenAIKevClient();
-    const decision = await client.decide(request);
+    const decision = await client.decide({ ...request, topicContext });
     return finish(decision, "openai", client.model, input.currentXml, currentXml);
   }
 
+  const topicContext = await topicContextFor(userMessage, true);
   let reading: KevReading;
   const loopTimeout =
     isArchitectureRequest(userMessage) || isBareDraw(userMessage) || resolveComposition(userMessage) !== null;
@@ -315,6 +325,7 @@ export async function runKevTurn(input: {
         currentXml,
         previousXml: context.previousXml,
         diagramDiff: context.diagramDiff,
+        topicContext,
       },
       loopTimeout ? { timeoutMs: 10_000 } : undefined,
     );
@@ -324,7 +335,7 @@ export async function runKevTurn(input: {
       if (drawn) return drawn;
       if (described.openai) {
         const client = new OpenAIKevClient();
-        const decision = await client.decide(request);
+        const decision = await client.decide({ ...request, topicContext });
         return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
       }
     }
@@ -341,6 +352,7 @@ export async function runKevTurn(input: {
       originalXml: input.currentXml,
       previousXml: context.previousXml,
       diagramDiff: context.diagramDiff,
+      topicContext,
       reading,
       model,
     });
@@ -351,7 +363,7 @@ export async function runKevTurn(input: {
       if (drawn) return drawn;
       if (described.openai) {
         const client = new OpenAIKevClient();
-        const decision = await client.decide(request);
+        const decision = await client.decide({ ...request, topicContext });
         return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
       }
     }
@@ -383,6 +395,7 @@ export async function runKevTurn(input: {
         currentXml,
         previousXml: context.previousXml,
         diagramDiff: context.diagramDiff,
+        topicContext,
         reading,
       });
       const slots = mergeSlots(written.slots, reading.slots);
