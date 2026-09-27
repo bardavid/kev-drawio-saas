@@ -438,7 +438,19 @@ function styleEdges(doc: XmlDocument, slots: DiagramSlots) {
   if (!color) {
     throw new DiagramXmlError("Name a color, for example “Make the arrows blue.”");
   }
-  const edges = listEdges(doc);
+  // from / to are set only when the user named an endpoint. Otherwise every edge changes.
+  const fromId = slots.from ? requireVertex(doc, slots.from).getAttribute("id") : null;
+  const toId = slots.to ? requireVertex(doc, slots.to).getAttribute("id") : null;
+  const edges = listEdges(doc).filter((edge) => {
+    const source = edge.getAttribute("source");
+    const target = edge.getAttribute("target");
+    if (fromId && toId) {
+      return (source === fromId && target === toId) || (source === toId && target === fromId);
+    }
+    if (fromId) return source === fromId;
+    if (toId) return target === toId;
+    return true;
+  });
   if (edges.length === 0) throw new DiagramXmlError("There are no arrows to restyle.");
   for (const edge of edges) {
     const current = edge.getAttribute("style") || EDGE_STYLE;

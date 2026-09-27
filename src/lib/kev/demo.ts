@@ -85,6 +85,153 @@ function isVagueTarget(value: string): boolean {
   return /^(it|this|that)$/i.test(value.trim());
 }
 
+const EDGE_WORD = "(arrows?|edges?|connectors?|lines?)";
+const EDGE_PREFIX = "(?:(?:all|every|the|these|those)\\s+)*";
+const DRAW_COMMAND =
+  /^(?:please\s+)?(?:add|insert|create|draw|sketch|place|connect|build|architect|show|illustrate|map)\b/i;
+const LAYOUT_ASIDE = /^(?:please\s+)?(?:do not|don't|dont|keep|leave|preserve|without)\b/i;
+
+export interface EdgeRestyleRequest {
+  word: string;
+  colorName: string | null;
+  fillColor: string | null;
+  from: string | null;
+  to: string | null;
+}
+
+function restyleText(message: string): string {
+  const sentences = message.replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter((sentence) => !LAYOUT_ASIDE.test(sentence));
+  return (kept.length > 0 ? kept : sentences).join(" ").trim();
+}
+
+function findRestyleColor(text: string): { token: string; index: number; length: number } | null {
+  const named = text.match(COLOR_RE);
+  const hex = text.match(HEX_RE);
+  const namedAt = named?.index ?? -1;
+  const hexAt = hex?.index ?? -1;
+  if (namedAt === -1 && hexAt === -1) return null;
+  if (hexAt !== -1 && (namedAt === -1 || hexAt < namedAt)) {
+    return { token: `#${hex![1]!.toLowerCase()}`, index: hexAt, length: hex![0]!.length };
+  }
+  return { token: named![1]!.toLowerCase(), index: namedAt, length: named![0]!.length };
+}
+
+function edgeSubject(text: string, color: { index: number; length: number }): string {
+  const raw = `${text.slice(0, color.index)} ${text.slice(color.index + color.length)}`;
+  return raw
+    .replace(/^(?:please\s+)?(?:change|make|turn|paint|color|colour|recolor|recolour|style|set)\s+/i, "")
+    .replace(/\bplease\b/gi, " ")
+    .replace(/\b(?:to|color|colour)\s*$/i, "")
+    .replace(/[?.!,;:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function namedNode(value: string): string | null {
+  const cleaned = value
+    .replace(/\b(?:do not|don't|dont|keep|leave|preserve|without)\b[\s\S]*$/i, "")
+    .trim();
+  const label = titleLabel(cleaned);
+  if (!label || isVagueTarget(label) || edgeQuery(label)) return null;
+  return label;
+}
+
+/**
+ * “Make the arrows blue” restyles every edge.
+ * “From Browser” / “into Redis” keep a named endpoint.
+ * A draw or add is not a restyle.
+ */
+export function parseEdgeRestyle(message: string): EdgeRestyleRequest | null {
+  const text = restyleText(message);
+  if (!text || DRAW_COMMAND.test(text) || !new RegExp(`\\b${EDGE_WORD}\\b`, "i").test(text)) return null;
+  const color = findRestyleColor(text);
+  if (!color) return null;
+  const subject = edgeSubject(text, color);
+  const hex = color.token.startsWith("#") ? color.token : null;
+  const colorName = hex ? null : color.token;
+  const scope = parseEdgeSubject(subject);
+  if (!scope) return null;
+  return { word: scope.word, colorName, fillColor: hex, from: scope.from, to: scope.to };
+}
+
+function parseEdgeSubject(subject: string): { word: string; from: string | null; to: string | null } | null {
+  const bare = subject.match(new RegExp(`^${EDGE_PREFIX}${EDGE_WORD}$`, "i"));
+  if (bare?.[1]) return { word: bare[1].toLowerCase(), from: null, to: null };
+
+  const fromTo = subject.match(
+    new RegExp(
+      `^${EDGE_PREFIX}${EDGE_WORD}\\s+(?:coming\\s+|going\\s+)?(?:from|out of|leaving)\\s+(?:the\\s+)?(.+?)\\s+(?:to|into|toward|towards)\\s+(?:the\\s+)?(.+)$`,
+      "i",
+    ),
+  );
+  if (fromTo?.[1] && fromTo[2] && fromTo[3]) {
+    const from = namedNode(fromTo[2]);
+    const to = namedNode(fromTo[3]);
+    if (!from || !to) return null;
+    return { word: fromTo[1].toLowerCase(), from, to };
+  }
+
+  const fromOnly = subject.match(
+    new RegExp(
+      `^${EDGE_PREFIX}${EDGE_WORD}\\s+(?:coming\\s+|going\\s+)?(?:from|out of|leaving)\\s+(?:the\\s+)?(.+)$`,
+      "i",
+    ),
+  );
+  if (fromOnly?.[1] && fromOnly[2]) {
+    const from = namedNode(fromOnly[2]);
+    if (!from) return null;
+    return { word: fromOnly[1].toLowerCase(), from, to: null };
+  }
+
+  const into = subject.match(
+    new RegExp(
+      `^${EDGE_PREFIX}${EDGE_WORD}\\s+(?:going\\s+|coming\\s+)?(?:into|to|toward|towards|entering)\\s+(?:the\\s+)?(.+)$`,
+      "i",
+    ),
+  );
+  if (into?.[1] && into[2]) {
+    const to = namedNode(into[2]);
+    if (!to) return null;
+    return { word: into[1].toLowerCase(), from: null, to };
+  }
+
+  const between = subject.match(
+    new RegExp(`^${EDGE_PREFIX}${EDGE_WORD}\\s+between\\s+(?:the\\s+)?(.+?)\\s+and\\s+(?:the\\s+)?(.+)$`, "i"),
+  );
+  if (between?.[1] && between[2] && between[3]) {
+    const from = namedNode(between[2]);
+    const to = namedNode(between[3]);
+    if (!from || !to) return null;
+    return { word: between[1].toLowerCase(), from, to };
+  }
+
+  return null;
+}
+
+function edgeRestyleReply(parsed: EdgeRestyleRequest): string {
+  const color = parsed.colorName ?? parsed.fillColor ?? "the new color";
+  if (parsed.from && parsed.to) return `Set the ${parsed.word} from ${parsed.from} to ${parsed.to} to ${color}.`;
+  if (parsed.from) return `Set the ${parsed.word} from ${parsed.from} to ${color}.`;
+  if (parsed.to) return `Set the ${parsed.word} into ${parsed.to} to ${color}.`;
+  return `Set the ${parsed.word} to ${color}.`;
+}
+
+/** Host-owned arrow restyle. Null when the message is not one. */
+export function edgeRestyleDecision(message: string): KevDecision | null {
+  const parsed = parseEdgeRestyle(message);
+  if (!parsed) return null;
+  const slots: DiagramSlots = {
+    target: parsed.word,
+    colorName: parsed.colorName,
+    fillColor: parsed.fillColor,
+  };
+  if (parsed.from) slots.from = parsed.from;
+  if (parsed.to) slots.to = parsed.to;
+  const painted = withPalette(slots);
+  return decision("style", edgeRestyleReply(parsed), painted, [{ intent: "style", slots: painted }]);
+}
+
 function isAllTarget(value: string): boolean {
   const text = value.trim().toLowerCase().replace(/[?.!,]+$/g, "").replace(/\s+/g, " ");
   return (
@@ -125,6 +272,9 @@ export function decideDemo(message: string): KevDecision {
       HELP,
     );
   }
+
+  const utteredEdges = edgeRestyleDecision(text);
+  if (utteredEdges) return utteredEdges;
 
   if (isNamedAddition(text)) return parseAdd(text);
 
