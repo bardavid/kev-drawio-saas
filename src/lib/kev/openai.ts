@@ -167,7 +167,7 @@ export async function writeDiagramXml(input: {
         diagramDiff: input.diagramDiff,
         topicContext: input.topicContext,
         request: message.content,
-        preamble: `Kev already decided this turn. Implement it. Do not change the intent.\n${JSON.stringify(brief)}`,
+        preamble: `The intent for this turn is already decided. Implement it. Do not change the intent.\n${JSON.stringify(brief)}`,
       }),
     };
   });
