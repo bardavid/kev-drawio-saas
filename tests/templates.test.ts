@@ -428,6 +428,66 @@ const FIXTURES: Fixture[] = [
     ],
     messages: ["Request credentials", "Validate", "DB lookup", "User record", "Session cookie set"],
   },
+  {
+    prompt: "draw a microservices architecture with API gateway, auth service, orders service, and Kafka",
+    labels: ["Client", "API Gateway", "Auth Service", "Orders Service", "Kafka"],
+    edges: [
+      ["Client", "API Gateway", "HTTPS"],
+      ["API Gateway", "Auth Service", "Route"],
+      ["API Gateway", "Orders Service", "Route"],
+      ["Auth Service", "Kafka", "Publish"],
+      ["Orders Service", "Kafka", "Publish"],
+    ],
+    rows: [["Auth Service", "Orders Service"]],
+    above: [
+      ["Client", "API Gateway"],
+      ["API Gateway", "Auth Service"],
+      ["Auth Service", "Kafka"],
+    ],
+    clusters: ["Clients", "Edge", "Services", "Bus"],
+  },
+  {
+    prompt: "draw a UML sequence diagram for user login with browser, auth service, and database",
+    labels: ["User", "Browser", "Auth Service", "Database"],
+    edges: [
+      ["User", "Browser", "Enter credentials"],
+      ["Browser", "Auth Service", "POST /login"],
+      ["Auth Service", "Database", "Query"],
+      ["Database", "Auth Service", "User record"],
+      ["Auth Service", "Browser", "Session"],
+    ],
+    messages: ["Enter credentials", "POST /login", "Query", "User record", "Session", "Logged in"],
+  },
+  {
+    prompt: "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache",
+    labels: ["Internet", "ALB", "ECS Fargate", "RDS", "ElastiCache"],
+    edges: [
+      ["Internet", "ALB", "HTTPS"],
+      ["ALB", "ECS Fargate", "HTTP"],
+      ["ECS Fargate", "RDS", "SQL"],
+      ["ECS Fargate", "ElastiCache", "Cache"],
+    ],
+    above: [
+      ["Internet", "ALB"],
+      ["ALB", "ECS Fargate"],
+      ["ECS Fargate", "RDS"],
+      ["RDS", "ElastiCache"],
+    ],
+    clusters: ["Edge", "Public subnet", "Private subnet", "Data subnet"],
+  },
+  {
+    prompt: "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery",
+    labels: ["Pub/Sub", "Dataflow", "BigQuery"],
+    edges: [
+      ["Pub/Sub", "Dataflow", "Stream"],
+      ["Dataflow", "BigQuery", "Load"],
+    ],
+    above: [
+      ["Pub/Sub", "Dataflow"],
+      ["Dataflow", "BigQuery"],
+    ],
+    clusters: ["Ingest", "Processing", "Warehouse"],
+  },
 ];
 
 describe("popular diagram templates", () => {
@@ -779,6 +839,94 @@ describe("popular diagram templates", () => {
       ).xml,
     );
     for (const label of ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Pub/Sub"]) box(full, label);
+  });
+
+  it("keeps named microservices and Kafka instead of the generic event bus", () => {
+    const prompt = "draw a microservices architecture with API gateway, auth service, orders service, and Kafka";
+    assert.equal(matchTemplate(prompt)?.spec.title, "Microservices");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /Client → App → Postgres/);
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["API Gateway", "Auth Service", "Orders Service", "Kafka"]) {
+      assert.ok(labels.includes(label), label);
+    }
+    for (const stolen of ["App", "Postgres", "Event broker", "Web", "Worker", "Billing", "Mail", "Catalog", "Payments"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    const kafka = assertClean(previewDemo("draw a kafka architecture", STARTER_XML).xml);
+    assert.ok(content(kafka.nodes).some((node) => node.label === "Kafka"));
+    assert.ok(content(kafka.nodes).some((node) => node.label === "Web"));
+    const plain = assertClean(previewDemo("draw a microservices architecture", STARTER_XML).xml);
+    assert.ok(content(plain.nodes).some((node) => node.label === "Catalog"));
+    assert.equal(content(plain.nodes).some((node) => node.label === "Kafka"), false);
+  });
+
+  it("keeps a named database on a UML login sequence", () => {
+    const prompt = "draw a UML sequence diagram for user login with browser, auth service, and database";
+    const report = assertClean(previewDemo(prompt, STARTER_XML).xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.deepEqual(labels, ["User", "Browser", "Auth Service", "Database"]);
+    assert.ok(content(report.nodes).every((node) => node.style.includes("umlLifeline")));
+    const plain = content(assertClean(previewDemo("draw a user login sequence diagram", STARTER_XML).xml).nodes).map(
+      (node) => node.label,
+    );
+    assert.deepEqual(plain, ["User", "Browser", "Auth Service"]);
+  });
+
+  it("keeps ElastiCache and Fargate on an AWS container architecture", () => {
+    const prompt = "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache";
+    assert.equal(matchTemplate(prompt)?.spec.title, "AWS VPC");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["ALB", "ECS Fargate", "RDS", "ElastiCache"]) assert.ok(labels.includes(label), label);
+    for (const stolen of ["API Gateway", "Lambda", "DynamoDB"]) assert.equal(labels.includes(stolen), false, stolen);
+    const serverless = content(
+      assertClean(previewDemo("draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB", STARTER_XML).xml)
+        .nodes,
+    ).map((node) => node.label);
+    assert.ok(serverless.includes("API Gateway"));
+    assert.equal(serverless.includes("ElastiCache"), false);
+    assert.equal(serverless.includes("ALB"), false);
+    const vpc = content(
+      assertClean(previewDemo("draw an AWS VPC architecture with an ALB, ECS, and RDS", STARTER_XML).xml).nodes,
+    ).map((node) => node.label);
+    assert.ok(vpc.includes("ECS"));
+    assert.equal(vpc.includes("ECS Fargate"), false);
+    assert.equal(vpc.includes("ElastiCache"), false);
+  });
+
+  it("draws a GCP data pipeline as Pub/Sub, Dataflow, and BigQuery", () => {
+    const prompt = "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery";
+    assert.equal(matchTemplate(prompt)?.spec.title, "GCP data pipeline");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /Client → App → Postgres/);
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.doesNotMatch(drawn.decision.reply, /Cloud Run/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.deepEqual(labels, ["Pub/Sub", "Dataflow", "BigQuery"]);
+    for (const stolen of ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Event broker", "Web"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    above(report, "Pub/Sub", "Dataflow");
+    above(report, "Dataflow", "BigQuery");
+    const web = content(
+      assertClean(
+        previewDemo("draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub", STARTER_XML)
+          .xml,
+      ).nodes,
+    ).map((node) => node.label);
+    for (const label of ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Pub/Sub"]) {
+      assert.ok(web.includes(label), label);
+    }
+    assert.equal(web.includes("Dataflow"), false);
+    assert.equal(matchTemplate("draw a Pub/Sub architecture")?.spec.title, "Event-driven");
   });
 
   it("leaves a generic sequence and flowchart alone", () => {

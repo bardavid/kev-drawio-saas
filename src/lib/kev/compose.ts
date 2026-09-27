@@ -314,6 +314,28 @@ function loginSequence(text: string): SequenceSpec {
       ],
     };
   }
+  // "with … database" names a participant. The short login sketch used to drop it.
+  if (/\b(database|databases|\bdb\b)\b/i.test(text)) {
+    return {
+      kind: "sequence",
+      title: "User login",
+      reply: "Drew a login sequence: User, Browser, Auth Service, and Database.",
+      participants: [
+        { id: "user", label: "User", shape: "actor" },
+        { id: "browser", label: "Browser", shape: "rectangle" },
+        { id: "auth", label: "Auth Service", shape: "rectangle" },
+        { id: "db", label: "Database", shape: "rectangle" },
+      ],
+      messages: [
+        { from: "user", to: "browser", label: "Enter credentials" },
+        { from: "browser", to: "auth", label: "POST /login" },
+        { from: "auth", to: "db", label: "Query" },
+        { from: "db", to: "auth", label: "User record", dashed: true },
+        { from: "auth", to: "browser", label: "Session", dashed: true },
+        { from: "browser", to: "user", label: "Logged in", dashed: true },
+      ],
+    };
+  }
   return {
     kind: "sequence",
     title: "User login",

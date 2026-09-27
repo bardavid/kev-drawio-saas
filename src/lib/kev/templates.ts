@@ -42,10 +42,11 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isStateMachine(text)) return stateMachine(text);
   if (isEr(text)) return erDiagram(text);
   if (isCqrs(text)) return cqrs();
-  // Pub/Sub is also a generic bus. A GCP or multi-service GCP ask has to win first.
+  // Pub/Sub is also a generic bus. A GCP data pipeline or multi-service GCP ask has to win first.
+  if (isGcpDataPipeline(text)) return gcpDataPipeline(text);
   if (isGcp(text)) return gcpArchitecture(text);
   if (isEventDriven(text)) return eventDriven(text);
-  if (isMicroservices(text)) return microservices();
+  if (isMicroservices(text)) return microservices(text);
   // API Gateway, Lambda, and DynamoDB are not an ALB / ECS / RDS VPC.
   if (isAwsServerless(text)) return awsServerless();
   if (isCloud(text)) return cloudVpc(text);
@@ -178,8 +179,31 @@ function isCqrs(text: string): boolean {
 function isEventDriven(text: string): boolean {
   if (/\bsequence\b/i.test(text)) return false;
   // A named GCP or Azure product is not a generic bus, even when the sentence also says Pub/Sub or Kafka.
-  if (isGcp(text) || isAzure(text)) return false;
+  if (isGcp(text) || isAzure(text) || isGcpDataPipeline(text)) return false;
+  // "microservices" plus auth service / orders service must keep those names.
+  // Kafka is the bus in that diagram. It does not replace the services with Web → Billing.
+  if (isMicroservices(text) && namedServiceLabels(text).length > 0) return false;
   return /\bevent[- ]driven\b|\bpub(?:\/|\s)?sub\b|\bmessage bus\b|\bkafka\b/i.test(text);
+}
+
+const SERVICE_LABEL_SKIP =
+  /^(micro|web|the|a|an|each|this|that|managed|backend|frontend|independent|single|separate|other|every)$/i;
+
+/** "auth service" / "orders service" from the request. "microservices" is not one of them. */
+function namedServiceLabels(text: string): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(/\b([a-z][a-z0-9-]*)\s+services?\b/gi)) {
+    const raw = match[1];
+    if (!raw || SERVICE_LABEL_SKIP.test(raw)) continue;
+    const label = `${titleWord(raw)} Service`;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+    if (labels.length === 4) break;
+  }
+  return labels;
 }
 
 function isMicroservices(text: string): boolean {
@@ -748,7 +772,7 @@ function cqrs(): TemplateMatch {
   };
 }
 
-type GcpServiceId = "lb" | "run" | "functions" | "gke" | "vpc" | "sql" | "storage" | "bigquery" | "pubsub";
+type GcpServiceId = "lb" | "run" | "functions" | "gke" | "dataflow" | "vpc" | "sql" | "storage" | "bigquery" | "pubsub";
 
 interface GcpService {
   id: GcpServiceId;
@@ -762,6 +786,7 @@ const GCP_SERVICES: Record<GcpServiceId, GcpService> = {
   run: { id: "run", label: "Cloud Run", shape: "rectangle", tier: "compute" },
   functions: { id: "functions", label: "Cloud Functions", shape: "rectangle", tier: "compute" },
   gke: { id: "gke", label: "GKE", shape: "rectangle", tier: "compute" },
+  dataflow: { id: "dataflow", label: "Dataflow", shape: "rectangle", tier: "compute" },
   vpc: { id: "vpc", label: "VPC connector", shape: "rectangle", tier: "network" },
   sql: { id: "sql", label: "Cloud SQL", shape: "cylinder", tier: "data" },
   storage: { id: "storage", label: "Cloud Storage", shape: "cylinder", tier: "data" },
@@ -915,6 +940,41 @@ function mentionsGcp(text: string): boolean {
   return /\bgcp\b|\bgoogle\s+cloud\b/i.test(text);
 }
 
+function mentionsPubSub(text: string): boolean {
+  return /\b(?:cloud\s+)?pub(?:\/|\s)?sub\b|\bpubsub\b/i.test(text);
+}
+
+function mentionsDataflow(text: string): boolean {
+  return /\bdataflow\b/i.test(text);
+}
+
+function mentionsBigQuery(text: string): boolean {
+  return /\bbigquery\b/i.test(text);
+}
+
+/** Cloud Run / load balancer asks stay on the web stack, even if they also say Pub/Sub. */
+function isGcpWebStack(text: string): boolean {
+  return (
+    /\bcloud\s+run\b|\bcloud\s+functions\b|\bgke\b|\bgoogle\s+kubernetes\s+engine\b|\bcloud\s+load\s+balanc|\bcloud\s+lb\b/i.test(
+      text,
+    ) ||
+    (mentionsGcp(text) && /\bload\s+balanc/i.test(text))
+  );
+}
+
+/**
+ * Pub/Sub → Dataflow → BigQuery. Wins over the Cloud Run web stack and over the generic event bus.
+ * A bare "GCP data pipeline" uses that trio. Named stages are kept in pipeline order.
+ */
+function isGcpDataPipeline(text: string): boolean {
+  if (/\bsequence\b/i.test(text) || isGcpWebStack(text)) return false;
+  const pipeline = /\bdata\s+pipelines?\b/i.test(text);
+  const dataflow = mentionsDataflow(text);
+  const dataProduct = mentionsGcp(text) || dataflow || mentionsPubSub(text) || mentionsBigQuery(text);
+  if (pipeline && dataProduct) return true;
+  return dataflow && (mentionsGcp(text) || mentionsPubSub(text) || mentionsBigQuery(text));
+}
+
 function namedGcpServices(text: string): GcpServiceId[] {
   const ids: GcpServiceId[] = [];
   if (/\bcloud\s+load\s+balanc|\bcloud\s+lb\b/i.test(text) || (mentionsGcp(text) && /\bload\s+balanc/i.test(text))) {
@@ -923,11 +983,12 @@ function namedGcpServices(text: string): GcpServiceId[] {
   if (/\bcloud\s+run\b/i.test(text)) ids.push("run");
   if (/\bcloud\s+functions\b/i.test(text)) ids.push("functions");
   if (/\bgke\b|\bgoogle\s+kubernetes\s+engine\b/i.test(text)) ids.push("gke");
+  if (mentionsDataflow(text)) ids.push("dataflow");
   if (/\bvpc\s+connector\b|\bserverless\s+vpc\s+access\b|\bvpc\s+access\s+connector\b/i.test(text)) ids.push("vpc");
   if (/\bcloud\s+sql\b/i.test(text)) ids.push("sql");
   if (/\bcloud\s+storage\b|\bgcs\b/i.test(text)) ids.push("storage");
-  if (/\bbigquery\b/i.test(text)) ids.push("bigquery");
-  if (/\b(?:cloud\s+)?pub(?:\/|\s)?sub\b|\bpubsub\b/i.test(text)) ids.push("pubsub");
+  if (mentionsBigQuery(text)) ids.push("bigquery");
+  if (mentionsPubSub(text)) ids.push("pubsub");
   return ids;
 }
 
@@ -957,6 +1018,39 @@ function gcpEdgeLabel(from: string, to: GcpServiceId): string {
   if (to === "lb" || from === "internet") return "HTTPS";
   if (from === "lb") return "HTTP";
   return "Call";
+}
+
+function gcpDataPipeline(text: string): TemplateMatch {
+  const pub = mentionsPubSub(text);
+  const flow = mentionsDataflow(text);
+  const warehouse = mentionsBigQuery(text);
+  const named = pub || flow || warehouse;
+  const steps: Array<{ id: string; label: string; shape: LayerNode["shape"]; cluster: string; clusterLabel: string }> = [];
+  if (!named || pub) steps.push({ id: "pubsub", label: "Pub/Sub", shape: "queue", cluster: "ingest", clusterLabel: "Ingest" });
+  if (!named || flow) steps.push({ id: "dataflow", label: "Dataflow", shape: "rectangle", cluster: "process", clusterLabel: "Processing" });
+  if (!named || warehouse) {
+    steps.push({ id: "bigquery", label: "BigQuery", shape: "cylinder", cluster: "warehouse", clusterLabel: "Warehouse" });
+  }
+  const groups = steps.map((step) => col(step.cluster, step.clusterLabel, [node(step.id, step.label, step.shape)]));
+  const edges: LayerEdge[] = [];
+  for (let index = 1; index < steps.length; index += 1) {
+    const from = steps[index - 1];
+    const to = steps[index];
+    if (!from || !to) continue;
+    const label = to.id === "bigquery" ? "Load" : to.id === "dataflow" ? "Stream" : "Next";
+    edges.push(edge(from.id, to.id, label));
+  }
+  const names = steps.map((step) => step.label);
+  const chain = names.join(" → ");
+  return {
+    context: "A GCP data pipeline ingests with Pub/Sub, processes in Dataflow, and loads BigQuery. It is not a Cloud Run web stack.",
+    spec: layers(
+      "GCP data pipeline",
+      `Drew a GCP data pipeline: ${chain}.`,
+      groups,
+      edges,
+    ),
+  };
 }
 
 function gcpArchitecture(text: string): TemplateMatch {
@@ -1047,7 +1141,42 @@ function eventDriven(text: string): TemplateMatch {
   };
 }
 
-function microservices(): TemplateMatch {
+function namedMicroservices(services: string[], kafka: boolean): TemplateMatch {
+  const serviceNodes = services.map((label, index) => node(`svc${index}`, label, "rectangle"));
+  const groups: LayerGroup[] = [
+    col("clients", "Clients", [node("client", "Client", "rectangle")]),
+    col("edge", "Edge", [node("gateway", "API Gateway", "hexagon")]),
+    serviceNodes.length > 1
+      ? row("services", "Services", serviceNodes)
+      : col("services", "Services", serviceNodes),
+  ];
+  const edges: LayerEdge[] = [
+    edge("client", "gateway", "HTTPS"),
+    ...serviceNodes.map((service) => edge("gateway", service.id, "Route")),
+  ];
+  if (kafka) {
+    groups.push(col("bus", "Bus", [node("kafka", "Kafka", "queue")]));
+    for (const service of serviceNodes) edges.push(edge(service.id, "kafka", "Publish"));
+  }
+  const listed = services.join(" and ");
+  return {
+    context: kafka
+      ? `The API gateway routes to ${listed}, and those services publish to Kafka.`
+      : `The API gateway routes to ${listed}. Each named service stays on the diagram.`,
+    spec: layers(
+      "Microservices",
+      kafka
+        ? `Drew microservices: API Gateway in front of ${listed}, with Kafka.`
+        : `Drew microservices: API Gateway in front of ${listed}.`,
+      groups,
+      edges,
+    ),
+  };
+}
+
+function microservices(text: string): TemplateMatch {
+  const services = namedServiceLabels(text);
+  if (services.length > 0) return namedMicroservices(services, /\bkafka\b/i.test(text));
   return {
     context: "A gateway routes to independent services. Each service owns its database.",
     spec: layers(
@@ -1106,8 +1235,87 @@ function isDetailedVpc(text: string): boolean {
   return /\b(internet gateway|\bigw\b|\bnat\b)/i.test(text);
 }
 
+function mentionsFargate(text: string): boolean {
+  return /\bfargate\b/i.test(text);
+}
+
+function mentionsElastiCache(text: string): boolean {
+  return /\belasti\s*cache\b/i.test(text);
+}
+
+type AwsServiceId = "alb" | "ecs" | "rds" | "elasticache";
+
+interface AwsService {
+  id: AwsServiceId;
+  label: string;
+  shape: LayerNode["shape"];
+  tier: "edge" | "compute" | "data";
+}
+
+function awsCatalog(text: string): Record<AwsServiceId, AwsService> {
+  const ecsLabel = mentionsFargate(text) ? "ECS Fargate" : "ECS";
+  return {
+    alb: { id: "alb", label: "ALB", shape: "hexagon", tier: "edge" },
+    ecs: { id: "ecs", label: ecsLabel, shape: "rectangle", tier: "compute" },
+    rds: { id: "rds", label: "RDS", shape: "cylinder", tier: "data" },
+    elasticache: { id: "elasticache", label: "ElastiCache", shape: "cylinder", tier: "data" },
+  };
+}
+
+function namedAwsServices(text: string): AwsServiceId[] {
+  const ids: AwsServiceId[] = [];
+  if (/\balb\b|\bapplication\s+load\s+balancer\b/i.test(text)) ids.push("alb");
+  if (/\becs\b|\bfargate\b/i.test(text)) ids.push("ecs");
+  if (/\brds\b/i.test(text)) ids.push("rds");
+  if (mentionsElastiCache(text)) ids.push("elasticache");
+  return ids;
+}
+
+/** Fargate naming and ElastiCache extend the VPC sketch. The plain ALB → ECS → RDS diagram stays as it is. */
+function usesNamedAwsSelection(text: string): boolean {
+  return mentionsFargate(text) || mentionsElastiCache(text);
+}
+
+function awsNamedArchitecture(text: string): TemplateMatch {
+  const catalog = awsCatalog(text);
+  const named = namedAwsServices(text);
+  const ids: AwsServiceId[] = named.length > 0 ? named : ["alb", "ecs", "rds"];
+  const selected = ids.map((id) => catalog[id]);
+  const alb = selected.find((service) => service.id === "alb");
+  const ecs = selected.find((service) => service.id === "ecs");
+  const rds = selected.find((service) => service.id === "rds");
+  const cache = selected.find((service) => service.id === "elasticache");
+  const groups: LayerGroup[] = [col("edge", "Edge", [node("internet", "Internet", "cloud")])];
+  const edges: LayerEdge[] = [];
+  if (alb) groups.push(col("public", "Public subnet", [node(alb.id, alb.label, alb.shape)]));
+  if (ecs) groups.push(col("private", "Private subnet", [node(ecs.id, ecs.label, ecs.shape)]));
+  const data = [rds, cache].filter((service): service is AwsService => Boolean(service));
+  if (data.length > 0) {
+    groups.push(col("data", "Data subnet", data.map((service) => node(service.id, service.label, service.shape))));
+  }
+  if (alb) edges.push(edge("internet", alb.id, "HTTPS"));
+  else if (ecs) edges.push(edge("internet", ecs.id, "HTTPS"));
+  if (alb && ecs) edges.push(edge(alb.id, ecs.id, "HTTP"));
+  const compute = ecs?.id ?? alb?.id ?? null;
+  if (compute && rds) edges.push(edge(compute, rds.id, "SQL"));
+  if (compute && cache) edges.push(edge(compute, cache.id, "Cache", Boolean(rds)));
+  const labels = selected.map((service) => service.label);
+  const chain = ["Internet", ...labels.filter((label) => label !== "ElastiCache")].join(" → ");
+  return {
+    context:
+      "A public load balancer forwards into private compute. ECS reads RDS, and ElastiCache sits beside that path when the request names it. This is not API Gateway, Lambda, or DynamoDB.",
+    spec: layers(
+      "AWS VPC",
+      cache ? `Drew an AWS architecture: ${chain}, with ElastiCache.` : `Drew an AWS architecture: ${chain}.`,
+      groups,
+      edges,
+    ),
+  };
+}
+
 function cloudVpc(text: string): TemplateMatch {
   if (isDetailedVpc(text)) return detailedVpc();
+  if (usesNamedAwsSelection(text)) return awsNamedArchitecture(text);
   return {
     context: "A public load balancer forwards into a private compute tier, which reads a managed database.",
     spec: layers(
