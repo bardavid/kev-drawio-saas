@@ -5,7 +5,7 @@ import { env } from "@/lib/env";
 import { KevError } from "@/lib/kev/client";
 import { colorInMessage, compositionDecision, renderComposition, resolveComposition, sameMxfile } from "@/lib/kev/compose";
 import { decideDemo } from "@/lib/kev/demo";
-import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
+import { DiagramXmlError, applyOperations, edgeQuery } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { architectureDecision, isArchitectureRequest, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
@@ -74,6 +74,12 @@ function operationsOf(decision: KevDecision): DiagramOperation[] {
   if (decision.operations.length > 0) return decision.operations;
   if (decision.intent === "clarify" || decision.intent === "noop") return [];
   return [{ intent: decision.intent, slots: decision.slots }];
+}
+
+function isEdgeRestyle(operation: DiagramOperation): boolean {
+  if (operation.intent !== "style" && operation.intent !== "edit_shape") return false;
+  const query = operation.slots.target || operation.slots.label || "";
+  return edgeQuery(query) !== null;
 }
 
 function structureKey(summary: DiagramSummary): string {
@@ -216,8 +222,10 @@ function finish(
   }
 
   const operations = operationsOf(decision);
+  // Edge words are not vertices. Apply the mutator so a model mxfile cannot skip the stroke change or move nodes.
+  const edgeRestyle = operations.some(isEdgeRestyle);
   let candidate: string | null = null;
-  if (decision.updatedXml && decision.updatedXml.length <= MAX_XML) {
+  if (!edgeRestyle && decision.updatedXml && decision.updatedXml.length <= MAX_XML) {
     try {
       const normalized = assertLoadableMxfile(decision.updatedXml);
       if (xmlSatisfies(currentXml, normalized, decision)) candidate = normalized;
