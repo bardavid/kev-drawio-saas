@@ -446,6 +446,45 @@ describe("popular diagram templates", () => {
     }
   });
 
+  it("draws the harsh GCP prompt with native service labels, not the event bus", () => {
+    const prompt =
+      "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.match(drawn.decision.reply, /Cloud Load Balancing/);
+    assert.match(drawn.decision.reply, /VPC connector/);
+    assert.equal(/event-driven|Event broker/i.test(drawn.decision.reply), false);
+    const report = assertClean(drawn.xml);
+    for (const label of ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Pub/Sub", "VPC connector"]) {
+      box(report, label);
+    }
+    for (const stolen of ["Event broker", "Web", "Worker", "Billing", "Mail"]) {
+      assert.equal(
+        content(report.nodes).some((node) => node.label === stolen),
+        false,
+        stolen,
+      );
+    }
+    above(report, "Cloud Load Balancing", "Cloud Run");
+    above(report, "Cloud Run", "VPC connector");
+    above(report, "VPC connector", "Cloud SQL");
+    above(report, "Cloud SQL", "Pub/Sub");
+    linked(report, "Cloud Load Balancing", "Cloud Run", "HTTP");
+    linked(report, "Cloud Run", "VPC connector", "Private");
+    linked(report, "VPC connector", "Cloud SQL", "SQL");
+    linked(report, "Cloud Run", "Pub/Sub", "Publish");
+  });
+
+  it("does not keyword-match the event bus when a GCP service is named", () => {
+    for (const prompt of ["draw Cloud Run and Pub/Sub", "draw Cloud SQL and Kafka", "draw a VPC connector and Pub/Sub"]) {
+      const report = assertClean(previewDemo(prompt, STARTER_XML).xml);
+      assert.equal(content(report.nodes).some((node) => node.label === "Event broker"), false, prompt);
+      assert.equal(content(report.nodes).some((node) => node.label === "Kafka"), false, prompt);
+      assert.equal(content(report.nodes).some((node) => node.label === "Web"), false, prompt);
+    }
+    const kafka = assertClean(previewDemo("draw a kafka architecture", STARTER_XML).xml);
+    assert.ok(content(kafka.nodes).some((node) => node.label === "Kafka"));
+  });
+
   it("does not let Pub/Sub steal a multi-service GCP architecture", () => {
     const prompts = [
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",

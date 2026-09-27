@@ -795,6 +795,7 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw an e-commerce data model",
       "draw an AWS VPC architecture with an ALB, ECS, and RDS",
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
+      "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.",
       "draw a kubernetes deployment",
       "draw an order state machine",
       "draw a network diagram with a firewall and a DMZ",
