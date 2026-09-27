@@ -80,6 +80,27 @@ function exitY(style: string): number {
   return Number(style.match(/exitY=([0-9.]+)/)?.[1] ?? "0");
 }
 
+function tierWithRedis(): string {
+  const drawn = previewDemo(
+    "draw a 3-tier web application diagram with a CDN, a load balancer, and a database",
+    EMPTY_XML,
+  ).xml;
+  return applyOperations(drawn, [
+    {
+      intent: "add_shape",
+      slots: {
+        label: "Redis",
+        shape: "cylinder",
+        colorName: "red",
+        fillColor: "#f8cecc",
+        strokeColor: "#b85450",
+        from: "Web/app servers",
+        to: "Database",
+      },
+    },
+  ]);
+}
+
 describe("diagram quality", () => {
   it("separates boxes that were placed on top of each other", () => {
     assert.ok(assessDiagram(OVERLAP_XML).overlaps.length > 0);
@@ -331,6 +352,61 @@ describe("diagram quality", () => {
     ]);
     assert.deepEqual(geometrySignature(renamed), before);
     assert.ok(assessDiagram(renamed).edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+  });
+
+  it("restyles every edge group when the user says make the arrows blue", async () => {
+    const xml = tierWithRedis();
+    const before = geometrySignature(xml);
+    const beforeReport = assessDiagram(xml);
+    const sources = new Set(beforeReport.edges.map((edge) => edge.from));
+    assert.ok(beforeReport.edges.length >= 5);
+    assert.ok(sources.size >= 4);
+    assert.ok(sources.has("Browser"));
+    assert.ok(sources.has("Redis"));
+    assert.ok(beforeReport.edges.some((edge) => edge.from === "Web/app servers" && edge.to === "Redis"));
+    assert.ok(beforeReport.edges.every((edge) => edge.style.includes("strokeColor=#64748b")));
+
+    const phrase = "Make the arrows blue. Do not rearrange anything.";
+    const restyled = await runKevTurn({
+      messages: [{ role: "user", content: phrase }],
+      currentXml: xml,
+    });
+    assert.equal(restyled.intent, "style");
+    assert.equal(restyled.slots.target, "arrows");
+    assert.equal(restyled.slots.colorName, "blue");
+    assert.equal(restyled.slots.from ?? null, null);
+    assert.equal(restyled.slots.to ?? null, null);
+    assert.doesNotMatch(restyled.reply, /shape named/i);
+    assert.deepEqual(geometrySignature(restyled.updatedXml), before);
+    const after = assessDiagram(restyled.updatedXml);
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+    assert.deepEqual(
+      after.nodes.map((node) => node.style),
+      beforeReport.nodes.map((node) => node.style),
+    );
+    assert.deepEqual(
+      after.edges.map((edge) => edge.points),
+      beforeReport.edges.map((edge) => edge.points),
+    );
+
+    const fromBrowser = previewDemo("make the arrows from Browser blue", xml);
+    assert.equal(fromBrowser.decision.intent, "style");
+    assert.equal(fromBrowser.decision.slots.from, "Browser");
+    assert.equal(fromBrowser.decision.slots.to ?? null, null);
+    assert.deepEqual(geometrySignature(fromBrowser.xml), before);
+    const browserEdges = assessDiagram(fromBrowser.xml).edges;
+    assert.ok(browserEdges.filter((edge) => edge.from === "Browser").every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+    assert.ok(browserEdges.filter((edge) => edge.from !== "Browser").every((edge) => edge.style.includes("strokeColor=#64748b")));
+
+    const intoRedis = previewDemo("blue arrows into Redis", xml);
+    assert.equal(intoRedis.decision.intent, "style");
+    assert.equal(intoRedis.decision.slots.to, "Redis");
+    assert.equal(intoRedis.decision.slots.from ?? null, null);
+    assert.deepEqual(geometrySignature(intoRedis.xml), before);
+    const redisEdges = assessDiagram(intoRedis.xml).edges;
+    assert.ok(redisEdges.filter((edge) => edge.to === "Redis").every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+    assert.ok(redisEdges.filter((edge) => edge.to !== "Redis").every((edge) => edge.style.includes("strokeColor=#64748b")));
+    assert.ok(redisEdges.some((edge) => edge.to === "Redis"));
   });
 
   it("restyles every box red without moving the login sequence", () => {
@@ -913,6 +989,49 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     );
     assert.ok(after.nodes.every((node) => node.style.includes("fillColor=#f8cecc")));
     assert.ok(after.nodes.every((node) => node.style.includes("strokeColor=#b85450")));
+  });
+
+  it("recolors every edge when a reading scopes arrows to the first shape", async () => {
+    const xml = tierWithRedis();
+    const before = geometrySignature(xml);
+    const beforeReport = assessDiagram(xml);
+    process.env.KEV_BASE_URL = "http://kev.local";
+    process.env.OPENAI_API_KEY = "sk-test";
+    globalThis.fetch = (async () => {
+      throw new Error("unqualified arrow restyle is host-owned");
+    }) as typeof fetch;
+
+    const restyled = await runKevTurn({
+      messages: [{ role: "user", content: "Make the arrows blue. Do not rearrange anything." }],
+      currentXml: xml,
+    });
+    assert.equal(restyled.intent, "style");
+    assert.equal(restyled.mode, "kev");
+    assert.equal(restyled.slots.target, "arrows");
+    assert.equal(restyled.slots.from ?? null, null);
+    assert.equal(restyled.slots.to ?? null, null);
+    assert.deepEqual(geometrySignature(restyled.updatedXml), before);
+    const after = assessDiagram(restyled.updatedXml);
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+    assert.deepEqual(
+      after.nodes.map((node) => node.style),
+      beforeReport.nodes.map((node) => node.style),
+    );
+    assert.deepEqual(
+      after.edges.map((edge) => ({ from: edge.from, to: edge.to, points: edge.points })),
+      beforeReport.edges.map((edge) => ({ from: edge.from, to: edge.to, points: edge.points })),
+    );
+
+    const scoped = await runKevTurn({
+      messages: [{ role: "user", content: "make the arrows from Browser blue" }],
+      currentXml: xml,
+    });
+    assert.equal(scoped.slots.from, "Browser");
+    assert.equal(scoped.slots.to ?? null, null);
+    assert.deepEqual(geometrySignature(scoped.updatedXml), before);
+    const scopedEdges = assessDiagram(scoped.updatedXml).edges;
+    assert.ok(scopedEdges.filter((edge) => edge.from === "Browser").every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+    assert.ok(scopedEdges.filter((edge) => edge.from !== "Browser").every((edge) => edge.style.includes("strokeColor=#64748b")));
   });
 
   it("draws login, io_uring, and tax workflows through the live gate", async () => {

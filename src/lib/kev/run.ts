@@ -11,7 +11,7 @@ import {
   templateCanvasPlan,
   templateReferenceFor,
 } from "@/lib/kev/compose";
-import { decideDemo } from "@/lib/kev/demo";
+import { decideDemo, edgeRestyleDecision } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations, edgeQuery } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
@@ -227,8 +227,12 @@ function finish(
   model: string | undefined,
   originalXml: string,
   currentXml: string,
-  extra: { fallback?: boolean; confidence?: number | null } = {},
+  extra: { fallback?: boolean; confidence?: number | null; userMessage?: string } = {},
 ): KevTurnResult {
+  if (extra.userMessage) {
+    const uttered = edgeRestyleDecision(extra.userMessage);
+    if (uttered) decision = uttered;
+  }
   if (decision.intent === "clarify" || decision.intent === "noop") {
     return result(decision, mode, model, originalXml, false, extra);
   }
@@ -334,7 +338,9 @@ function localDiagram(
       false,
     );
   }
-  const drawn = finish(architectureDecision(plan, operations), mode, model, originalXml, currentXml);
+  const drawn = finish(architectureDecision(plan, operations), mode, model, originalXml, currentXml, {
+    userMessage,
+  });
   if (sameMxfile(drawn.updatedXml, originalXml) || sameMxfile(drawn.updatedXml, currentXml)) {
     return result(
       { intent: "noop", slots: {}, operations: [], reply: UNCHANGED_DIAGRAM_REPLY, updatedXml: null },
@@ -381,6 +387,7 @@ async function runOpenAITurn(input: {
   }
   return finish(decision, "openai", client.model, input.originalXml, input.currentXml, {
     fallback: input.fallback,
+    userMessage: input.userMessage,
   });
 }
 
@@ -399,6 +406,10 @@ export async function runKevTurn(input: {
 
   const described = describeMode();
   const userMessage = latestUser(input.messages);
+  const utteredEdges = edgeRestyleDecision(userMessage);
+  if (utteredEdges) {
+    return finish(utteredEdges, described.mode, described.model, input.currentXml, currentXml, { userMessage });
+  }
   const context = editContext(currentXml, input.previousXml);
   const request = {
     messages: input.messages,

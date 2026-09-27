@@ -184,11 +184,17 @@ export function buildSystemOneRequest(input: {
         none: "No relative placement",
       }),
       anchor: choiceQuestion(
-        "Which existing shape is the subject of this edit? Choose none when every box should change. Choose none for arrows, edges, connectors, or lines.",
+        "Which existing shape is the subject of this edit? Choose none when every box should change. Choose none for arrows, edges, connectors, or lines unless the user named a shape, such as arrows from Browser or arrows into Redis.",
         vertices,
       ),
-      source: choiceQuestion("Which existing shape is the edge source, if any?", vertices),
-      target: choiceQuestion("Which existing shape is the edge target, if any?", vertices),
+      source: choiceQuestion(
+        "Which existing shape is the edge source, if any? Choose none when the user did not name a source. “Make the arrows blue” names no shape.",
+        vertices,
+      ),
+      target: choiceQuestion(
+        "Which existing shape is the edge target, if any? Choose none when the user did not name a destination. “Make the arrows blue” names no shape.",
+        vertices,
+      ),
       disruption: {
         type: "score",
         instructions: "How much of the current diagram should change?",
