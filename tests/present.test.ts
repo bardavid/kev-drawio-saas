@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { GET, POST } from "../src/app/api/chat/route";
-import { SEEDED_XML } from "../src/lib/drawio/starter";
+import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { presentChatError, presentChatStatus, presentChatTurn } from "../src/lib/kev/present";
 import { buildSystemPrompt, buildXmlWriterPrompt } from "../src/lib/kev/prompt";
 import { describeMode } from "../src/lib/kev/run";
@@ -34,13 +34,13 @@ function tsxFiles(dir: string): string[] {
   return out;
 }
 
-function chatRequest(content: string): Request {
+function chatRequest(content: string, currentXml = SEEDED_XML): Request {
   return new Request("http://draw.ai/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: [{ role: "user", content }],
-      currentXml: SEEDED_XML,
+      currentXml,
     }),
   });
 }
@@ -71,7 +71,7 @@ describe("client-facing chat", () => {
       throw new TypeError("connect ECONNREFUSED");
     }) as typeof fetch;
 
-    const response = await POST(chatRequest("draw a login sequence"));
+    const response = await POST(chatRequest("draw a login sequence", STARTER_XML));
     const body = (await response.json()) as KevTurnResult;
     assert.equal(response.status, 200);
     assert.match(body.reply, /login sequence/);
