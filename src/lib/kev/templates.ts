@@ -38,6 +38,8 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isStateMachine(text)) return stateMachine(text);
   if (isEr(text)) return erDiagram(text);
   if (isCqrs(text)) return cqrs();
+  // Pub/Sub is also a generic bus. A GCP or multi-service GCP ask has to win first.
+  if (isGcp(text)) return gcpArchitecture(text);
   if (isEventDriven(text)) return eventDriven(text);
   if (isMicroservices(text)) return microservices();
   if (isCloud(text)) return cloudVpc(text);
@@ -56,7 +58,7 @@ export function matchTemplate(message: string): TemplateMatch | null {
 export function composeFromBrief(message: string, summary: string): Composition | null {
   const brief = summary.replace(/\s+/g, " ").trim();
   if (brief.length < 40) return null;
-  if (matchTemplate(message) || redisDiagramRequest(message)) return null;
+  if (matchTemplate(message) || redisDiagramRequest(message) || isGcp(message)) return null;
   const topic = wikipediaTitle(message);
   if (!topic) return null;
   const label = topic.length > 32 ? `${topic.slice(0, 31).trim()}…` : topic;
@@ -165,6 +167,8 @@ function isCqrs(text: string): boolean {
 
 function isEventDriven(text: string): boolean {
   if (/\bsequence\b/i.test(text)) return false;
+  // A named GCP product is not a generic bus, even when the sentence also says Pub/Sub or Kafka.
+  if (isGcp(text)) return false;
   return /\bevent[- ]driven\b|\bpub(?:\/|\s)?sub\b|\bmessage bus\b|\bkafka\b/i.test(text);
 }
 
@@ -173,6 +177,7 @@ function isMicroservices(text: string): boolean {
 }
 
 function isCloud(text: string): boolean {
+  if (isGcp(text)) return false;
   return (
     /\b(vpc|aws|amazon web services)\b/i.test(text) ||
     /\bcloud architecture\b/i.test(text) ||
@@ -193,7 +198,7 @@ function isCdn(text: string): boolean {
 }
 
 function isLoadBalancer(text: string): boolean {
-  if (isCloud(text)) return false;
+  if (isCloud(text) || isGcp(text)) return false;
   return /\bload[\s-]?balanc/i.test(text);
 }
 
@@ -498,6 +503,139 @@ function cqrs(): TemplateMatch {
         { from: "queries", to: "read" },
       ],
     },
+  };
+}
+
+type GcpServiceId = "lb" | "run" | "functions" | "gke" | "vpc" | "sql" | "storage" | "bigquery" | "pubsub";
+
+interface GcpService {
+  id: GcpServiceId;
+  label: string;
+  shape: LayerNode["shape"];
+  tier: "edge" | "compute" | "network" | "data";
+}
+
+const GCP_SERVICES: Record<GcpServiceId, GcpService> = {
+  lb: { id: "lb", label: "Cloud Load Balancing", shape: "hexagon", tier: "edge" },
+  run: { id: "run", label: "Cloud Run", shape: "rectangle", tier: "compute" },
+  functions: { id: "functions", label: "Cloud Functions", shape: "rectangle", tier: "compute" },
+  gke: { id: "gke", label: "GKE", shape: "rectangle", tier: "compute" },
+  vpc: { id: "vpc", label: "VPC connector", shape: "rectangle", tier: "network" },
+  sql: { id: "sql", label: "Cloud SQL", shape: "cylinder", tier: "data" },
+  storage: { id: "storage", label: "Cloud Storage", shape: "cylinder", tier: "data" },
+  bigquery: { id: "bigquery", label: "BigQuery", shape: "cylinder", tier: "data" },
+  pubsub: { id: "pubsub", label: "Pub/Sub", shape: "queue", tier: "data" },
+};
+
+const GCP_DEFAULT: GcpServiceId[] = ["lb", "run", "sql", "pubsub"];
+const GCP_TIER_ORDER: Array<GcpService["tier"]> = ["edge", "compute", "network", "data"];
+
+function mentionsGcp(text: string): boolean {
+  return /\bgcp\b|\bgoogle\s+cloud\b/i.test(text);
+}
+
+function namedGcpServices(text: string): GcpServiceId[] {
+  const ids: GcpServiceId[] = [];
+  if (/\bcloud\s+load\s+balanc|\bcloud\s+lb\b/i.test(text) || (mentionsGcp(text) && /\bload\s+balanc/i.test(text))) {
+    ids.push("lb");
+  }
+  if (/\bcloud\s+run\b/i.test(text)) ids.push("run");
+  if (/\bcloud\s+functions\b/i.test(text)) ids.push("functions");
+  if (/\bgke\b|\bgoogle\s+kubernetes\s+engine\b/i.test(text)) ids.push("gke");
+  if (/\bvpc\s+connector\b|\bserverless\s+vpc\s+access\b|\bvpc\s+access\s+connector\b/i.test(text)) ids.push("vpc");
+  if (/\bcloud\s+sql\b/i.test(text)) ids.push("sql");
+  if (/\bcloud\s+storage\b|\bgcs\b/i.test(text)) ids.push("storage");
+  if (/\bbigquery\b/i.test(text)) ids.push("bigquery");
+  if (/\b(?:cloud\s+)?pub(?:\/|\s)?sub\b|\bpubsub\b/i.test(text)) ids.push("pubsub");
+  return ids;
+}
+
+/**
+ * GCP, Google Cloud, or any concrete GCP product. Pub/Sub alone stays event-driven.
+ * "Google Cloud architecture" also contains "cloud architecture", which is the AWS phrase.
+ */
+function isGcp(text: string): boolean {
+  if (/\bsequence\b/i.test(text)) return false;
+  if (mentionsGcp(text)) return true;
+  return namedGcpServices(text).some((id) => id !== "pubsub");
+}
+
+function gcpSelection(text: string): GcpService[] {
+  const named = namedGcpServices(text);
+  if (named.length === 0 || (mentionsGcp(text) && named.every((id) => id === "pubsub"))) {
+    return GCP_DEFAULT.map((id) => GCP_SERVICES[id]);
+  }
+  return named.map((id) => GCP_SERVICES[id]);
+}
+
+function gcpEdgeLabel(from: string, to: GcpServiceId): string {
+  if (to === "sql") return "SQL";
+  if (to === "pubsub") return "Publish";
+  if (to === "vpc") return "Private";
+  if (to === "storage" || to === "bigquery") return "Read / write";
+  if (to === "lb" || from === "internet") return "HTTPS";
+  if (from === "lb") return "HTTP";
+  return "Call";
+}
+
+function gcpArchitecture(text: string): TemplateMatch {
+  const selected = gcpSelection(text);
+  const tiers = GCP_TIER_ORDER.map((tier) => selected.filter((service) => service.tier === tier)).filter(
+    (services) => services.length > 0,
+  );
+  const groups: LayerGroup[] = [];
+  const edges: LayerEdge[] = [];
+  const hasFront = tiers.some((services) => services[0]?.tier === "edge" || services[0]?.tier === "compute");
+  if (hasFront) groups.push(col("clients", "Clients", [node("internet", "Internet", "cloud")]));
+
+  let anchor: string | null = hasFront ? "internet" : null;
+  for (const services of tiers) {
+    const tier = services[0]?.tier ?? "data";
+    const layerNodes = services.map((service) => node(service.id, service.label, service.shape));
+    const clusterId = tier === "edge" ? "edge" : tier === "compute" ? "compute" : tier === "network" ? "network" : "data";
+    const clusterLabel = tier === "edge" ? "Edge" : tier === "compute" ? "Compute" : tier === "network" ? "Network" : "Data";
+    groups.push(col(clusterId, clusterLabel, layerNodes));
+    if (tier === "data" && anchor) {
+      const compute = selected.find((service) => service.tier === "compute");
+      services.forEach((service, serviceIndex) => {
+        if (!anchor) return;
+        // Async events leave Cloud Run. They do not travel through the VPC connector.
+        if (service.id === "pubsub" && compute && compute.id !== anchor) {
+          edges.push(edge(compute.id, service.id, "Publish", true));
+          return;
+        }
+        edges.push(edge(anchor, service.id, gcpEdgeLabel(anchor, service.id), serviceIndex > 0));
+      });
+      continue;
+    }
+    services.forEach((service, serviceIndex) => {
+      const from = serviceIndex === 0 ? anchor : (services[serviceIndex - 1]?.id ?? null);
+      if (from) edges.push(edge(from, service.id, gcpEdgeLabel(from, service.id)));
+      anchor = service.id;
+    });
+  }
+
+  const names = selected.map((service) => service.label);
+  const full =
+    names.includes("Cloud Load Balancing") &&
+    names.includes("Cloud Run") &&
+    names.includes("Cloud SQL") &&
+    names.includes("Pub/Sub");
+  const vpc = names.includes("VPC connector");
+  return {
+    context: vpc
+      ? "On GCP, clients reach Cloud Load Balancing, Cloud Run serves the request, a VPC connector reaches Cloud SQL, and Pub/Sub carries async events."
+      : "On GCP, clients reach Cloud Load Balancing, Cloud Run serves the request, Cloud SQL stores relational data, and Pub/Sub carries events.",
+    spec: layers(
+      "GCP",
+      full
+        ? vpc
+          ? "Drew a GCP architecture: Internet → Cloud Load Balancing → Cloud Run → VPC connector → Cloud SQL, and Cloud Run publishes to Pub/Sub."
+          : "Drew a GCP architecture: Internet → Cloud Load Balancing → Cloud Run, with Cloud SQL and Pub/Sub."
+        : `Drew a GCP architecture with ${names.join(", ")}.`,
+      groups,
+      edges,
+    ),
   };
 }
 

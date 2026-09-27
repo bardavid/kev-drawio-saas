@@ -312,6 +312,23 @@ const FIXTURES: Fixture[] = [
     clusters: ["Internet", "Perimeter", "DMZ", "Internal", "Private"],
   },
   {
+    prompt: "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
+    labels: ["Internet", "Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Pub/Sub"],
+    edges: [
+      ["Internet", "Cloud Load Balancing", "HTTPS"],
+      ["Cloud Load Balancing", "Cloud Run", "HTTP"],
+      ["Cloud Run", "Cloud SQL", "SQL"],
+      ["Cloud Run", "Pub/Sub", "Publish"],
+    ],
+    above: [
+      ["Internet", "Cloud Load Balancing"],
+      ["Cloud Load Balancing", "Cloud Run"],
+      ["Cloud Run", "Cloud SQL"],
+      ["Cloud SQL", "Pub/Sub"],
+    ],
+    clusters: ["Clients", "Edge", "Compute", "Data"],
+  },
+  {
     prompt: "draw a system architecture",
     labels: ["Browser", "Web", "API", "Database"],
     edges: [
@@ -496,6 +513,86 @@ describe("popular diagram templates", () => {
     linked(states, "Draft", "Review", "Submit");
     linked(states, "Review", "Published", "Approve");
     linked(states, "Review", "Rejected", "Reject");
+  });
+
+  it("keeps a bare Pub/Sub ask on the event-driven template", () => {
+    for (const prompt of ["draw a Pub/Sub architecture", "draw a pubsub diagram", "draw an event-driven architecture"]) {
+      const report = assertClean(previewDemo(prompt, STARTER_XML).xml);
+      assert.ok(content(report.nodes).some((node) => node.label === "Event broker"), prompt);
+      assert.equal(
+        content(report.nodes).some((node) => node.label === "Cloud Run"),
+        false,
+        prompt,
+      );
+    }
+  });
+
+  it("draws the harsh GCP prompt with native service labels, not the event bus", () => {
+    const prompt =
+      "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.match(drawn.decision.reply, /Cloud Load Balancing/);
+    assert.match(drawn.decision.reply, /VPC connector/);
+    assert.equal(/event-driven|Event broker/i.test(drawn.decision.reply), false);
+    const report = assertClean(drawn.xml);
+    for (const label of ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Pub/Sub", "VPC connector"]) {
+      box(report, label);
+    }
+    for (const stolen of ["Event broker", "Web", "Worker", "Billing", "Mail"]) {
+      assert.equal(
+        content(report.nodes).some((node) => node.label === stolen),
+        false,
+        stolen,
+      );
+    }
+    above(report, "Cloud Load Balancing", "Cloud Run");
+    above(report, "Cloud Run", "VPC connector");
+    above(report, "VPC connector", "Cloud SQL");
+    above(report, "Cloud SQL", "Pub/Sub");
+    linked(report, "Cloud Load Balancing", "Cloud Run", "HTTP");
+    linked(report, "Cloud Run", "VPC connector", "Private");
+    linked(report, "VPC connector", "Cloud SQL", "SQL");
+    linked(report, "Cloud Run", "Pub/Sub", "Publish");
+    assert.equal(
+      composeFromBrief(
+        prompt,
+        "Pub/Sub is a message bus. Producers publish events and workers deliver them to billing and mail systems.",
+      ),
+      null,
+    );
+  });
+
+  it("does not keyword-match the event bus when a GCP service is named", () => {
+    for (const prompt of ["draw Cloud Run and Pub/Sub", "draw Cloud SQL and Kafka", "draw a VPC connector and Pub/Sub"]) {
+      const report = assertClean(previewDemo(prompt, STARTER_XML).xml);
+      assert.equal(content(report.nodes).some((node) => node.label === "Event broker"), false, prompt);
+      assert.equal(content(report.nodes).some((node) => node.label === "Kafka"), false, prompt);
+      assert.equal(content(report.nodes).some((node) => node.label === "Web"), false, prompt);
+    }
+    const kafka = assertClean(previewDemo("draw a kafka architecture", STARTER_XML).xml);
+    assert.ok(content(kafka.nodes).some((node) => node.label === "Kafka"));
+  });
+
+  it("does not let Pub/Sub steal a multi-service GCP architecture", () => {
+    const prompts = [
+      "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
+      "draw Cloud Run, Cloud SQL, Cloud Load Balancing, and Pub/Sub",
+      "draw a Google Cloud architecture with Cloud Run and Cloud SQL",
+    ];
+    for (const prompt of prompts) {
+      const report = assertClean(previewDemo(prompt, STARTER_XML).xml);
+      assert.equal(content(report.nodes).some((node) => node.label === "Event broker"), false, prompt);
+      assert.equal(content(report.nodes).some((node) => node.label === "ALB"), false, prompt);
+      assert.ok(content(report.nodes).some((node) => node.label === "Cloud Run"), prompt);
+      assert.ok(content(report.nodes).some((node) => node.label === "Cloud SQL"), prompt);
+    }
+    const full = assertClean(
+      previewDemo(
+        "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
+        STARTER_XML,
+      ).xml,
+    );
+    for (const label of ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Pub/Sub"]) box(full, label);
   });
 
   it("leaves a generic sequence and flowchart alone", () => {
