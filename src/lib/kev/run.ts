@@ -1,5 +1,6 @@
 import { diffDiagrams, formatDiagramDiff } from "@/lib/drawio/diff";
-import { assertLoadableMxfile, summarizeDiagram } from "@/lib/drawio/xml";
+import { BLANK_XML } from "@/lib/drawio/starter";
+import { assertLoadableMxfile, summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
 import { KevError } from "@/lib/kev/client";
 import { compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
@@ -66,6 +67,14 @@ function operationsOf(decision: KevDecision): DiagramOperation[] {
   return [{ intent: decision.intent, slots: decision.slots }];
 }
 
+function structureKey(summary: DiagramSummary): string {
+  const nodes = summary.vertices
+    .map((vertex) => `${vertex.label}\t${Math.round(vertex.x)}\t${Math.round(vertex.y)}`)
+    .sort();
+  const edges = summary.edges.map((edge) => `${edge.from}\t${edge.to}\t${edge.label}`).sort();
+  return `${nodes.join("\n")}\n--\n${edges.join("\n")}`;
+}
+
 function xmlSatisfies(beforeXml: string, afterXml: string, decision: KevDecision): boolean {
   let before;
   let after;
@@ -79,6 +88,7 @@ function xmlSatisfies(beforeXml: string, afterXml: string, decision: KevDecision
   const deletes = operations.filter((operation) => operation.intent === "delete_shape").length;
   if (after.vertices.length < before.vertices.length - deletes) return false;
   if (before.vertices.length > 0 && after.vertices.length === 0 && deletes < before.vertices.length) return false;
+  if (decision.intent === "style" && structureKey(before) !== structureKey(after)) return false;
   const labels = after.vertices.map((vertex) => vertex.label.toLowerCase());
   for (const operation of operations) {
     if (operation.intent === "add_shape" && operation.slots.label) {
@@ -244,7 +254,7 @@ function finish(
 
 function localDiagram(
   userMessage: string,
-  currentXml: string,
+  _currentXml: string,
   originalXml: string,
   mode: KevMode,
   model?: string,
@@ -256,9 +266,9 @@ function localDiagram(
   }
   const plan = resolvePlan(userMessage);
   if (!plan) return null;
-  const operations = operationsForPlan(plan, currentXml);
+  const operations = operationsForPlan(plan, BLANK_XML);
   if (operations.length === 0) return null;
-  return finish(architectureDecision(plan, operations), mode, model, originalXml, currentXml);
+  return finish(architectureDecision(plan, operations), mode, model, originalXml, BLANK_XML);
 }
 
 export async function runKevTurn(input: {

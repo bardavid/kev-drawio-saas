@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { parseBody } from "../src/app/api/chat/route";
 import { assessDiagram, finalizeDiagram, type QualityNode } from "../src/lib/drawio/layout";
 import { STARTER_XML } from "../src/lib/drawio/starter";
 import { previewDemo } from "../src/lib/kev/demo";
@@ -106,6 +107,16 @@ describe("diagram quality", () => {
     assert.ok(Math.max(...gaps) - Math.min(...gaps) <= 1);
     const xs = report.nodes.map((node) => node.x);
     assert.deepEqual(xs, [...xs].sort((a, b) => a - b));
+    const fromStarter = assessDiagram(previewDemo("draw a 3 tier web app", STARTER_XML).xml);
+    assert.deepEqual(
+      fromStarter.nodes.map((node) => node.label),
+      ["Client", "App", "Postgres"],
+    );
+    assert.deepEqual(
+      fromStarter.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Postgres"],
+    );
+    assert.ok(fromStarter.edges.every((edge) => edge.label === ""));
   });
 
   it("routes a skip edge around the node sitting between its ends", () => {
@@ -279,5 +290,193 @@ describe("composition gate", { concurrency: 1 }, () => {
     assert.deepEqual(content(report.nodes).map((node) => node.label), ["User", "Browser", "Auth Service"]);
     assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
     assert.equal(result.updatedXml.includes("Client"), false);
+  });
+});
+
+describe("live kev architecture", { concurrency: 1 }, () => {
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+  });
+
+  function installKev(writer?: () => string) {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    if (writer) process.env.OPENAI_API_KEY = "sk-test";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body)) as {
+        questions?: Record<string, { type: string }>;
+        state?: string;
+      };
+      if (url.includes("/chat/completions")) {
+        const updatedXml = writer ? writer() : "";
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  intent: "style",
+                  reply: "Set every shape to red.",
+                  updatedXml,
+                  slots: { colorName: "red", fillColor: "#f8cecc", strokeColor: "#b85450" },
+                  operations: [],
+                }),
+              },
+            },
+          ],
+        });
+      }
+      const state = body.state ?? "";
+      const restyle = /change the boxes to red/i.test(state);
+      if (body.questions?.intent) {
+        return Response.json({
+          model: "kev-latest",
+          answers: restyle
+            ? {
+                intent: { type: "choice", choice: "style", confidence: 0.9 },
+                needs_xml_edit: { type: "noul", noul: 0.92 },
+                color: { type: "choice", choice: "red" },
+                anchor: { type: "choice", choice: "none" },
+                shape: { type: "choice", choice: "none" },
+                layout: { type: "choice", choice: "none" },
+              }
+            : {
+                intent: { type: "choice", choice: "noop", confidence: 0.4 },
+                needs_xml_edit: { type: "noul", noul: 0.2 },
+                color: { type: "choice", choice: "none" },
+                shape: { type: "choice", choice: "none" },
+                layout: { type: "choice", choice: "none" },
+                anchor: { type: "choice", choice: "none" },
+              },
+        });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          next: { type: "choice", choice: "apply", confidence: 0.93 },
+          confirm: { type: "noul", noul: 0.97 },
+          shape: { type: "choice", choice: "none" },
+          color: { type: "choice", choice: "none" },
+          layout: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+  }
+
+  it("reads diagramXml when currentXml is omitted", () => {
+    const diagramXml = `<mxfile host="embed.diagrams.net"><diagram id="d" name="D"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>`;
+    const parsed = parseBody({
+      messages: [{ role: "user", content: "draw a 3 tier web app" }],
+      diagramXml,
+    });
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.equal(parsed.value.currentXml, diagramXml);
+    const preferred = parseBody({
+      messages: [{ role: "user", content: "draw a 3 tier web app" }],
+      currentXml: STARTER_XML,
+      diagramXml,
+    });
+    assert.equal(preferred.ok, true);
+    if (!preferred.ok) return;
+    assert.equal(preferred.value.currentXml, STARTER_XML);
+  });
+
+  it("draws a 3 tier web app from the starter, then restyles without moving nodes", async () => {
+    installKev();
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "draw a 3 tier web app" }],
+      currentXml: STARTER_XML,
+    });
+    const report = assertClean(drawn.updatedXml);
+    assert.deepEqual(
+      report.nodes.map((node) => node.label),
+      ["Client", "App", "Postgres"],
+    );
+    assert.deepEqual(
+      report.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Postgres"],
+    );
+    assert.ok(report.edges.every((edge) => edge.label === ""));
+    assert.equal(report.nodes.some((node) => node.label === "API"), false);
+    assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
+    assert.match(report.nodes.find((node) => node.label === "Postgres")?.style ?? "", /cylinder3/);
+    const before = geometrySignature(drawn.updatedXml);
+
+    const restyled = await runKevTurn({
+      messages: [
+        { role: "user", content: "draw a 3 tier web app" },
+        { role: "assistant", content: drawn.reply },
+        { role: "user", content: "change the boxes to red" },
+      ],
+      currentXml: drawn.updatedXml,
+      previousXml: STARTER_XML,
+    });
+    assert.equal(restyled.intent, "style");
+    assert.equal(restyled.reply, "Set every shape to red.");
+    assert.deepEqual(geometrySignature(restyled.updatedXml), before);
+    const after = assessDiagram(restyled.updatedXml);
+    assert.deepEqual(
+      after.nodes.map((node) => node.label),
+      ["Client", "App", "Postgres"],
+    );
+    assert.ok(after.nodes.every((node) => node.style.includes("fillColor=#f8cecc")));
+    assert.ok(after.nodes.every((node) => node.style.includes("strokeColor=#b85450")));
+    assert.deepEqual(
+      after.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Postgres"],
+    );
+  });
+
+  it("keeps architecture geometry when a style writer moves a node", async () => {
+    let source = "";
+    let written = "";
+    installKev(() => {
+      written = source.replace(/(value="Postgres"[\s\S]*?<mxGeometry )x="[^"]*" y="[^"]*"/, '$1x="610" y="168"');
+      return written;
+    });
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "draw a 3 tier web app" }],
+      currentXml: STARTER_XML,
+    });
+    source = drawn.updatedXml;
+    const before = geometrySignature(drawn.updatedXml);
+    const restyled = await runKevTurn({
+      messages: [{ role: "user", content: "change the boxes to red" }],
+      currentXml: drawn.updatedXml,
+    });
+    const moved = assessDiagram(written);
+    assert.equal(moved.nodes.length, before.nodes.length);
+    assert.equal(moved.nodes.find((node) => node.label === "Postgres")?.x, 610);
+    assert.equal(moved.nodes.find((node) => node.label === "Postgres")?.y, 168);
+    assert.equal(restyled.intent, "style");
+    assert.equal(restyled.repaired, true);
+    assert.deepEqual(geometrySignature(restyled.updatedXml), before);
+    const after = assessDiagram(restyled.updatedXml);
+    assert.deepEqual(
+      after.nodes.map((node) => node.label),
+      ["Client", "App", "Postgres"],
+    );
+    assert.ok(after.nodes.every((node) => node.style.includes("fillColor=#f8cecc")));
+    assert.ok(after.nodes.every((node) => node.style.includes("strokeColor=#b85450")));
+  });
+
+  it("draws login, io_uring, and tax workflows through the live gate", async () => {
+    installKev();
+    const prompts = [
+      "draw a user login sequence diagram",
+      "draw io uring usage on XFS filesystem",
+      "draw a workflow for tax filing process in US",
+    ];
+    for (const prompt of prompts) {
+      const result = await runKevTurn({
+        messages: [{ role: "user", content: prompt }],
+        currentXml: STARTER_XML,
+      });
+      const expected = previewDemo(prompt, STARTER_XML).xml;
+      assert.equal(result.intent, "add_shape", prompt);
+      assert.deepEqual(geometrySignature(result.updatedXml), geometrySignature(expected), prompt);
+      assertClean(result.updatedXml);
+    }
   });
 });
