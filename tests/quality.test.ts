@@ -1034,6 +1034,47 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     assert.ok(scopedEdges.filter((edge) => edge.from !== "Browser").every((edge) => edge.style.includes("strokeColor=#64748b")));
   });
 
+  it("draws a sourdough feeding state machine when outline confirm clarifies", async () => {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions?: Record<string, { type: string }> };
+      if (body.questions?.intent) {
+        return Response.json({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "clarify", confidence: 0.4 },
+            needs_xml_edit: { type: "noul", noul: 0.2 },
+            color: { type: "choice", choice: "none" },
+            shape: { type: "choice", choice: "none" },
+            layout: { type: "choice", choice: "none" },
+            anchor: { type: "choice", choice: "none" },
+          },
+        });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          next: { type: "choice", choice: "clarify", confidence: 0.4 },
+          confirm: { type: "noul", noul: 0.2 },
+        },
+      });
+    }) as typeof fetch;
+
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "draw a sourdough starter feeding schedule as a state machine" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(drawn.intent, "add_shape");
+    assert.doesNotMatch(drawn.reply, /Client → App → Postgres/);
+    assert.doesNotMatch(drawn.reply, /Draft/);
+    const report = assertClean(drawn.updatedXml);
+    const labels = report.nodes.map((node) => node.label);
+    assert.ok(labels.some((label) => /feed/i.test(label)));
+    assert.equal(labels.includes("Draft"), false);
+    assert.equal(labels.includes("Published"), false);
+    assert.notEqual(drawn.updatedXml, STARTER_XML);
+  });
+
   it("draws login, io_uring, and tax workflows through the live gate", async () => {
     installKev();
     const prompts = [
@@ -1057,7 +1098,9 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
       "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.",
       "draw a kubernetes deployment",
+      "draw a Kubernetes deployment with Ingress, Service, Deployment, and Pods",
       "draw an order state machine",
+      "draw a sourdough starter feeding schedule as a state machine",
       "draw a network diagram with a firewall and a DMZ",
       "draw a system architecture",
     ];
