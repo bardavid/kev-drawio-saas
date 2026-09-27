@@ -41,6 +41,10 @@ const QUERY_ALIASES: Array<{ query: RegExp; label: RegExp }> = [
   { query: /^(cache|caching)$/, label: /\b(redis|memcache|memcached|cache)\b/ },
   { query: /^(api|backend|server)$/, label: /\b(api|backend)\b/ },
   { query: /^(client|frontend|browser|web app|web|user)$/, label: /\b(client|browser|frontend|web)\b/ },
+  {
+    query: /^(app servers?|application servers?|web servers?|servers?)$/,
+    label: /\b(app|application|server)s?\b/,
+  },
 ];
 
 function normalizeName(value: string): string {
@@ -195,6 +199,54 @@ function connectCells(doc: XmlDocument, source: XmlElement, target: XmlElement, 
   getRoot(doc).appendChild(cell);
 }
 
+function shiftDownOf(doc: XmlDocument, minY: number, dy: number) {
+  if (dy <= 0) return;
+  let moved = false;
+  for (const vertex of listVertices(doc)) {
+    const geometry = firstChildTag(vertex, "mxGeometry");
+    if (!geometry) continue;
+    const y = numberAttr(geometry, "y", 0);
+    if (y >= minY - 0.5) {
+      geometry.setAttribute("y", String(Math.round(y + dy)));
+      moved = true;
+    }
+  }
+  if (moved) clearEdgeWaypoints(doc);
+}
+
+/** Splice one new vertex onto the edge between two shapes. Neighbors keep their place. */
+function insertBetween(
+  doc: XmlDocument,
+  slots: DiagramSlots,
+  label: string,
+  size: { width: number; height: number },
+  style: string,
+) {
+  const fromQuery = slots.from ?? "";
+  const toQuery = slots.to ?? "";
+  const fromNode = requireVertex(doc, fromQuery);
+  const toNode = requireVertex(doc, toQuery);
+  const fromBox = geometryOf(fromNode);
+  const toBox = geometryOf(toNode);
+  const gap = 80;
+  let x = fromBox.x;
+  let y = fromBox.y;
+  if (toBox.x >= fromBox.x) {
+    x = fromBox.x + fromBox.width + gap;
+    y = fromBox.y;
+    const need = x + size.width + gap;
+    if (toBox.x < need) shiftRightOf(doc, toBox.x, need - toBox.x);
+  } else {
+    y = fromBox.y + fromBox.height + gap;
+    const need = y + size.height + gap;
+    if (toBox.y < need) shiftDownOf(doc, toBox.y, need - toBox.y);
+  }
+  const cell = createVertex(doc, label, style, x, y, size.width, size.height);
+  removeEdgesBetween(doc, fromNode, toNode);
+  connectCells(doc, fromNode, cell, slots.edgeLabel ?? "");
+  connectCells(doc, cell, toNode, "");
+}
+
 function removeEdgesBetween(doc: XmlDocument, source: XmlElement, target: XmlElement) {
   const sourceId = source.getAttribute("id");
   const targetId = target.getAttribute("id");
@@ -264,6 +316,11 @@ function addShape(doc: XmlDocument, slots: DiagramSlots) {
   let fromAnchor: XmlElement | null = null;
   let toAnchor: XmlElement | null = null;
 
+  if (slots.from && slots.to && slots.place !== "before" && slots.place !== "after") {
+    insertBetween(doc, slots, label, size, style);
+    return;
+  }
+
   if (slots.place === "before") {
     const query = slots.target || slots.to;
     if (!query) throw new DiagramXmlError("Say which shape to insert in front of.");
@@ -283,10 +340,10 @@ function addShape(doc: XmlDocument, slots: DiagramSlots) {
   } else if (slots.to) {
     toAnchor = requireVertex(doc, slots.to);
     const anchor = geometryOf(toAnchor);
-    x = Math.max(40, anchor.x - size.width - 80);
+    x = Math.max(80, anchor.x - size.width - 80);
     y = anchor.y + Math.round((anchor.height - size.height) / 2);
   } else {
-    let maxRight = 40;
+    let maxRight = 80;
     for (const vertex of listVertices(doc)) {
       const anchor = geometryOf(vertex);
       maxRight = Math.max(maxRight, anchor.x + anchor.width + 80);

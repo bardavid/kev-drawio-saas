@@ -93,12 +93,20 @@ export interface LayerEdge {
   side?: boolean;
 }
 
+export interface LayerEnclosure {
+  id: string;
+  label: string;
+  /** Group ids wrapped by the outer frame. Groups left out stay outside it. */
+  groups: string[];
+}
+
 export interface LayerSpec {
   kind: "layers";
   title: string;
   reply: string;
   groups: LayerGroup[];
   edges: LayerEdge[];
+  enclosure?: LayerEnclosure;
 }
 
 export type CompositionSpec = SequenceSpec | WorkflowSpec | LayerSpec;
@@ -246,6 +254,7 @@ export function compositionDecision(composition: Composition, xml: string): KevD
 export function renderComposition(composition: Composition): string {
   const paint = paintFor(composition.colorName);
   const drawn = drawSpec(composition.spec, paint);
+  padLeft(drawn.nodes, drawn.edges, 80);
   return xmlFor(drawn.nodes, drawn.edges, composition.spec.title);
 }
 
@@ -254,7 +263,7 @@ function specFor(text: string): CompositionSpec | null {
   const matched = matchTemplate(text);
   if (matched) return matched.spec;
   if (redisDiagramRequest(text)) return redisUsageSpec();
-  if (isLoginSequence(text)) return loginSequence();
+  if (isLoginSequence(text)) return loginSequence(text);
   if (isSequence(text)) return genericSequence(text);
   if (isTaxWorkflow(text)) return taxWorkflow();
   if (isWorkflow(text)) return genericWorkflow(text);
@@ -277,13 +286,34 @@ function plannedSteps(spec: CompositionSpec): string[] {
     ];
   }
   return [
+    ...(spec.enclosure ? [`Open cluster ${spec.enclosure.label}`] : []),
     ...spec.groups.flatMap((group) => [`Open cluster ${group.label}`, ...group.nodes.map((node) => `Add ${node.label}`)]),
     ...spec.edges.map((edge) => `Connect ${edge.from} to ${edge.to}: ${edge.label}`),
     "Stack clusters vertically and route the return edge beside the stack",
   ];
 }
 
-function loginSequence(): SequenceSpec {
+function loginSequence(text: string): SequenceSpec {
+  if (/\buser\s*db\b/i.test(text) || /\b(db lookup|session cookie)\b/i.test(text)) {
+    return {
+      kind: "sequence",
+      title: "Login",
+      reply: "Drew a login sequence: User, Browser, Auth Service, and User DB.",
+      participants: [
+        { id: "user", label: "User", shape: "actor" },
+        { id: "browser", label: "Browser", shape: "rectangle" },
+        { id: "auth", label: "Auth Service", shape: "rectangle" },
+        { id: "db", label: "User DB", shape: "rectangle" },
+      ],
+      messages: [
+        { from: "user", to: "browser", label: "Request credentials" },
+        { from: "browser", to: "auth", label: "Validate" },
+        { from: "auth", to: "db", label: "DB lookup" },
+        { from: "db", to: "auth", label: "User record", dashed: true },
+        { from: "auth", to: "browser", label: "Session cookie set", dashed: true },
+      ],
+    };
+  }
   return {
     kind: "sequence",
     title: "User login",
@@ -460,12 +490,14 @@ function drawSpec(spec: CompositionSpec, paint: PalettePaint): { nodes: Placed[]
 
 function drawSequence(spec: SequenceSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
   const header = 56;
-  const width = 150;
+  const longest = spec.participants.reduce((max, participant) => Math.max(max, participant.label.length), 0);
+  const width = Math.max(150, Math.min(210, Math.round(28 + longest * 7.2)));
+  const column = Math.max(COLUMN, width + 56);
   const height = header + 48 + spec.messages.length * LANE + 28;
   const nodes: Placed[] = spec.participants.map((participant, index) => ({
     id: participant.id,
     label: participant.label,
-    x: 64 + index * COLUMN,
+    x: 80 + index * column,
     y: 40,
     width,
     height,
@@ -579,13 +611,21 @@ interface ClusterBox {
   height: number;
 }
 
+const FRAME_HEADER = 36;
+const FRAME_PAD = 18;
+
 function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
   const nodes: Placed[] = [];
   const clusters = new Map<string, ClusterBox>();
   const nodeCluster = new Map<string, ClusterBox>();
   let cursor = 48;
+  let openedFrame = false;
 
   for (const group of spec.groups) {
+    if (spec.enclosure?.groups.includes(group.id) && !openedFrame) {
+      cursor += FRAME_HEADER + FRAME_PAD + 20;
+      openedFrame = true;
+    }
     const row = group.flow === "row" && group.nodes.length > 1;
     const count = row ? group.nodes.length : 1;
     const width = ROW_PAD_X + count * ROW_SLOT + ROW_PAD_X;
@@ -613,7 +653,7 @@ function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[];
       group.nodes.forEach((node, index) => {
         const size = sizes[index] ?? sizeFor(node.shape);
         const nodeX = x + ROW_PAD_X + index * ROW_SLOT + (ROW_SLOT - size.width) / 2;
-        const nodeY = cursor + ROW_HEADER + ROW_PAD_Y + (body - size.height) / 2;
+        const nodeY = cursor + ROW_HEADER + ROW_PAD_Y;
         nodes.push(placedNode(node, nodeX, nodeY, size, paint));
         nodeCluster.set(node.id, cluster);
       });
@@ -629,6 +669,8 @@ function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[];
     }
     cursor += height + ROW_CLUSTER_GAP;
   }
+
+  prependEnclosure(spec, nodes, clusters);
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const laneX = Math.max(...nodes.filter((node) => node.style.includes("drawai=cluster")).map((node) => node.x + node.width)) + 56;
@@ -663,6 +705,43 @@ function placedNode(
   };
 }
 
+function prependEnclosure(spec: LayerSpec, nodes: Placed[], clusters: Map<string, ClusterBox>) {
+  const enclosure = spec.enclosure;
+  if (!enclosure) return;
+  const boxes = enclosure.groups
+    .map((id) => clusters.get(id))
+    .filter((box): box is ClusterBox => Boolean(box));
+  if (boxes.length === 0) return;
+  const minX = Math.min(...boxes.map((box) => box.x)) - FRAME_PAD;
+  const minY = Math.min(...boxes.map((box) => box.y)) - FRAME_PAD - FRAME_HEADER;
+  const maxX = Math.max(...boxes.map((box) => box.x + box.width)) + FRAME_PAD;
+  const maxY = Math.max(...boxes.map((box) => box.y + box.height)) + FRAME_PAD;
+  nodes.unshift({
+    id: enclosure.id,
+    label: enclosure.label,
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+    style:
+      `swimlane;whiteSpace=wrap;html=1;startSize=${FRAME_HEADER};rounded=1;arcSize=8;` +
+      `fillColor=${CLUSTER_HEADER};swimlaneFillColor=${CLUSTER_BODY};strokeColor=${CLUSTER_STROKE};` +
+      `fontColor=#475569;fontSize=12;fontStyle=1;fontFamily=Helvetica;drawai=cluster;`,
+  });
+}
+
+function padLeft(nodes: Placed[], edges: DrawnEdge[], minX: number) {
+  const xs = [...nodes.map((node) => node.x), ...edges.flatMap((edge) => edge.points.map((point) => point.x))];
+  if (xs.length === 0) return;
+  const min = Math.min(...xs);
+  if (!Number.isFinite(min) || min >= minX) return;
+  const dx = minX - min;
+  for (const node of nodes) node.x += dx;
+  for (const edge of edges) {
+    for (const point of edge.points) point.x += dx;
+  }
+}
+
 function routeLayerEdge(
   source: Placed,
   target: Placed,
@@ -671,6 +750,18 @@ function routeLayerEdge(
   targetCluster: ClusterBox,
   laneX: number,
 ): DrawnEdge {
+  if (sourceCluster === targetCluster && !edge.side) {
+    const goRight = target.x + target.width / 2 >= source.x + source.width / 2;
+    return {
+      from: source.id,
+      to: target.id,
+      label: edge.label,
+      points: [],
+      style:
+        edgeStyle() +
+        `exitX=${goRight ? "1" : "0"};exitY=0.500;entryX=${goRight ? "0" : "1"};entryY=0.500;drawai=routed;`,
+    };
+  }
   if (edge.side) {
     const startY = source.y + source.height / 2;
     const endY = target.y + target.height / 2;

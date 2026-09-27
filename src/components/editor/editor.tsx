@@ -262,7 +262,7 @@ export function Editor() {
 
   return (
     <div className="flex h-dvh max-w-full flex-col overflow-hidden overscroll-none bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
-      <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 sm:px-4">
+      <header className="relative z-30 flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 sm:px-4">
         <BrandMark />
         <div className="flex items-center gap-1.5 sm:gap-2">
           <Button

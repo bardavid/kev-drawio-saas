@@ -203,11 +203,48 @@ export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevT
 
   if (drawingFor(current)) return runComposition(current);
   if (isArchitectureRequest(input.userMessage)) return runArchitecture(current);
-  if (input.reading.intent === "noop") {
-    const demo = decideDemo(input.userMessage);
-    if (demo.operations.length > 0) return rescueDemo(input, demo);
+  if (current.reading.intent === "clarify" || current.reading.intent === "layout") {
+    const addition = decideDemo(current.userMessage);
+    if (addition.intent === "add_shape" && addition.slots.label) return applyHostAddition(current, addition);
+  }
+  if (current.reading.intent === "noop") {
+    const demo = decideDemo(current.userMessage);
+    if (demo.operations.length > 0) return rescueDemo(current, demo);
   }
   return null;
+}
+
+function applyHostAddition(input: OrchestratorContext, demo: KevDecision): KevTurnResult {
+  try {
+    const updatedXml = applyOperations(input.currentXml, demo.operations);
+    return turn(input, {
+      reply: demo.reply.trim() || "Done.",
+      updatedXml,
+      intent: demo.intent,
+      slots: withPalette(demo.slots),
+      steps: [
+        {
+          detail: demo.reply.trim() || "Add the named shape",
+          intent: demo.intent,
+          accepted: true,
+          confirm: input.reading.confidence,
+        },
+      ],
+      confidence: input.reading.confidence,
+    });
+  } catch (error) {
+    if (error instanceof DiagramXmlError) {
+      return turn(input, {
+        reply: error.message,
+        updatedXml: input.originalXml,
+        intent: "clarify",
+        slots: withPalette(demo.slots),
+        steps: [],
+        confidence: input.reading.confidence,
+      });
+    }
+    throw error;
+  }
 }
 
 async function bareDraw(input: OrchestratorContext): Promise<KevTurnResult> {

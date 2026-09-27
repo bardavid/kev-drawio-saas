@@ -49,6 +49,37 @@ describe("demo decisions", () => {
     );
   });
 
+  it("adds a named Redis box between app servers and the database", () => {
+    const prompt =
+      "Add a Redis cache box between the app servers and the database. Keep existing layout; only add the new box and edges.";
+    const drawn = previewDemo("draw a 3 tier web app", SEEDED_XML);
+    const before = summarizeDiagram(drawn.xml);
+    const client = before.vertices.find((vertex) => vertex.label === "Client");
+    const app = before.vertices.find((vertex) => vertex.label === "App");
+    assert.ok(client && app);
+    const { decision, xml } = previewDemo(prompt, drawn.xml);
+    assert.equal(decision.intent, "add_shape");
+    assert.equal(decision.slots.label, "Redis");
+    assert.equal(decision.reply.includes("What should the new shape be called?"), false);
+    const summary = summarizeDiagram(xml);
+    const redis = summary.vertices.find((vertex) => vertex.label === "Redis");
+    const nextClient = summary.vertices.find((vertex) => vertex.label === "Client");
+    const nextApp = summary.vertices.find((vertex) => vertex.label === "App");
+    assert.ok(redis && nextClient && nextApp);
+    assert.equal(nextClient.x, client.x);
+    assert.equal(nextClient.y, client.y);
+    assert.equal(nextApp.x, app.x);
+    assert.equal(nextApp.y, app.y);
+    assert.ok(redis.x > nextApp.x);
+    assert.equal(
+      summary.edges.some((edge) => edge.from === "App" && edge.to === "Postgres"),
+      false,
+    );
+    assert.ok(summary.edges.some((edge) => edge.from === "App" && edge.to === "Redis"));
+    assert.ok(summary.edges.some((edge) => edge.from === "Redis" && edge.to === "Postgres"));
+    assert.ok(summary.edges.some((edge) => edge.from === "Client" && edge.to === "App"));
+  });
+
   it("connects an auth service from the client", () => {
     const { decision, xml } = previewDemo("Add an Auth service and connect the client to it", SEEDED_XML);
     assert.equal(decision.slots.label, "Auth");

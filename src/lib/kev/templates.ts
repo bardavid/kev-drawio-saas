@@ -27,10 +27,12 @@ const TIER_RE = /\b(\d+|two|three|four|five)[\s-]*tier\b/i;
 
 export function matchTemplate(message: string): TemplateMatch | null {
   const text = message.trim();
-  if (!text || TIER_RE.test(text)) return null;
+  if (!text) return null;
+  if (isRichWebTiers(text)) return richWebTiers();
+  if (TIER_RE.test(text)) return null;
   if (isOauth(text)) return oauthSequence();
   if (isCheckout(text)) return checkoutSequence();
-  if (isCacheAside(text)) return cacheAsideSequence();
+  if (isCacheAside(text)) return cacheAsideSequence(text);
   if (isApiSequence(text)) return apiSequence();
   if (isApproval(text)) return approvalWorkflow(text);
   if (isStateMachine(text)) return stateMachine(text);
@@ -38,7 +40,7 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isCqrs(text)) return cqrs();
   if (isEventDriven(text)) return eventDriven(text);
   if (isMicroservices(text)) return microservices();
-  if (isCloud(text)) return cloudVpc();
+  if (isCloud(text)) return cloudVpc(text);
   if (isKubernetes(text)) return kubernetes();
   if (isDmz(text)) return dmz();
   if (isCdn(text)) return cdn();
@@ -131,6 +133,11 @@ function isCheckout(text: string): boolean {
 
 function isCacheAside(text: string): boolean {
   return /\bcache[\s-]?aside\b|\blook[\s-]?aside\b|\bcache architecture\b/i.test(text);
+}
+
+function isRichWebTiers(text: string): boolean {
+  if (!TIER_RE.test(text)) return false;
+  return /\bcdn\b/i.test(text) && /\bload[\s-]?balanc/i.test(text) && /\b(database|db)\b/i.test(text);
 }
 
 function isApiSequence(text: string): boolean {
@@ -251,7 +258,34 @@ function checkoutSequence(): TemplateMatch {
   };
 }
 
-function cacheAsideSequence(): TemplateMatch {
+function cacheAsideSequence(text: string): TemplateMatch {
+  if (/\bredis\b/i.test(text)) {
+    return {
+      context:
+        "Cache-aside checks Redis first. A hit returns from Redis. A miss loads the primary database and writes the value back.",
+      spec: sequence(
+        "Redis cache-aside",
+        "Drew Redis cache-aside: a hit returns from Redis, and a miss loads the database then populates Redis.",
+        [
+          { id: "client", label: "Client", shape: "rectangle" },
+          { id: "app", label: "Application servers", shape: "rectangle" },
+          { id: "cache", label: "Redis", shape: "rectangle" },
+          { id: "db", label: "Primary database", shape: "rectangle" },
+        ],
+        [
+          { from: "client", to: "app", label: "Request" },
+          { from: "app", to: "cache", label: "GET" },
+          { from: "cache", to: "app", label: "Hit" },
+          { from: "app", to: "client", label: "Return hit", dashed: true },
+          { from: "cache", to: "app", label: "Miss", dashed: true },
+          { from: "app", to: "db", label: "Load" },
+          { from: "db", to: "app", label: "Value", dashed: true },
+          { from: "app", to: "cache", label: "Populate" },
+          { from: "app", to: "client", label: "Response", dashed: true },
+        ],
+      ),
+    };
+  }
   return {
     context: "Cache-aside reads the cache first. On a miss the app loads the database and writes the value back.",
     spec: sequence(
@@ -527,7 +561,12 @@ function microservices(): TemplateMatch {
   };
 }
 
-function cloudVpc(): TemplateMatch {
+function isDetailedVpc(text: string): boolean {
+  return /\b(internet gateway|\bigw\b|\bnat\b)/i.test(text);
+}
+
+function cloudVpc(text: string): TemplateMatch {
+  if (isDetailedVpc(text)) return detailedVpc();
   return {
     context: "A public load balancer forwards into a private compute tier, which reads a managed database.",
     spec: layers(
@@ -543,6 +582,65 @@ function cloudVpc(): TemplateMatch {
         edge("internet", "alb", "HTTPS"),
         edge("alb", "ecs", "HTTP"),
         edge("ecs", "rds", "SQL"),
+      ],
+    ),
+  };
+}
+
+function detailedVpc(): TemplateMatch {
+  const spec = layers(
+    "AWS VPC",
+    "Drew an AWS VPC with an Internet Gateway, public and private subnets, NAT, an Application Load Balancer, ECS, and RDS.",
+    [
+      col("internet", "Internet", [node("net", "Internet", "cloud")]),
+      col("igw", "Gateway", [node("igw", "Internet Gateway", "cloud")]),
+      row("public", "Public subnet", [
+        node("nat", "NAT", "hexagon"),
+        node("alb", "Application Load Balancer", "hexagon"),
+      ]),
+      col("private", "Private subnet", [node("ecs", "ECS", "rectangle")]),
+      col("data", "Private data subnet", [node("rds", "RDS", "cylinder")]),
+    ],
+    [
+      edge("net", "igw", "Ingress"),
+      edge("igw", "alb", "HTTPS"),
+      edge("alb", "ecs", "Forward"),
+      edge("ecs", "rds", "SQL"),
+      edge("ecs", "nat", "Outbound"),
+      edge("nat", "igw", "Egress"),
+    ],
+  );
+  spec.enclosure = { id: "vpc", label: "VPC", groups: ["igw", "public", "private", "data"] };
+  return {
+    context:
+      "Traffic enters the VPC through an Internet Gateway. The load balancer is public, ECS and RDS stay private, and NAT carries outbound traffic.",
+    spec,
+  };
+}
+
+function richWebTiers(): TemplateMatch {
+  return {
+    context:
+      "A 3-tier web application puts browser clients and a CDN in the presentation tier, a load balancer and app servers in the application tier, and a database in the data tier.",
+    spec: layers(
+      "3-tier web application",
+      "Drew a 3-tier web application with presentation, application, and data tiers.",
+      [
+        row("presentation", "Presentation tier", [
+          node("browser", "Browser", "rectangle"),
+          node("cdn", "CDN", "rectangle"),
+        ]),
+        row("application", "Application tier", [
+          node("lb", "Load balancer", "hexagon"),
+          node("servers", "Web/app servers", "rectangle"),
+        ]),
+        col("data", "Data tier", [node("db", "Database", "cylinder")]),
+      ],
+      [
+        edge("browser", "cdn", "Request"),
+        edge("cdn", "lb", "HTTPS"),
+        edge("lb", "servers", "Forward"),
+        edge("servers", "db", "SQL"),
       ],
     ),
   };

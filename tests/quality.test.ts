@@ -108,6 +108,7 @@ describe("diagram quality", () => {
     assert.ok(Math.max(...gaps) - Math.min(...gaps) <= 1);
     const xs = report.nodes.map((node) => node.x);
     assert.deepEqual(xs, [...xs].sort((a, b) => a - b));
+    assert.ok(report.nodes.every((node) => node.x >= 80));
     const fromStarter = assessDiagram(previewDemo("draw a 3 tier web app", STARTER_XML).xml);
     assert.deepEqual(
       fromStarter.nodes.map((node) => node.label),

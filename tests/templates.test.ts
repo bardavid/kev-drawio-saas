@@ -326,6 +326,74 @@ const FIXTURES: Fixture[] = [
     ],
     clusters: ["Clients", "Web", "API", "Data"],
   },
+  {
+    prompt:
+      "Draw a clean 3-tier web application architecture: browser clients, CDN, load balancer, web/app servers, and a database tier. Label tiers clearly.",
+    labels: ["Browser", "CDN", "Load balancer", "Web/app servers", "Database"],
+    edges: [
+      ["Browser", "CDN", "Request"],
+      ["CDN", "Load balancer", "HTTPS"],
+      ["Load balancer", "Web/app servers", "Forward"],
+      ["Web/app servers", "Database", "SQL"],
+    ],
+    rows: [
+      ["Browser", "CDN"],
+      ["Load balancer", "Web/app servers"],
+    ],
+    above: [
+      ["Browser", "Load balancer"],
+      ["Load balancer", "Database"],
+    ],
+    clusters: ["Presentation tier", "Application tier", "Data tier"],
+  },
+  {
+    prompt:
+      "Draw an AWS architecture: VPC with public and private subnets, Application Load Balancer in public, ECS services in private, RDS in private data subnet. Show Internet Gateway and NAT. Label components clearly.",
+    labels: ["Internet", "Internet Gateway", "NAT", "Application Load Balancer", "ECS", "RDS"],
+    edges: [
+      ["Internet", "Internet Gateway", "Ingress"],
+      ["Internet Gateway", "Application Load Balancer", "HTTPS"],
+      ["Application Load Balancer", "ECS", "Forward"],
+      ["ECS", "RDS", "SQL"],
+      ["ECS", "NAT", "Outbound"],
+      ["NAT", "Internet Gateway", "Egress"],
+    ],
+    rows: [["NAT", "Application Load Balancer"]],
+    above: [
+      ["Internet", "Internet Gateway"],
+      ["Internet Gateway", "NAT"],
+      ["Application Load Balancer", "ECS"],
+      ["ECS", "RDS"],
+    ],
+    clusters: ["Internet", "VPC", "Gateway", "Public subnet", "Private subnet", "Private data subnet"],
+  },
+  {
+    prompt:
+      "Draw a Redis cache-aside pattern: client, application servers, Redis cache, and primary database. Show cache hit vs miss paths clearly (hit returns from Redis; miss goes to DB then populates Redis).",
+    labels: ["Client", "Application servers", "Redis", "Primary database"],
+    edges: [
+      ["Client", "Application servers", "Request"],
+      ["Application servers", "Redis", "GET"],
+      ["Redis", "Application servers", "Hit"],
+      ["Application servers", "Client", "Return hit"],
+      ["Redis", "Application servers", "Miss"],
+      ["Application servers", "Primary database", "Load"],
+      ["Application servers", "Redis", "Populate"],
+    ],
+    messages: ["Request", "GET", "Hit", "Return hit", "Miss", "Load", "Value", "Populate", "Response"],
+  },
+  {
+    prompt:
+      "Draw a UML sequence diagram for a login flow: User, Browser, Auth Service, User DB. Include request credentials, validate, DB lookup, session cookie set. Top-down sequence layout.",
+    labels: ["User", "Browser", "Auth Service", "User DB"],
+    edges: [
+      ["User", "Browser", "Request credentials"],
+      ["Browser", "Auth Service", "Validate"],
+      ["Auth Service", "User DB", "DB lookup"],
+      ["Auth Service", "Browser", "Session cookie set"],
+    ],
+    messages: ["Request credentials", "Validate", "DB lookup", "User record", "Session cookie set"],
+  },
 ];
 
 describe("popular diagram templates", () => {
@@ -336,6 +404,10 @@ describe("popular diagram templates", () => {
       assert.equal(drawn.decision.reply.includes("No diagram change"), false);
       assert.notEqual(drawn.xml, STARTER_XML);
       const report = assertClean(drawn.xml);
+      assert.ok(
+        report.nodes.every((node) => node.x >= 80),
+        `${fixture.prompt} left edge ${Math.min(...report.nodes.map((node) => node.x))}`,
+      );
       for (const label of fixture.labels) box(report, label);
       assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
       for (const [from, to, label] of fixture.edges) linked(report, from, to, label);
