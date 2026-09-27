@@ -68,6 +68,7 @@ export function diagramState(
     previousXml?: string | null;
     currentXml?: string;
     topicContext?: string | null;
+    templateReference?: string | null;
   },
 ): string {
   const vertices =
@@ -80,9 +81,13 @@ export function diagramState(
       .join("\n") || "- (none)";
   const diff = notes?.diffText?.trim();
   const topic = notes?.topicContext?.trim();
+  const reference = notes?.templateReference?.trim();
   const parts = [
     "The host places shapes and routes edges. Answer the questions. Do not invent coordinates or XML.",
+    "Edit the open canvas. Do not discard shapes the user did not ask to remove.",
+    "A reference template is optional. Use it, adapt it, or set it aside.",
     `User message:\n${userMessage.trim()}`,
+    reference ? `Reference:\n${reference}` : "",
     topic ? `Topic context:\n${topic}` : "",
     diff ? `Diagram diff (added, removed, and changed cells):\n${diff}` : "",
     notes?.previousXml && notes.currentXml && notes.previousXml !== notes.currentXml
@@ -132,6 +137,7 @@ export function buildSystemOneRequest(input: {
   previousXml?: string | null;
   diagramDiff?: string;
   topicContext?: string | null;
+  templateReference?: string | null;
 }): SystemOneRequest {
   const labels = vertexLabels(input.summary);
   const shapes: Record<string, string> = { [NONE]: "Do not choose a shape kind" };
@@ -148,6 +154,7 @@ export function buildSystemOneRequest(input: {
       previousXml: input.previousXml,
       currentXml: input.currentXml,
       topicContext: input.topicContext,
+      templateReference: input.templateReference,
     }),
     model: input.model?.trim() || KEV_DEFAULT_MODEL,
     questions: {
@@ -319,6 +326,7 @@ export async function askKev(
     previousXml?: string | null;
     diagramDiff?: string;
     topicContext?: string | null;
+    templateReference?: string | null;
   },
   options?: { timeoutMs?: number },
 ): Promise<KevReading> {
@@ -337,6 +345,7 @@ export async function askKev(
     previousXml: input.previousXml,
     diagramDiff: input.diagramDiff,
     topicContext: input.topicContext,
+    templateReference: input.templateReference,
   });
 
   const payload = await callSystemOne(body, options?.timeoutMs ?? 50_000);

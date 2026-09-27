@@ -1,6 +1,6 @@
 "use client";
 
-import { RotateCcw, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { BrandMark } from "@/components/brand-mark";
@@ -10,12 +10,30 @@ import { Button } from "@/components/ui/button";
 import { STARTER_XML } from "@/lib/drawio/starter";
 import { noteEditorXml, noteHostXml, previousForTurn, type DiagramSync } from "@/lib/drawio/sync";
 import type { DiagramSlots, Intent, KevTurnResult } from "@/lib/kev/types";
+import { rewindToUserMessage } from "@/lib/session";
 import { cn } from "@/lib/utils";
+
+interface DrawHistoryState {
+  drawai: true;
+  index: number;
+  messages: ChatItem[];
+  xml: string;
+}
 
 type Pane = "chat" | "diagram";
 
 function looksLikeDiagram(xml: string): boolean {
   return xml.includes("<mxfile") || xml.includes("<mxGraphModel");
+}
+
+function canvasLooksBlank(xml: string): boolean {
+  return !xml.includes('vertex="1"') && !xml.includes("vertex='1'");
+}
+
+function isHistoryState(value: unknown): value is DrawHistoryState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Partial<DrawHistoryState>;
+  return state.drawai === true && typeof state.index === "number" && typeof state.xml === "string" && Array.isArray(state.messages);
 }
 
 function useMdUp() {
@@ -34,6 +52,11 @@ export function Editor() {
   const frameRef = useRef<DiagramFrameHandle>(null);
   const sendingRef = useRef(false);
   const applyingRef = useRef(false);
+  const ignorePopRef = useRef(false);
+  const historyIndexRef = useRef(0);
+  const messagesRef = useRef<ChatItem[]>([]);
+  const showXmlRef = useRef<(next: string) => Promise<void>>(async () => {});
+  const commitMessagesRef = useRef<(next: ChatItem[]) => void>(() => {});
   const syncRef = useRef<DiagramSync>({
     currentXml: STARTER_XML,
     baselineXml: STARTER_XML,
@@ -51,7 +74,38 @@ export function Editor() {
     setXml(next.currentXml);
   }
 
+  function commitMessages(next: ChatItem[]) {
+    messagesRef.current = next;
+    setMessages(next);
+  }
+
+  function pushHistory(nextMessages: ChatItem[], nextXml: string) {
+    historyIndexRef.current += 1;
+    const state: DrawHistoryState = {
+      drawai: true,
+      index: historyIndexRef.current,
+      messages: nextMessages,
+      xml: nextXml,
+    };
+    window.history.pushState(state, "");
+  }
+
+  async function showXml(next: string) {
+    applyingRef.current = true;
+    syncRef.current = { ...syncRef.current, acceptEcho: false };
+    try {
+      const confirmed = (await frameRef.current?.applyAndConfirm(next)) ?? next;
+      adoptHostXml(looksLikeDiagram(confirmed) ? confirmed : next);
+    } catch {
+      adoptHostXml(next);
+      frameRef.current?.load(next);
+    } finally {
+      applyingRef.current = false;
+    }
+  }
+
   function rememberEditorXml(next: string) {
+    if (sendingRef.current) return;
     if (!looksLikeDiagram(next)) return;
     const updated = noteEditorXml(syncRef.current, next, applyingRef.current);
     if (updated === syncRef.current) return;
@@ -62,6 +116,35 @@ export function Editor() {
     if (!looksLikeDiagram(next)) return;
     commitSync(noteHostXml(syncRef.current, next));
   }
+
+  useEffect(() => {
+    commitMessagesRef.current = commitMessages;
+    showXmlRef.current = showXml;
+  });
+
+  useEffect(() => {
+    if (!isHistoryState(window.history.state)) {
+      const initial: DrawHistoryState = { drawai: true, index: 0, messages: [], xml: STARTER_XML };
+      window.history.replaceState(initial, "");
+    }
+    function onPop(event: PopStateEvent) {
+      if (ignorePopRef.current) {
+        ignorePopRef.current = false;
+        return;
+      }
+      if (sendingRef.current) {
+        ignorePopRef.current = true;
+        window.history.forward();
+        return;
+      }
+      if (!isHistoryState(event.state)) return;
+      historyIndexRef.current = event.state.index;
+      commitMessagesRef.current(event.state.messages);
+      void showXmlRef.current(event.state.xml);
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   function showPane(next: Pane) {
     setPane(next);
@@ -75,9 +158,16 @@ export function Editor() {
     sendingRef.current = true;
     setPending(true);
     setDraft("");
-    const userMessage: ChatItem = { id: crypto.randomUUID(), role: "user", content: text };
-    const history = [...messages, userMessage];
-    setMessages(history);
+    const beforeXml = syncRef.current.currentXml;
+    const userMessage: ChatItem = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: text,
+      beforeXml,
+      historyIndex: historyIndexRef.current,
+    };
+    const history = [...messagesRef.current, userMessage];
+    commitMessages(history);
     frameRef.current?.setSpinner("Updating diagram…");
 
     let currentXml = syncRef.current.currentXml;
@@ -119,7 +209,7 @@ export function Editor() {
         slots: body.slots as DiagramSlots,
         repaired: body.repaired,
       };
-      setMessages((current) => [...current, assistant]);
+      commitMessages([...messagesRef.current, assistant]);
       if (body.updatedXml !== currentXml) {
         applyingRef.current = true;
         syncRef.current = { ...syncRef.current, acceptEcho: false };
@@ -138,25 +228,36 @@ export function Editor() {
       toast.error("Could not update the diagram.");
     } finally {
       frameRef.current?.setSpinner(null);
+      pushHistory(messagesRef.current, syncRef.current.currentXml);
       sendingRef.current = false;
       setPending(false);
     }
   }
 
-  async function resetDiagram() {
-    applyingRef.current = true;
-    syncRef.current = { ...syncRef.current, acceptEcho: false };
-    try {
-      const confirmed = (await frameRef.current?.applyAndConfirm(STARTER_XML)) ?? STARTER_XML;
-      adoptHostXml(looksLikeDiagram(confirmed) ? confirmed : STARTER_XML);
-      toast.success("Diagram reset.");
-    } catch {
-      adoptHostXml(STARTER_XML);
-      frameRef.current?.load(STARTER_XML);
-      toast.error("Could not load that diagram.");
-    } finally {
-      applyingRef.current = false;
+  function undoFrom(id: string) {
+    if (sendingRef.current || applyingRef.current) return;
+    const current = messagesRef.current;
+    const target = current.find((message) => message.id === id);
+    if (!target || target.role !== "user") return;
+    if (typeof target.historyIndex === "number") {
+      const delta = historyIndexRef.current - target.historyIndex;
+      if (delta > 0) {
+        window.history.go(-delta);
+        return;
+      }
     }
+    const rewound = rewindToUserMessage(current, id);
+    if (!rewound) return;
+    commitMessages(rewound.messages);
+    void showXml(rewound.xml);
+  }
+
+  async function resetAll() {
+    if (sendingRef.current) return;
+    commitMessages([]);
+    setDraft("");
+    await showXml(STARTER_XML);
+    pushHistory(messagesRef.current, syncRef.current.currentXml);
   }
 
   return (
@@ -166,22 +267,12 @@ export function Editor() {
         <div className="flex items-center gap-1.5 sm:gap-2">
           <Button
             type="button"
-            variant="outline"
-            className="h-11 gap-1.5 px-3 md:h-8"
-            onClick={() => void resetDiagram()}
-            disabled={pending}
-            aria-label="Reset diagram"
-          >
-            <RotateCcw />
-            <span className="hidden sm:inline">Reset</span>
-          </Button>
-          <Button
-            type="button"
             variant="ghost"
             className="h-11 gap-1.5 px-3 md:h-8"
-            onClick={() => setMessages([])}
-            disabled={pending || messages.length === 0}
-            aria-label="Clear chat"
+            onClick={() => void resetAll()}
+            disabled={pending || (messages.length === 0 && canvasLooksBlank(xml))}
+            aria-label="Clear chat and diagram"
+            data-testid="clear-session"
           >
             <Trash2 />
             <span className="hidden sm:inline">Clear</span>
@@ -231,7 +322,14 @@ export function Editor() {
             pane === "chat" ? "flex flex-1 md:flex-none" : "hidden md:flex",
           )}
         >
-          <ChatPanel messages={messages} draft={draft} pending={pending} onDraft={setDraft} onSend={send} />
+          <ChatPanel
+            messages={messages}
+            draft={draft}
+            pending={pending}
+            onDraft={setDraft}
+            onSend={send}
+            onUndo={undoFrom}
+          />
         </section>
         <section
           id="diagram-panel"
@@ -246,6 +344,7 @@ export function Editor() {
           <DiagramFrame
             ref={frameRef}
             xml={xml}
+            locked={pending}
             onXmlChange={rememberEditorXml}
             onLoad={() => {
               if (!syncRef.current.acceptEcho || applyingRef.current) return;

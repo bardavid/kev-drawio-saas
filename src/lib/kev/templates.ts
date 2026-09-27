@@ -10,6 +10,7 @@ import type {
   SequenceSpec,
   WorkflowSpec,
 } from "@/lib/kev/compose";
+import { layoutDefault } from "@/lib/kev/plan";
 import { redisDiagramRequest, wikipediaTitle } from "@/lib/kev/research";
 
 /**
@@ -63,6 +64,7 @@ export function composeFromBrief(message: string, summary: string): Composition 
     colorName: null,
     context: brief,
     researchQuery: topic,
+    layout: layoutDefault(spec.kind),
   };
 }
 

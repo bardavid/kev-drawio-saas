@@ -265,3 +265,13 @@ export function summarizeDiagram(xml: string): DiagramSummary {
   }));
   return { vertices, edges };
 }
+
+/** True when the page has no vertices and no edges. Root cells do not count. */
+export function diagramIsBlank(xml: string): boolean {
+  try {
+    const summary = summarizeDiagram(xml);
+    return summary.vertices.length === 0 && summary.edges.length === 0;
+  } catch {
+    return false;
+  }
+}

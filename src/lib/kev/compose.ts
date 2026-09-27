@@ -1,8 +1,8 @@
 import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
-import { normalizeMxfile, openDiagram, serializeDiagram } from "@/lib/drawio/xml";
-import { withPalette } from "@/lib/kev/plan";
+import { diagramIsBlank, normalizeMxfile, openDiagram, serializeDiagram } from "@/lib/drawio/xml";
+import { layoutDefault, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
-import { matchTemplate } from "@/lib/kev/templates";
+import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
 
 type XmlElement = import("@xmldom/xmldom").Element;
@@ -110,6 +110,8 @@ export interface Composition {
   context: string | null;
   /** Wikipedia title to refresh `context` from. Null skips the network. */
   researchQuery: string | null;
+  /** Type default, unless the user named a direction. */
+  layout: "horizontal" | "vertical";
 }
 
 interface Placed {
@@ -187,18 +189,46 @@ export function resolveComposition(
     colorName: named ?? hints?.colorName ?? null,
     context: hints?.context ?? brief?.summary ?? matched?.context ?? null,
     researchQuery: brief ? "Redis" : null,
+    layout: requestedLayout(text) ?? layoutDefault(spec.kind),
   };
 }
 
 export function describeComposition(composition: Composition): string {
   const lines = plannedSteps(composition.spec);
-  const steps = [`Diagram: ${composition.spec.kind}`, "Steps:", ...lines.map((line, index) => `${index + 1}. ${line}`)];
+  const direction = composition.layout === "vertical" ? "top to bottom" : "left to right";
+  const steps = [
+    `Diagram: ${composition.spec.kind}`,
+    `Layout: ${direction}`,
+    "Steps:",
+    ...lines.map((line, index) => `${index + 1}. ${line}`),
+  ];
   if (!composition.context) return steps.join("\n");
   return [`Topic context:\n${composition.context}`, "", ...steps].join("\n");
 }
 
+/** Reference text for a template or a named architecture. The model may use, adapt, or ignore it. */
+export function templateReferenceFor(message: string, topicContext?: string | null): string | null {
+  const composition =
+    resolveComposition(message, topicContext ? { context: topicContext } : undefined) ??
+    (topicContext ? composeFromBrief(message, topicContext) : null);
+  if (composition) {
+    return `Reference template. Use it, adapt it, or set it aside.\n${describeComposition(composition)}`;
+  }
+  const plan = resolvePlan(message);
+  if (!plan) return null;
+  const direction = plan.layout === "vertical" ? "top to bottom" : "left to right";
+  return `Reference architecture (${direction}): ${plan.nodes.join(" → ")}. Edit the open canvas.`;
+}
+
+/** A template replaces the page only when the page is blank and the drawing is new. */
+export function templateCanvasPlan(currentXml: string, rendered: string): "draw" | "unchanged" | "keep" {
+  if (sameMxfile(rendered, currentXml)) return "unchanged";
+  if (!diagramIsBlank(currentXml)) return "keep";
+  return "draw";
+}
+
 export function compositionDecision(composition: Composition, xml: string): KevDecision {
-  const layout = composition.spec.kind === "layers" ? "vertical" : "horizontal";
+  const layout = composition.layout;
   return {
     intent: "add_shape",
     reply: composition.spec.reply,

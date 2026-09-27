@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 import { previewDemo } from "../src/lib/kev/demo";
-import { acceptArchitectureStep, buildOrchestratorStepRequest, buildSpecificityRequest } from "../src/lib/kev/orchestrate";
+import { acceptArchitectureStep, acceptTemplateStep, buildOrchestratorStepRequest, buildSpecificityRequest } from "../src/lib/kev/orchestrate";
 import { isArchitectureRequest, isBareDraw, parseArchitecture, planOperations } from "../src/lib/kev/plan";
 
 const PROMPTS = [
@@ -61,6 +61,8 @@ describe("architecture plan", () => {
   it("keeps an explicit three-node chain and defaults a bare 3-tier web app", () => {
     assert.deepEqual(parseArchitecture("draw Client → API → Postgres")?.nodes, ["Client", "API", "Postgres"]);
     assert.deepEqual(parseArchitecture("draw a 3 tier web app")?.nodes, ["Client", "App", "Postgres"]);
+    assert.equal(parseArchitecture("draw a 3 tier web app")?.layout, "horizontal");
+    assert.equal(parseArchitecture("draw a 3 tier web app vertically")?.layout, "vertical");
   });
 
   it("plans a new middle tier, a missing edge, orange, and a horizontal reflow on an existing architecture", () => {
@@ -99,6 +101,14 @@ describe("architecture plan", () => {
     assert.ok((byLabel.get("App") ?? 0) < (byLabel.get("Postgres") ?? 0));
   });
 
+  it("edits an existing architecture instead of replacing it", () => {
+    const { xml } = previewDemo("draw a 3 tier web app", SEEDED_XML);
+    const summary = summarizeDiagram(xml);
+    assert.ok(summary.vertices.some((vertex) => vertex.label === "API"));
+    assert.ok(summary.vertices.some((vertex) => vertex.label === "App"));
+    assert.ok(summary.edges.some((edge) => edge.from === "Client" && edge.to === "App"));
+  });
+
   it("creates client, app, and a postgres cylinder on an empty diagram", () => {
     const xml = previewDemo("draw a 3 tier web app", EMPTY_XML).xml;
     const summary = summarizeDiagram(xml);
@@ -121,6 +131,14 @@ describe("architecture gate", () => {
     assert.equal(acceptArchitectureStep("clarify", 0.43), true);
     assert.equal(acceptArchitectureStep(null, 0.43), true);
     assert.equal(acceptArchitectureStep("apply", 0.43), true);
+  });
+
+  it("uses a template only when the model applies it", () => {
+    assert.equal(acceptTemplateStep("apply", 0.43), true);
+    assert.equal(acceptTemplateStep("noop", 0.43), false);
+    assert.equal(acceptTemplateStep("clarify", 0.9), false);
+    assert.equal(acceptTemplateStep(null, 0.2), false);
+    assert.equal(acceptTemplateStep(null, 0.8), true);
   });
 });
 

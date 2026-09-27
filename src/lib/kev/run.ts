@@ -1,14 +1,22 @@
 import { diffDiagrams, formatDiagramDiff } from "@/lib/drawio/diff";
-import { BLANK_XML } from "@/lib/drawio/starter";
 import { assertLoadableMxfile, summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
 import { KevError } from "@/lib/kev/client";
-import { colorInMessage, compositionDecision, renderComposition, resolveComposition, sameMxfile } from "@/lib/kev/compose";
+import {
+  colorInMessage,
+  compositionDecision,
+  renderComposition,
+  resolveComposition,
+  sameMxfile,
+  templateCanvasPlan,
+  templateReferenceFor,
+} from "@/lib/kev/compose";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations, edgeQuery } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
-import { architectureDecision, isArchitectureRequest, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
+import { architectureDecision, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
 import { composeFromBrief } from "@/lib/kev/templates";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
@@ -157,7 +165,7 @@ function replyFromReading(reading: KevReading, slots: DiagramSlots): string {
     case "style":
       return `Restyled ${slots.target ?? "the diagram"}${slots.colorName ? ` in ${slots.colorName}` : ""}.`;
     case "noop":
-      return "No diagram change.";
+      return UNCHANGED_DIAGRAM_REPLY;
     default:
       return "What should I change on the diagram?";
   }
@@ -181,7 +189,7 @@ export function mergeKevWithDemo(reading: KevReading, demo: KevDecision): KevDec
 }
 
 function declinedReply(reading: KevReading, demo: KevDecision): string {
-  if (reading.intent === "noop") return "No diagram change.";
+  if (reading.intent === "noop") return UNCHANGED_DIAGRAM_REPLY;
   if (reading.intent === "clarify") return demo.reply.trim() || "What should I change on the diagram?";
   return "Name the shape and the change.";
 }
@@ -194,8 +202,12 @@ function result(
   repaired: boolean,
   extra: { intent?: Intent; fallback?: boolean; confidence?: number | null; steps?: KevStep[] } = {},
 ): KevTurnResult {
+  const reply =
+    decision.intent === "noop"
+      ? softenUnchangedReply(decision.reply, true)
+      : decision.reply.trim() || "Done.";
   const turn: KevTurnResult = {
-    reply: decision.reply.trim() || "Done.",
+    reply,
     updatedXml,
     mode,
     model,
@@ -253,6 +265,16 @@ function finish(
 
   try {
     const updated = applyOperations(currentXml, operations);
+    if (sameMxfile(updated, currentXml) || sameMxfile(updated, originalXml)) {
+      return result(
+        { ...decision, intent: "noop", operations: [], reply: UNCHANGED_DIAGRAM_REPLY, updatedXml: null },
+        mode,
+        model,
+        originalXml,
+        false,
+        { ...extra, intent: "noop" },
+      );
+    }
     return result(decision, mode, model, updated, Boolean(decision.updatedXml), extra);
   } catch (error) {
     if (error instanceof DiagramXmlError) {
@@ -271,7 +293,7 @@ function finish(
 
 function localDiagram(
   userMessage: string,
-  _currentXml: string,
+  currentXml: string,
   originalXml: string,
   mode: KevMode,
   model?: string,
@@ -279,9 +301,19 @@ function localDiagram(
   const composed = resolveComposition(userMessage);
   if (composed) {
     const xml = renderComposition(composed);
-    if (sameMxfile(xml, originalXml) || sameMxfile(xml, _currentXml)) {
+    const canvas = templateCanvasPlan(currentXml, xml);
+    if (canvas === "unchanged" || sameMxfile(xml, originalXml)) {
       return result(
-        { intent: "noop", slots: {}, operations: [], reply: "No diagram change.", updatedXml: null },
+        { intent: "noop", slots: {}, operations: [], reply: UNCHANGED_DIAGRAM_REPLY, updatedXml: null },
+        mode,
+        model,
+        originalXml,
+        false,
+      );
+    }
+    if (canvas === "keep") {
+      return result(
+        { intent: "noop", slots: {}, operations: [], reply: KEPT_CANVAS_REPLY, updatedXml: null },
         mode,
         model,
         originalXml,
@@ -292,12 +324,20 @@ function localDiagram(
   }
   const plan = resolvePlan(userMessage);
   if (!plan) return null;
-  const operations = operationsForPlan(plan, BLANK_XML);
-  if (operations.length === 0) return null;
-  const drawn = finish(architectureDecision(plan, operations), mode, model, originalXml, BLANK_XML);
-  if (sameMxfile(drawn.updatedXml, originalXml) || sameMxfile(drawn.updatedXml, _currentXml)) {
+  const operations = operationsForPlan(plan, currentXml);
+  if (operations.length === 0) {
     return result(
-      { intent: "noop", slots: {}, operations: [], reply: "No diagram change.", updatedXml: null },
+      { intent: "noop", slots: {}, operations: [], reply: UNCHANGED_DIAGRAM_REPLY, updatedXml: null },
+      mode,
+      model,
+      originalXml,
+      false,
+    );
+  }
+  const drawn = finish(architectureDecision(plan, operations), mode, model, originalXml, currentXml);
+  if (sameMxfile(drawn.updatedXml, originalXml) || sameMxfile(drawn.updatedXml, currentXml)) {
+    return result(
+      { intent: "noop", slots: {}, operations: [], reply: UNCHANGED_DIAGRAM_REPLY, updatedXml: null },
       mode,
       model,
       originalXml,
@@ -305,6 +345,43 @@ function localDiagram(
     );
   }
   return drawn;
+}
+
+async function runOpenAITurn(input: {
+  request: {
+    messages: ChatMessage[];
+    currentXml: string;
+    previousXml: string | null;
+    diagramDiff: string;
+  };
+  userMessage: string;
+  currentXml: string;
+  originalXml: string;
+  fallback?: boolean;
+}): Promise<KevTurnResult> {
+  const client = new OpenAIKevClient();
+  let templateReference = templateReferenceFor(input.userMessage);
+  let decision = await client.decide({ ...input.request, templateReference });
+  if (decision.intent === "clarify" || decision.intent === "noop") {
+    const topicContext = await topicContextFor(input.userMessage, true);
+    const researched = topicContext ? composeFromBrief(input.userMessage, topicContext) : null;
+    if (researched) {
+      if (!researched.colorName) researched.colorName = colorInMessage(input.userMessage);
+      const xml = renderComposition(researched);
+      if (templateCanvasPlan(input.currentXml, xml) === "draw") {
+        return result(compositionDecision(researched, xml), "openai", client.model, xml, false, {
+          fallback: input.fallback,
+        });
+      }
+    }
+    if (topicContext) {
+      templateReference = templateReferenceFor(input.userMessage, topicContext) ?? templateReference;
+      decision = await client.decide({ ...input.request, topicContext, templateReference });
+    }
+  }
+  return finish(decision, "openai", client.model, input.originalXml, input.currentXml, {
+    fallback: input.fallback,
+  });
 }
 
 export async function runKevTurn(input: {
@@ -330,59 +407,43 @@ export async function runKevTurn(input: {
     diagramDiff: context.diagramDiff,
   };
 
-  if (described.mode === "demo" || described.mode === "openai") {
-    const local = localDiagram(userMessage, currentXml, input.currentXml, described.mode, described.model);
+  if (described.mode === "demo") {
+    const local = localDiagram(userMessage, currentXml, input.currentXml, "demo");
     if (local) return local;
-    if (described.mode === "demo") {
-      return finish(decideDemo(userMessage), "demo", undefined, input.currentXml, currentXml);
-    }
-    const topicContext = await topicContextFor(userMessage, true);
-    const researched = composeFromBrief(userMessage, topicContext ?? "");
-    if (researched) {
-      if (!researched.colorName) researched.colorName = colorInMessage(userMessage);
-      const xml = renderComposition(researched);
-      if (sameMxfile(xml, input.currentXml) || sameMxfile(xml, currentXml)) {
-        return result(
-          { intent: "noop", slots: {}, operations: [], reply: "No diagram change.", updatedXml: null },
-          described.mode,
-          described.model,
-          input.currentXml,
-          false,
-        );
-      }
-      return result(compositionDecision(researched, xml), described.mode, described.model, xml, false);
-    }
-    const client = new OpenAIKevClient();
-    const decision = await client.decide({ ...request, topicContext });
-    return finish(decision, "openai", client.model, input.currentXml, currentXml);
+    return finish(decideDemo(userMessage), "demo", undefined, input.currentXml, currentXml);
   }
 
-  const topicContext = await topicContextFor(userMessage, true);
+  if (described.mode === "openai") {
+    return runOpenAITurn({
+      request,
+      userMessage,
+      currentXml,
+      originalXml: input.currentXml,
+    });
+  }
+
+  const templateReference = templateReferenceFor(userMessage);
   let reading: KevReading;
-  const loopTimeout =
-    isArchitectureRequest(userMessage) ||
-    isBareDraw(userMessage) ||
-    resolveComposition(userMessage) !== null ||
-    wikipediaTitle(userMessage) !== null;
   try {
-    reading = await askKev(
-      {
-        userMessage,
-        currentXml,
-        previousXml: context.previousXml,
-        diagramDiff: context.diagramDiff,
-        topicContext,
-      },
-      loopTimeout ? { timeoutMs: 10_000 } : undefined,
-    );
+    reading = await askKev({
+      userMessage,
+      currentXml,
+      previousXml: context.previousXml,
+      diagramDiff: context.diagramDiff,
+      templateReference,
+    });
   } catch (error) {
     if (error instanceof KevUnreachableError) {
       const drawn = localDiagram(userMessage, currentXml, input.currentXml, "kev", described.model);
       if (drawn) return drawn;
       if (described.openai) {
-        const client = new OpenAIKevClient();
-        const decision = await client.decide({ ...request, topicContext });
-        return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
+        return runOpenAITurn({
+          request,
+          userMessage,
+          currentXml,
+          originalXml: input.currentXml,
+          fallback: true,
+        });
       }
     }
     throw error;
@@ -398,7 +459,7 @@ export async function runKevTurn(input: {
       originalXml: input.currentXml,
       previousXml: context.previousXml,
       diagramDiff: context.diagramDiff,
-      topicContext,
+      topicContext: null,
       reading,
       model,
     });
@@ -408,9 +469,13 @@ export async function runKevTurn(input: {
       const drawn = localDiagram(userMessage, currentXml, input.currentXml, "kev", model);
       if (drawn) return drawn;
       if (described.openai) {
-        const client = new OpenAIKevClient();
-        const decision = await client.decide({ ...request, topicContext });
-        return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
+        return runOpenAITurn({
+          request,
+          userMessage,
+          currentXml,
+          originalXml: input.currentXml,
+          fallback: true,
+        });
       }
     }
     throw error;
@@ -441,7 +506,8 @@ export async function runKevTurn(input: {
         currentXml,
         previousXml: context.previousXml,
         diagramDiff: context.diagramDiff,
-        topicContext,
+        topicContext: null,
+        templateReference,
         reading,
       });
       const slots = mergeSlots(written.slots, reading.slots);

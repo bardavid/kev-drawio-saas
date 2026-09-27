@@ -20,6 +20,8 @@ export interface KevRequest {
   diagramDiff?: string;
   /** Factual notes about the subject, when the turn looked one up. */
   topicContext?: string | null;
+  /** Template or architecture text the model may use, adapt, or set aside. */
+  templateReference?: string | null;
 }
 
 /** Language-model or demo classifier. Kev System One is a separate call in front of the XML writer. */
