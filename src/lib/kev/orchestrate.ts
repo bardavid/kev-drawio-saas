@@ -279,9 +279,11 @@ async function rescueDemo(input: OrchestratorContext, demo: KevDecision): Promis
 }
 
 async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResult> {
+  // Direction comes from the user's words. Live Jev reads "3 tier" as a column
+  // and that hint used to stack Client → App → Postgres. An unspecified chain
+  // stays a horizontal row; "vertically" still stacks it.
   const plan = resolvePlan(input.userMessage, {
     colorName: input.reading.slots.colorName,
-    layout: input.reading.slots.layout,
   });
   if (!plan) {
     return turn(input, {
@@ -629,7 +631,9 @@ function filledSlots(proposal: DiagramOperation, answers: Record<string, unknown
       strokeColor: PALETTE[color].stroke,
     };
   }
-  if (!proposal.slots.layout && (layout === "horizontal" || layout === "vertical")) {
+  // A layout step already carries the user's direction. Do not let a gate
+  // answer turn an unspecified chain into a column.
+  if (!proposal.slots.layout && proposal.intent === "layout" && (layout === "horizontal" || layout === "vertical")) {
     slots = { ...slots, layout };
   }
   return withPalette(slots);
