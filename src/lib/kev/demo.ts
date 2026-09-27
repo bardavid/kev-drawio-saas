@@ -1,0 +1,240 @@
+import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
+import type { KevClient } from "@/lib/kev/client";
+import { applyOperations } from "@/lib/kev/mutate";
+import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
+
+const COLOR_NAMES = Object.keys(PALETTE).join("|");
+const COLOR_RE = new RegExp(`\\b(${COLOR_NAMES})\\b`, "i");
+const HEX_RE = /#([0-9a-f]{6})\b/i;
+
+const HELP =
+  "I can add a shape, connect two shapes, restyle or rename one, delete one, or reflow the layout. Try “Add a Redis cache in front of the database.”";
+
+function decision(
+  intent: KevDecision["intent"],
+  reply: string,
+  slots: DiagramSlots = {},
+  operations: DiagramOperation[] = [],
+): KevDecision {
+  return { intent, reply, slots, operations, updatedXml: null };
+}
+
+function cleanNoun(value: string): string {
+  const trimmed = value.replace(/[?.!,;:]+$/g, "").replace(/\s+/g, " ").trim();
+  const withoutArticle = trimmed.replace(/^(?:the|a|an)\s+/i, "");
+  const stripped = withoutArticle
+    .replace(/\s+(?:box|shape|node|component|service|database|db|cache|queue)$/i, "")
+    .trim();
+  return stripped || withoutArticle;
+}
+
+const SPECIAL: Record<string, string> = {
+  api: "API",
+  postgres: "Postgres",
+  postgresql: "PostgreSQL",
+  redis: "Redis",
+  mysql: "MySQL",
+  graphql: "GraphQL",
+  grpc: "gRPC",
+  s3: "S3",
+  nginx: "Nginx",
+  kafka: "Kafka",
+  auth: "Auth",
+  http: "HTTP",
+  https: "HTTPS",
+  sql: "SQL",
+  db: "DB",
+  ui: "UI",
+  url: "URL",
+  aws: "AWS",
+  gcp: "GCP",
+};
+
+function titleLabel(input: string): string {
+  const words = cleanNoun(input).split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  return words
+    .map((word) => {
+      const key = word.toLowerCase().replace(/[^a-z0-9.+]/g, "");
+      if (SPECIAL[key]) return SPECIAL[key];
+      if (word.length > 1 && word === word.toUpperCase()) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+function namedColor(text: string): string | null {
+  return text.match(COLOR_RE)?.[1]?.toLowerCase() ?? null;
+}
+
+function hexColor(text: string): string | null {
+  const match = text.match(HEX_RE);
+  return match ? `#${match[1]!.toLowerCase()}` : null;
+}
+
+function isVagueTarget(value: string): boolean {
+  return /^(it|this|that)$/i.test(value.trim());
+}
+
+function isAllTarget(value: string): boolean {
+  return /^(all|everything|every shape|them|all shapes|all of them)$/i.test(value.trim());
+}
+
+function shapeSlots(label: string, text: string): DiagramSlots {
+  const kind = inferShape(label);
+  const hex = hexColor(text);
+  const color = namedColor(text);
+  return {
+    label,
+    shape: isShapeKind(kind) ? kind : "rectangle",
+    colorName: color ?? (hex ? null : inferColorName(label, kind)),
+    fillColor: hex,
+  };
+}
+
+export function decideDemo(message: string): KevDecision {
+  const text = message.trim();
+  const lower = text.toLowerCase();
+  if (!text) return decision("clarify", HELP);
+
+  if (
+    /^(hi|hello|hey|help|what can you do|who are you)\b/.test(lower) &&
+    !/\b(add|connect|delete|remove|make|rename|layout)\b/.test(lower)
+  ) {
+    return decision(
+      "clarify",
+      "I'm Kev. I turn a sentence into a typed diagram edit and apply it to the draw.io canvas. " + HELP,
+    );
+  }
+
+  if (
+    /\b(reflow|relayout|re-layout|arrange|organize|organise)\b/.test(lower) ||
+    /\blay(?:out)?\b/.test(lower) ||
+    /\blay (?:it |them |the diagram )?out\b/.test(lower)
+  ) {
+    const layout = /\b(vertical\w*|column|stack|top to bottom)\b/.test(lower) ? "vertical" : "horizontal";
+    const slots: DiagramSlots = { layout };
+    const direction = layout === "vertical" ? "a vertical column" : "a horizontal row";
+    return decision("layout", `Reflowed the diagram into ${direction}.`, slots, [{ intent: "layout", slots }]);
+  }
+
+  const rename = text.match(/\brename\s+(?:the\s+)?(.+?)\s+to\s+(.+)$/i);
+  if (rename?.[1] && rename[2]) {
+    const target = titleLabel(rename[1]);
+    const newLabel = titleLabel(rename[2]);
+    if (isVagueTarget(target)) return decision("clarify", "Which shape should be renamed?");
+    const slots: DiagramSlots = { target, newLabel };
+    return decision("edit_shape", `Renamed ${target} to ${newLabel}.`, slots, [{ intent: "edit_shape", slots }]);
+  }
+
+  if (/\b(delete|remove|drop)\b/.test(lower) && !/\b(add|create|insert|draw)\b/.test(lower)) {
+    const match = text.match(/\b(?:delete|remove|drop)\s+(?:the\s+)?(.+)$/i);
+    const target = titleLabel(match?.[1] ?? "");
+    if (!target || isVagueTarget(target)) return decision("clarify", "Which shape should I delete?");
+    const slots: DiagramSlots = { target };
+    return decision("delete_shape", `Removed ${target} and the edges attached to it.`, slots, [
+      { intent: "delete_shape", slots },
+    ]);
+  }
+
+  const colorCommand = text.match(
+    new RegExp(
+      `\\b(?:make|turn|paint|color|colour|style|set)\\s+(?:the\\s+)?(.+?)\\s+(?:(?:color|colour)\\s+to\\s+)?(${COLOR_NAMES}|#[0-9a-fA-F]{6})\\b`,
+      "i",
+    ),
+  );
+  if (colorCommand?.[1] && colorCommand[2] && !/\b(add|create|insert|draw)\b/.test(lower)) {
+    const rawTarget = titleLabel(colorCommand[1]);
+    const colorToken = colorCommand[2].toLowerCase();
+    const hex = colorToken.startsWith("#") ? colorToken : null;
+    const colorName = hex ? null : colorToken;
+    if (isVagueTarget(rawTarget)) {
+      return decision("clarify", `Which shape should be ${colorToken}? Name it, for example “Make the API red.”`);
+    }
+    const slots: DiagramSlots = {
+      target: isAllTarget(rawTarget) ? null : rawTarget,
+      colorName,
+      fillColor: hex,
+    };
+    const subject = slots.target ?? "every shape";
+    return decision("style", `Set ${subject} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
+  }
+
+  if (/\b(add|insert|create|draw|place)\b/.test(lower)) {
+    return parseAdd(text);
+  }
+
+  const connectOnly = text.match(/\bconnect\s+(?:the\s+)?(.+?)\s+to\s+(?:the\s+)?(.+)$/i);
+  if (connectOnly?.[1] && connectOnly[2]) {
+    const from = titleLabel(connectOnly[1]);
+    const to = titleLabel(connectOnly[2]);
+    if (isVagueTarget(from) || isVagueTarget(to)) {
+      return decision("clarify", "Name both shapes to connect, for example “Connect the client to Postgres.”");
+    }
+    const slots: DiagramSlots = { from, to };
+    return decision("connect", `Connected ${from} to ${to}.`, slots, [{ intent: "connect", slots }]);
+  }
+
+  return decision("clarify", HELP);
+}
+
+function parseAdd(text: string): KevDecision {
+  let rest = text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place)\s+/i, "");
+  rest = rest.replace(/^(?:a|an|the)\s+/i, "");
+
+  let place: DiagramSlots["place"] = null;
+  let from: string | null = null;
+  let target: string | null = null;
+
+  const connectIt = rest.match(/^(.+?)\s+and\s+connect\s+(?:the\s+)?(.+?)\s+to\s+it\b(.*)$/i);
+  const connected = rest.match(/^(.+?)\s+(?:connected|linked|wired)\s+to\s+(?:the\s+)?(.+)$/i);
+  const before = rest.match(/^(.+?)\s+(?:in front of|ahead of|before)\s+(?:the\s+)?(.+)$/i);
+  const after = rest.match(/^(.+?)\s+(?:behind|after)\s+(?:the\s+)?(.+)$/i);
+
+  if (connectIt?.[1] && connectIt[2]) {
+    rest = connectIt[1];
+    from = titleLabel(connectIt[2]);
+  } else if (before?.[1] && before[2]) {
+    rest = before[1];
+    place = "before";
+    target = titleLabel(before[2]);
+  } else if (after?.[1] && after[2]) {
+    rest = after[1];
+    place = "after";
+    from = titleLabel(after[2]);
+  } else if (connected?.[1] && connected[2]) {
+    rest = connected[1];
+    from = titleLabel(connected[2]);
+  }
+
+  const label = titleLabel(rest);
+  if (!label) {
+    return decision("clarify", "What should I add? For example, “Add a Redis cache in front of the database.”");
+  }
+  const slots: DiagramSlots = {
+    ...shapeSlots(label, text),
+    from,
+    target,
+    place,
+  };
+  let reply = `Added ${label}`;
+  if (place === "before" && target) reply += ` in front of ${target} and rewired the edges through it`;
+  else if (from) reply += ` and connected ${from} to it`;
+  reply += ".";
+  return decision("add_shape", reply, slots, [{ intent: "add_shape", slots }]);
+}
+
+export class DemoKevClient implements KevClient {
+  readonly mode = "demo" as const;
+
+  async decide(input: { messages: ChatMessage[]; currentXml: string }): Promise<KevDecision> {
+    const latest = [...input.messages].reverse().find((message) => message.role === "user");
+    return decideDemo(latest?.content ?? "");
+  }
+}
+
+export function previewDemo(message: string, xml: string): { decision: KevDecision; xml: string } {
+  const result = decideDemo(message);
+  if (result.operations.length === 0) return { decision: result, xml };
+  return { decision: result, xml: applyOperations(xml, result.operations) };
+}
