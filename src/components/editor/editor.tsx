@@ -9,27 +9,13 @@ import { DiagramFrame, type DiagramFrameHandle } from "@/components/editor/diagr
 import { Button } from "@/components/ui/button";
 import { STARTER_XML } from "@/lib/drawio/starter";
 import { noteEditorXml, noteHostXml, previousForTurn, type DiagramSync } from "@/lib/drawio/sync";
-import type { DiagramSlots, Intent, KevMode, KevTurnResult } from "@/lib/kev/types";
+import type { DiagramSlots, Intent, KevTurnResult } from "@/lib/kev/types";
 import { cn } from "@/lib/utils";
-
-interface ModeInfo {
-  mode: KevMode;
-  model?: string;
-  fallback?: boolean;
-}
 
 type Pane = "chat" | "diagram";
 
 function looksLikeDiagram(xml: string): boolean {
   return xml.includes("<mxfile") || xml.includes("<mxGraphModel");
-}
-
-function modeLabel(mode: ModeInfo | null): string {
-  if (!mode) return "";
-  if (mode.mode === "demo") return "Demo";
-  if (mode.mode === "kev") return mode.model || "Kev";
-  if (mode.fallback) return "Fallback";
-  return mode.model || "";
 }
 
 function useMdUp() {
@@ -57,10 +43,8 @@ export function Editor() {
   const [messages, setMessages] = useState<ChatItem[]>([]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
-  const [mode, setMode] = useState<ModeInfo | null>(null);
   const [pane, setPane] = useState<Pane>("chat");
   const mdUp = useMdUp();
-  const label = modeLabel(mode);
 
   function commitSync(next: DiagramSync) {
     syncRef.current = next;
@@ -78,19 +62,6 @@ export function Editor() {
     if (!looksLikeDiagram(next)) return;
     commitSync(noteHostXml(syncRef.current, next));
   }
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/chat", { signal: controller.signal })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((body: ModeInfo | null) => {
-        if (body?.mode) setMode(body);
-      })
-      .catch(() => {
-        /* Chat still posts if the mode badge never arrives. */
-      });
-    return () => controller.abort();
-  }, []);
 
   function showPane(next: Pane) {
     setPane(next);
@@ -149,7 +120,6 @@ export function Editor() {
         repaired: body.repaired,
       };
       setMessages((current) => [...current, assistant]);
-      if (body.mode) setMode({ mode: body.mode, model: body.model, fallback: body.fallback });
       if (body.updatedXml !== currentXml) {
         applyingRef.current = true;
         syncRef.current = { ...syncRef.current, acceptEcho: false };
@@ -194,7 +164,6 @@ export function Editor() {
       <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 sm:px-4">
         <BrandMark />
         <div className="flex items-center gap-1.5 sm:gap-2">
-          {label ? <span className="hidden max-w-36 truncate text-xs text-muted-foreground md:inline">{label}</span> : null}
           <Button
             type="button"
             variant="outline"
@@ -249,9 +218,6 @@ export function Editor() {
         >
           Diagram
         </button>
-        {label ? (
-          <span className="flex max-w-24 items-center truncate px-3 text-xs text-muted-foreground">{label}</span>
-        ) : null}
       </div>
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">

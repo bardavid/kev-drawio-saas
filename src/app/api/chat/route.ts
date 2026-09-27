@@ -1,5 +1,6 @@
 import { STARTER_XML } from "@/lib/drawio/starter";
 import { KevError } from "@/lib/kev/client";
+import { presentChatError, presentChatStatus, presentChatTurn } from "@/lib/kev/present";
 import { describeMode, runKevTurn } from "@/lib/kev/run";
 import type { ChatMessage } from "@/lib/kev/types";
 
@@ -12,7 +13,7 @@ const MAX_MESSAGES = 20;
 const MAX_CONTENT = 8_000;
 
 export async function GET() {
-  return Response.json(describeMode());
+  return Response.json(presentChatStatus(describeMode()));
 }
 
 export async function POST(request: Request) {
@@ -28,12 +29,12 @@ export async function POST(request: Request) {
 
   try {
     const result = await runKevTurn(parsed.value);
-    return Response.json(result);
+    return Response.json(presentChatTurn(result));
   } catch (error) {
     const message = error instanceof KevError ? error.message : "Could not update the diagram.";
     const status = error instanceof KevError ? error.status : 500;
     if (status >= 500) console.error("Kev request failed:", message);
-    return Response.json({ error: message }, { status });
+    return Response.json({ error: presentChatError(message) }, { status });
   }
 }
 
