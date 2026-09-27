@@ -535,6 +535,66 @@ describe("popular diagram templates", () => {
     assert.equal(gcp.includes("DynamoDB"), false);
   });
 
+  it("routes Azure architecture to named Azure services before the generic chain and the VPC sketch", () => {
+    const prompt = "draw an Azure architecture with Application Gateway, App Service, Azure SQL, and Service Bus";
+    const matched = matchTemplate(prompt);
+    assert.equal(matched?.spec.title, "Azure");
+    const composition = resolveComposition(prompt);
+    assert.ok(composition);
+    const outline = describeComposition(composition);
+    assert.match(outline, /Application Gateway/);
+    assert.match(outline, /App Service/);
+    assert.match(outline, /Azure SQL/);
+    assert.match(outline, /Service Bus/);
+    assert.doesNotMatch(outline, /\bALB\b/);
+    assert.doesNotMatch(outline, /\bECS\b/);
+    assert.doesNotMatch(outline, /\bRDS\b/);
+
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.doesNotMatch(drawn.decision.reply, /Gateway → Service → Sql/);
+    assert.match(drawn.xml, /<mxfile[\s>]/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["Application Gateway", "App Service", "Azure SQL", "Service Bus"]) {
+      assert.ok(labels.includes(label), label);
+    }
+    for (const stolen of ["Gateway", "Service", "Sql", "ALB", "ECS", "RDS", "Lambda", "DynamoDB"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    above(report, "Application Gateway", "App Service");
+    above(report, "App Service", "Azure SQL");
+    above(report, "Azure SQL", "Service Bus");
+    linked(report, "Application Gateway", "App Service", "HTTP");
+    linked(report, "App Service", "Azure SQL", "SQL");
+    linked(report, "App Service", "Service Bus", "Publish");
+
+    for (const variant of [
+      "draw an Azure architecture",
+      "draw an Azure cloud architecture",
+      "draw an Azure serverless architecture",
+      "draw Application Gateway, App Service, Azure SQL, and Service Bus",
+      "sketch an architecture with App Gateway, App Service, Azure SQL, and Service Bus",
+    ]) {
+      assert.equal(matchTemplate(variant)?.spec.title, "Azure", variant);
+      const variantLabels = content(assertClean(previewDemo(variant, STARTER_XML).xml).nodes).map((node) => node.label);
+      for (const label of ["Application Gateway", "App Service", "Azure SQL", "Service Bus"]) {
+        assert.ok(variantLabels.includes(label), `${variant} missing ${label}`);
+      }
+      assert.equal(variantLabels.includes("ALB"), false, variant);
+      assert.equal(variantLabels.includes("Lambda"), false, variant);
+    }
+
+    assert.equal(matchTemplate("draw a cloud architecture")?.spec.title, "AWS VPC");
+    assert.equal(
+      matchTemplate("draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB")?.spec.title,
+      "AWS serverless",
+    );
+    assert.equal(matchTemplate("draw a GCP architecture")?.spec.title, "GCP");
+    assert.equal(matchTemplate("draw a kubernetes deployment")?.spec.title, "Kubernetes");
+  });
+
   it("keeps a 3-tier web app on the chain planner", () => {
     const report = assertClean(previewDemo("draw a 3 tier system architecture", STARTER_XML).xml);
     assert.deepEqual(

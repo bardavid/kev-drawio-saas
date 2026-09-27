@@ -65,6 +65,43 @@ describe("architecture plan", () => {
     assert.equal(parseArchitecture("draw a 3 tier web app vertically")?.layout, "vertical");
   });
 
+  it("keeps Redis on a 3-tier web app that asks for a Redis cache", () => {
+    for (const prompt of [
+      "draw a 3-tier web app with Redis cache",
+      "draw a 3 tier web app with a Redis cache",
+      "draw a three-tier web app with Redis",
+      "draw a 3-tier web application diagram with Redis cache",
+    ]) {
+      assert.deepEqual(parseArchitecture(prompt)?.nodes, ["Client", "App", "Redis", "Postgres"], prompt);
+      const drawn = previewDemo(prompt, EMPTY_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      assert.match(drawn.decision.reply, /Redis/, prompt);
+      assert.doesNotMatch(drawn.decision.reply, /Client → App → Postgres\./, prompt);
+      const summary = summarizeDiagram(drawn.xml);
+      assert.deepEqual(
+        summary.vertices.map((vertex) => vertex.label),
+        ["Client", "App", "Redis", "Postgres"],
+        prompt,
+      );
+      assert.deepEqual(
+        summary.edges.map((edge) => `${edge.from}->${edge.to}`),
+        ["Client->App", "App->Redis", "Redis->Postgres"],
+        prompt,
+      );
+    }
+
+    const drawn = previewDemo("draw a 3-tier web app with Redis cache", EMPTY_XML);
+    const renamed = previewDemo("rename Redis to Cache", drawn.xml);
+    assert.equal(renamed.decision.intent, "edit_shape");
+    assert.match(renamed.decision.reply, /Renamed Redis to Cache/);
+    const labelsAfter = summarizeDiagram(renamed.xml).vertices.map((vertex) => vertex.label);
+    assert.deepEqual(labelsAfter, ["Client", "App", "Cache", "Postgres"]);
+    assert.deepEqual(
+      summarizeDiagram(renamed.xml).edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Cache", "Cache->Postgres"],
+    );
+  });
+
   it("plans a new middle tier, a missing edge, orange, and a horizontal reflow on an existing architecture", () => {
     const operations = planOperations(PROMPTS[0]!, SEEDED_XML);
     assert.deepEqual(

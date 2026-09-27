@@ -75,16 +75,21 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
   const tiers = tierCount(text);
   if (!hasVerb && !hasArrow) return null;
 
-  const cleaned = stripModifiers(text);
+  // "with Redis cache" names a cache vertex. It is not part of the tier chain,
+  // and the default Client → App → Postgres stack used to drop it.
+  const aside = redisAside(text);
+  const source = aside ? stripRedisAside(text) : text;
+  const cleaned = stripModifiers(source);
   const chain = labelsFromChain(cleaned);
   let nodes = chain.length >= 2 ? chain : labelsFromList(cleaned);
   nodes = expandTiers(nodes, tiers);
+  if (aside) nodes = insertRedis(nodes);
   nodes = uniqueLabels(nodes).slice(0, 8);
   if (nodes.length < 2) return null;
   if (!hasVerb && !hasArrow) return null;
 
   return {
-    title: extractTitle(text, chain.length >= 2 ? chain : []),
+    title: extractTitle(source, chain.length >= 2 ? chain : []),
     nodes,
     colorName: namedColor(text),
     layout: layoutOf(text) ?? layoutDefault("architecture"),
@@ -364,6 +369,23 @@ function endpointLabel(fragment: string): string | null {
     return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
   }
   return null;
+}
+
+function redisAside(text: string): boolean {
+  return /\bwith\s+(?:a\s+|an\s+|the\s+)?redis\b/i.test(text);
+}
+
+function stripRedisAside(text: string): string {
+  return text.replace(/\bwith\s+(?:a\s+|an\s+|the\s+)?redis(?:\s+cache)?\b/gi, " ").replace(/\s+/g, " ").trim();
+}
+
+const DATA_LABEL = /^(postgres|postgresql|mysql|mongo|mongodb|database|db|sql)$/i;
+
+function insertRedis(nodes: string[]): string[] {
+  if (nodes.some((node) => /\bredis\b/i.test(node))) return nodes;
+  const index = nodes.findIndex((node) => DATA_LABEL.test(node));
+  if (index === -1) return [...nodes, "Redis"];
+  return [...nodes.slice(0, index), "Redis", ...nodes.slice(index)];
 }
 
 function expandTiers(nodes: string[], tiers: number | null): string[] {
