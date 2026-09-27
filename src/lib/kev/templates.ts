@@ -648,22 +648,25 @@ function richWebTiers(): TemplateMatch {
 
 function kubernetes(): TemplateMatch {
   return {
-    context: "Ingress enters the cluster, a Service spreads traffic across pods, and a volume holds state.",
+    context:
+      "Ingress enters the cluster, a Service selects the pods, and a Deployment keeps those pods running. A volume holds state.",
     spec: layers(
       "Kubernetes",
-      "Drew a Kubernetes deploy: User → Ingress → Service → pods, with a volume.",
+      "Drew a Kubernetes deploy: User → Ingress → Service → Deployment → pods, with a volume.",
       [
         col("clients", "Clients", [node("user", "User", "rectangle")]),
         col("edge", "Edge", [node("ingress", "Ingress", "hexagon")]),
         col("svc", "Service", [node("service", "Service", "rectangle")]),
+        col("deploy", "Deployment", [node("deployment", "Deployment", "rectangle")]),
         row("pods", "Pods", [node("podA", "Pod A", "rectangle"), node("podB", "Pod B", "rectangle")]),
         col("storage", "Storage", [node("volume", "Volume", "cylinder")]),
       ],
       [
         edge("user", "ingress", "HTTPS"),
         edge("ingress", "service", "Route"),
-        edge("service", "podA", "Forward"),
-        edge("service", "podB", "Forward"),
+        edge("service", "deployment", "Forward"),
+        edge("deployment", "podA", "Run"),
+        edge("deployment", "podB", "Run"),
         edge("podA", "volume", "Mount"),
         edge("podB", "volume", "Mount"),
       ],

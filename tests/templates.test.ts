@@ -258,12 +258,13 @@ const FIXTURES: Fixture[] = [
   },
   {
     prompt: "draw a kubernetes deployment",
-    labels: ["User", "Ingress", "Service", "Pod A", "Pod B", "Volume"],
+    labels: ["User", "Ingress", "Service", "Deployment", "Pod A", "Pod B", "Volume"],
     edges: [
       ["User", "Ingress", "HTTPS"],
       ["Ingress", "Service", "Route"],
-      ["Service", "Pod A", "Forward"],
-      ["Service", "Pod B", "Forward"],
+      ["Service", "Deployment", "Forward"],
+      ["Deployment", "Pod A", "Run"],
+      ["Deployment", "Pod B", "Run"],
       ["Pod A", "Volume", "Mount"],
       ["Pod B", "Volume", "Mount"],
     ],
@@ -271,10 +272,11 @@ const FIXTURES: Fixture[] = [
     above: [
       ["User", "Ingress"],
       ["Ingress", "Service"],
-      ["Service", "Pod A"],
+      ["Service", "Deployment"],
+      ["Deployment", "Pod A"],
       ["Pod A", "Volume"],
     ],
-    clusters: ["Clients", "Edge", "Service", "Pods", "Storage"],
+    clusters: ["Clients", "Edge", "Service", "Deployment", "Pods", "Storage"],
   },
   {
     prompt: "draw an order state machine",
@@ -476,6 +478,16 @@ describe("popular diagram templates", () => {
     const clusters = report.nodes.filter((node) => node.role === "cluster");
     assert.ok(clusters.length >= 3);
     assert.ok(clusters.every((node) => node.style.includes("fillColor=#f1f5f9")));
+  });
+
+  it("includes Deployment when a Kubernetes prompt names Ingress, Service, Deployment, and Pods", () => {
+    const report = assertClean(
+      previewDemo(
+        "draw a Kubernetes deployment with Ingress, Service, Deployment, and Pods",
+        STARTER_XML,
+      ).xml,
+    );
+    for (const label of ["Ingress", "Service", "Deployment", "Pod A", "Pod B"]) box(report, label);
   });
 
   it("draws Kafka, a blog model, a business process, and a document lifecycle", () => {
