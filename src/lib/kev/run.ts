@@ -5,6 +5,8 @@ import { KevError } from "@/lib/kev/client";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
+import { maybeOrchestrate } from "@/lib/kev/orchestrate";
+import { architectureDecision, isArchitectureRequest, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
 import {
   isMutatingIntent,
@@ -15,6 +17,7 @@ import {
   type KevDecision,
   type KevMode,
   type KevReading,
+  type KevStep,
   type KevTurnResult,
 } from "@/lib/kev/types";
 
@@ -107,6 +110,7 @@ function mergeSlots(primary: DiagramSlots, fallback: DiagramSlots): DiagramSlots
     edgeLabel: filled(primary.edgeLabel, fallback.edgeLabel),
     layout: filled(primary.layout, fallback.layout),
     place: filled(primary.place, fallback.place),
+    sequence: primary.sequence ?? fallback.sequence ?? null,
   };
 }
 
@@ -162,7 +166,7 @@ function result(
   model: string | undefined,
   updatedXml: string,
   repaired: boolean,
-  extra: { intent?: Intent; fallback?: boolean; confidence?: number | null } = {},
+  extra: { intent?: Intent; fallback?: boolean; confidence?: number | null; steps?: KevStep[] } = {},
 ): KevTurnResult {
   const turn: KevTurnResult = {
     reply: decision.reply.trim() || "Done.",
@@ -170,11 +174,12 @@ function result(
     mode,
     model,
     intent: extra.intent ?? decision.intent,
-    slots: decision.slots,
+    slots: withPalette(decision.slots),
     repaired,
   };
   if (extra.fallback) turn.fallback = true;
   if (typeof extra.confidence === "number") turn.confidence = extra.confidence;
+  if (extra.steps) turn.steps = extra.steps;
   return turn;
 }
 
@@ -260,6 +265,13 @@ export async function runKevTurn(input: {
   };
 
   if (described.mode === "demo") {
+    const plan = resolvePlan(userMessage);
+    if (plan) {
+      const operations = operationsForPlan(plan, currentXml);
+      if (operations.length > 0) {
+        return finish(architectureDecision(plan, operations), "demo", undefined, input.currentXml, currentXml);
+      }
+    }
     return finish(decideDemo(userMessage), "demo", undefined, input.currentXml, currentXml);
   }
 
@@ -270,13 +282,17 @@ export async function runKevTurn(input: {
   }
 
   let reading: KevReading;
+  const loopTimeout = isArchitectureRequest(userMessage) || isBareDraw(userMessage);
   try {
-    reading = await askKev({
-      userMessage,
-      currentXml,
-      previousXml: context.previousXml,
-      diagramDiff: context.diagramDiff,
-    });
+    reading = await askKev(
+      {
+        userMessage,
+        currentXml,
+        previousXml: context.previousXml,
+        diagramDiff: context.diagramDiff,
+      },
+      loopTimeout ? { timeoutMs: 10_000 } : undefined,
+    );
   } catch (error) {
     if (error instanceof KevUnreachableError && described.openai) {
       const client = new OpenAIKevClient();
@@ -288,6 +304,26 @@ export async function runKevTurn(input: {
 
   const model = reading.model ?? described.model;
   const demo = decideDemo(userMessage);
+
+  try {
+    const orchestrated = await maybeOrchestrate({
+      userMessage,
+      currentXml,
+      originalXml: input.currentXml,
+      previousXml: context.previousXml,
+      diagramDiff: context.diagramDiff,
+      reading,
+      model,
+    });
+    if (orchestrated) return orchestrated;
+  } catch (error) {
+    if (error instanceof KevUnreachableError && described.openai) {
+      const client = new OpenAIKevClient();
+      const decision = await client.decide(request);
+      return finish(decision, "openai", client.model, input.currentXml, currentXml, { fallback: true });
+    }
+    throw error;
+  }
 
   if (!reading.needsXmlEdit) {
     const intent: Intent = reading.intent === "noop" ? "noop" : "clarify";

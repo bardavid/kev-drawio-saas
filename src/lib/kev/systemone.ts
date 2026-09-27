@@ -27,7 +27,8 @@ const DISRUPTION_CRITERIA = [
 ] as const;
 
 const NONE = "none";
-const NOUL_YES = 0.5;
+/** Noul at or above this means “yes”. Shared with the diagram loop. */
+export const NOUL_YES = 0.5;
 
 export class KevUnreachableError extends KevError {
   constructor(message: string) {
@@ -242,29 +243,23 @@ export function parseSystemOneResponse(payload: unknown, labels: string[]): KevR
 
 const UNREACHABLE = new Set([401, 403, 404, 408, 429, 500, 502, 503, 504]);
 
+export function systemOneAnswers(payload: unknown): Record<string, unknown> | null {
+  const record = asRecord(payload);
+  return record ? asRecord(record.answers) : null;
+}
+
+export function readChoiceAnswer(value: unknown): { choice: string; confidence: number | null } | null {
+  return readChoice(value);
+}
+
+export function readNoulAnswer(value: unknown): number | null {
+  return readNoul(value);
+}
+
 /** POST {KEV_BASE_URL}/v1/systemone. Bearer auth only when KEV_API_KEY is set. */
-export async function askKev(input: {
-  userMessage: string;
-  currentXml: string;
-  previousXml?: string | null;
-  diagramDiff?: string;
-}): Promise<KevReading> {
+export async function callSystemOne(body: SystemOneRequest, timeoutMs = 50_000): Promise<unknown> {
   const base = env("KEV_BASE_URL");
   if (!base) throw new KevError("KEV_BASE_URL is not set.", 500);
-
-  let summary: DiagramSummary = { vertices: [], edges: [] };
-  try {
-    summary = summarizeDiagram(input.currentXml);
-  } catch {
-    summary = { vertices: [], edges: [] };
-  }
-  const model = env("KEV_MODEL") ?? KEV_DEFAULT_MODEL;
-  const body = buildSystemOneRequest({ userMessage: input.userMessage, summary, model });
-  body.state = diagramState(input.userMessage, summary, {
-    diffText: input.diagramDiff,
-    previousXml: input.previousXml,
-    currentXml: input.currentXml,
-  });
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const apiKey = env("KEV_API_KEY");
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
@@ -273,7 +268,7 @@ export async function askKev(input: {
   try {
     response = await fetch(`${base.replace(/\/$/, "")}/v1/systemone`, {
       method: "POST",
-      signal: AbortSignal.timeout(50_000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers,
       body: JSON.stringify(body),
     });
@@ -289,7 +284,34 @@ export async function askKev(input: {
   if (!response.ok) {
     throw new KevError(payloadMessage(payload, `Kev failed (${response.status}).`), 502);
   }
+  return payload;
+}
 
+/** Classify one turn with the closed-set intent questions. */
+export async function askKev(
+  input: {
+    userMessage: string;
+    currentXml: string;
+    previousXml?: string | null;
+    diagramDiff?: string;
+  },
+  options?: { timeoutMs?: number },
+): Promise<KevReading> {
+  let summary: DiagramSummary = { vertices: [], edges: [] };
+  try {
+    summary = summarizeDiagram(input.currentXml);
+  } catch {
+    summary = { vertices: [], edges: [] };
+  }
+  const model = env("KEV_MODEL") ?? KEV_DEFAULT_MODEL;
+  const body = buildSystemOneRequest({ userMessage: input.userMessage, summary, model });
+  body.state = diagramState(input.userMessage, summary, {
+    diffText: input.diagramDiff,
+    previousXml: input.previousXml,
+    currentXml: input.currentXml,
+  });
+
+  const payload = await callSystemOne(body, options?.timeoutMs ?? 50_000);
   try {
     const reading = parseSystemOneResponse(payload, vertexLabels(summary));
     if (!reading.model) reading.model = model;

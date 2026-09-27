@@ -1,6 +1,7 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations } from "@/lib/kev/mutate";
+import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan } from "@/lib/kev/plan";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
 const COLOR_NAMES = Object.keys(PALETTE).join("|");
@@ -95,6 +96,12 @@ export function decideDemo(message: string): KevDecision {
   const text = message.trim();
   const lower = text.toLowerCase();
   if (!text) return decision("clarify", HELP);
+  if (isBareDraw(text)) {
+    return decision(
+      "clarify",
+      "What should I draw? Name the shapes and how they connect, for example “Client → App → Postgres”.",
+    );
+  }
 
   if (
     /^(hi|hello|hey|help|what can you do|who are you)\b/.test(lower) &&
@@ -233,6 +240,14 @@ export class DemoKevClient implements KevClient {
 }
 
 export function previewDemo(message: string, xml: string): { decision: KevDecision; xml: string } {
+  const plan = resolvePlan(message);
+  if (plan) {
+    const operations = operationsForPlan(plan, xml);
+    if (operations.length > 0) {
+      const decision = architectureDecision(plan, operations);
+      return { decision, xml: applyOperations(xml, operations) };
+    }
+  }
   const result = decideDemo(message);
   if (result.operations.length === 0) return { decision: result, xml };
   return { decision: result, xml: applyOperations(xml, result.operations) };

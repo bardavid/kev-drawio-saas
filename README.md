@@ -4,7 +4,7 @@ draw.ai is chat beside a live [diagrams.net](https://www.diagrams.net/) editor. 
 
 The site opens into the tool at `/`. `/app` redirects there.
 
-**Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. This app asks Kev for the intent, then asks a separate language model to write the mxfile. With neither `KEV_BASE_URL` nor `OPENAI_API_KEY`, demo mode applies a few edits locally.
+**Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. One call cannot plan a multi-shape diagram, so a Kev turn loops: propose the next edit, ask Jev to fill closed-set slots and gate it, apply that edit to the mxfile, then re-summarize. With neither `KEV_BASE_URL` nor `OPENAI_API_KEY`, demo mode applies the same architecture plans locally.
 
 The canvas opens on Client, API, and Postgres.
 
@@ -29,7 +29,7 @@ The editor iframe loads `https://embed.diagrams.net`. That host has to be reacha
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | no | Language model that writes the mxfile. Also the fallback classifier when Kev is unreachable. |
+| `OPENAI_API_KEY` | no | Fallback classifier and mxfile writer when Kev is not configured or is unreachable. Not required for multi-node Kev turns. |
 | `OPENAI_BASE_URL` | no | Defaults to `https://api.openai.com/v1`. Any compatible `/chat/completions` base URL works. |
 | `OPENAI_MODEL` | no | Defaults to `gpt-4o-mini`. |
 | `KEV_BASE_URL` | no | Kev System One host. Requests go to `{KEV_BASE_URL}/v1/systemone`. |
@@ -40,7 +40,7 @@ Copy `.env.example` to `.env.local`. Do not commit real keys. `.env*` is gitigno
 
 ### Pipeline
 
-1. **Kev**, when `KEV_BASE_URL` is set. `POST /v1/systemone` with:
+1. **Kev classify**, when `KEV_BASE_URL` is set. The first `POST /v1/systemone` asks for a single intent:
 
 ```json
 {
@@ -66,15 +66,27 @@ Copy `.env.example` to `.env.local`. Do not commit real keys. `.env*` is gitigno
 }
 ```
 
-The real request also asks Choice questions for shape, color, layout, placement, and the shapes already on the canvas, plus a Score for how much of the diagram should change. A Noul at or above 0.5 means “edit.” `clarify` and `noop` never change the XML. Kev answers look like `{ "type": "choice", "choice", "probabilities", "confidence" }`, `{ "type": "noul", "noul" }`, and `{ "type": "score", "score", "legend", "probabilities", "confidence" }`.
+The real request also asks Choice questions for shape, color, layout, placement, and the shapes already on the canvas, plus a Score for how much of the diagram should change. A Noul at or above 0.5 means “yes.” `clarify` and `noop` never change the XML by themselves. Kev answers look like `{ "type": "choice", "choice", "probabilities", "confidence" }`, `{ "type": "noul", "noul" }`, and `{ "type": "score", "score", "legend", "probabilities", "confidence" }`.
 
-2. **XML writer**, when `OPENAI_API_KEY` is set and Kev said to edit. A second chat-completions call receives Kev’s intent, slots, confidence, and score, plus a system prompt that documents mxGraph XML. It returns the full updated `mxfile`.
+2. **Diagram loop**, still on Kev, with no OpenAI key required. System One has no chain-of-thought and no open string slots, so one response cannot emit a multi-node plan. `src/lib/kev/orchestrate.ts` handles that:
 
-3. **Language-model fallback.** If Kev is not configured, the same model classifies the intent and writes the XML in one structured JSON response. If Kev is configured but unreachable (network, timeout, or 401/403/404/408/429/5xx) and an OpenAI key is set, that same JSON path runs and the turn is marked `fallback: true`. A Kev-only deployment (no OpenAI key) applies Kev’s choices with a small deterministic parser for free-text labels such as “Redis”.
+   - A bare “draw” gets a second call (is the request specific?) and a clarifying question, not “No diagram change.”
+   - A draw/build/create request that names a chain, a tier count, or several nodes is planned locally into ordered edits (add the missing shapes, connect them, then color and reflow when those words are in the request). “3 tier” with only the endpoints named inserts an App tier between them.
+   - Each edit is its own `POST /v1/systemone`. The state is the user message plus the diagram *after earlier edits this turn*. Questions are `next` (apply / clarify / noop), `confirm` (noul), and closed choices for shape, color, or layout. Explicit color and direction words in the user message win over a conflicting choice.
+   - A confirm noul of at least 0.5, or `next: apply` with that noul, applies one operation through `applyOperations`. The loop then re-summarizes. It stops on a refusal, a clarify, an unchanged file, or six steps.
+   - A single add, connect, rename, delete, reflow, or restyle that the first reading already describes is applied immediately (one call). If that reading is `noop` but the sentence is still a concrete edit, one gate call can still apply it.
 
-4. **Demo**, when neither `KEV_BASE_URL` nor `OPENAI_API_KEY` is set. A deterministic parser handles a handful of sentences (add, connect, restyle, rename, delete, reflow) and the XML mutator writes the file. No network call.
+   Named colors are resolved to palette `fillColor` and `strokeColor` before the response is returned. The optional `steps` array lists each gate. Jev is not asked to emit mxfile XML.
 
-The server prefers the model’s `updatedXml` when it parses, keeps root cells `0` and `1`, and does not drop shapes the operations did not delete. Otherwise it applies the operations and sets `repaired: true`.
+3. **XML writer**, when `OPENAI_API_KEY` is set and the turn is a single edit Kev already accepted. A chat-completions call receives that intent and returns an `mxfile`. Architecture turns skip this and use the loop above, so a Kev-only deployment can draw them.
+
+4. **Language-model fallback.** If Kev is not configured, the model classifies the intent and writes the XML in one structured JSON response. If Kev is unreachable (network, timeout, or 401/403/404/408/429/5xx) and an OpenAI key is set, that path runs and the turn is marked `fallback: true`.
+
+5. **Demo**, when neither `KEV_BASE_URL` nor `OPENAI_API_KEY` is set. The same architecture planner runs locally, and a deterministic parser handles single edits (add, connect, restyle, rename, delete, reflow). No network call.
+
+The server prefers a model’s `updatedXml` when it parses, keeps root cells `0` and `1`, and does not drop shapes the operations did not delete. Otherwise it applies the operations and sets `repaired: true`.
+
+`npm test` mocks `POST /v1/systemone`. It does not call TypeSafe and does not need `KEV_BASE_URL`, `KEV_API_KEY`, or `OPENAI_API_KEY`. Each orchestrator call uses a 10s timeout so a six-step turn stays inside the route’s 60s limit.
 
 ## Draw.io embed and the XML loop
 
@@ -92,7 +104,7 @@ Messages are JSON strings (`proto=json`). The host only accepts events whose `so
 6. **apply** — when Kev returns a new mxfile, the host posts `{ "action": "load", "xml" }`, waits for `{ "event": "load" }`, exports once more, and stores that confirmed XML. Editing is suppressed only for that load-and-confirm. While chat is idle the canvas stays editable.
 7. **spinner** — while a turn runs, the host sends `{ "action": "spinner", "show": true, "message": "…" }`, then hides it.
 
-`POST /api/chat` accepts `{ messages, currentXml, previousXml? }`. `previousXml` is the last mxfile from before the user’s hand edits, when it differs. The server adds a short cell diff (added, removed, and changed ids and values) to the Kev state and to the XML-writer prompt, along with both mxfiles, so a request like “apply that same pattern somewhere else” can see what changed. The response is `{ reply, updatedXml, intent, slots, mode, model, repaired, fallback?, confidence? }`. `mode` is `demo`, `kev`, or `openai`. `GET /api/chat` returns the configured pipeline and does not call Kev or a model.
+`POST /api/chat` accepts `{ messages, currentXml, previousXml? }`. `previousXml` is the last mxfile from before the user’s hand edits, when it differs. The server adds a short cell diff (added, removed, and changed ids and values) to the Kev state and to the XML-writer prompt, along with both mxfiles, so a request like “apply that same pattern somewhere else” can see what changed. The response is `{ reply, updatedXml, intent, slots, mode, model, repaired, fallback?, confidence?, steps? }`. `steps` is present when the diagram loop ran. `mode` is `demo`, `kev`, or `openai`. `GET /api/chat` returns the configured pipeline and does not call Kev or a model.
 
 If the editor reports a load error, the client toasts and keeps the previous XML.
 
@@ -110,7 +122,7 @@ src/app/api/chat/route.ts   chat turn
 src/components/editor       chat panel and diagrams.net frame
 public/logo.svg             draw.ai mark
 src/lib/drawio              embed protocol, starter XML, mxfile codec
-src/lib/kev                 System One client, XML writer, demo parser, mutator
+src/lib/kev                 System One client, diagram loop, demo planner, mutator
 ```
 
 `/app` redirects to `/`.

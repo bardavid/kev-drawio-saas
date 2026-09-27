@@ -236,6 +236,8 @@ describe("configured pipeline", { concurrency: 1 }, () => {
     assert.equal(result.intent, "style");
     assert.equal(result.fallback, undefined);
     assert.equal(result.confidence, 0.8);
+    assert.equal(result.slots.fillColor, "#f8cecc");
+    assert.equal(result.slots.strokeColor, "#b85450");
     const api = summarizeDiagram(result.updatedXml).vertices.find((vertex) => vertex.label === "API");
     assert.match(api?.style ?? "", /#f8cecc/);
   });
@@ -401,5 +403,216 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       (error: unknown) => error instanceof KevError && !(error instanceof KevUnreachableError) && /bad questions/.test(error.message),
     );
     assert.equal(openaiCalls, 0);
+  });
+
+  it("clarifies a bare draw instead of reporting no diagram change", async () => {
+    blankEnv();
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const calls: string[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string }> };
+      calls.push(Object.keys(body.questions).sort().join(","));
+      if (body.questions.intent) {
+        return jsonResponse({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "noop", confidence: 0.4 },
+            needs_xml_edit: { type: "noul", noul: 0.2 },
+          },
+        });
+      }
+      return jsonResponse({
+        answers: {
+          specific: { type: "noul", noul: 0.08 },
+          next: { type: "choice", choice: "clarify", confidence: 0.7 },
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: "draw" }],
+      currentXml: STARTER_XML,
+    });
+    assert.deepEqual(calls, ["anchor,color,disruption,intent,layout,needs_xml_edit,place,shape,source,target", "next,specific"]);
+    assert.equal(result.mode, "kev");
+    assert.equal(result.intent, "clarify");
+    assert.equal(result.updatedXml, STARTER_XML);
+    assert.match(result.reply, /What should I draw/);
+    assert.equal(result.reply.includes("No diagram change"), false);
+    assert.equal(result.steps?.length, 1);
+  });
+
+  it("builds a 3-tier diagram when the first System One reading is noop or style", async () => {
+    blankEnv();
+    process.env.KEV_BASE_URL = "http://kev.local";
+    process.env.OPENAI_API_KEY = "sk-test";
+    const prompts = [
+      "draw a Complex 3 Tier Web App: Client → Postgres, orange, horizontal",
+      "draw a Complex 3 Tier Web App Client to Postgres orange horizontal",
+    ];
+    for (const [index, prompt] of prompts.entries()) {
+      const urls: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        urls.push(url);
+        const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string }> };
+        if (url.includes("/chat/completions")) {
+          return jsonResponse({ error: "writer should not run" }, 500);
+        }
+        if (body.questions.intent) {
+          return jsonResponse({
+            model: "kev-latest",
+            answers: {
+              intent: { type: "choice", choice: index === 0 ? "noop" : "style", confidence: 0.42 },
+              needs_xml_edit: { type: "noul", noul: index === 0 ? 0.2 : 0.9 },
+              color: { type: "choice", choice: "orange" },
+              layout: { type: "choice", choice: "horizontal" },
+              shape: { type: "choice", choice: "rectangle" },
+            },
+          });
+        }
+        return jsonResponse({
+          model: "kev-latest",
+          answers: {
+            next: { type: "choice", choice: "apply", confidence: 0.93 },
+            confirm: { type: "noul", noul: 0.97 },
+            shape: { type: "choice", choice: "none" },
+            color: { type: "choice", choice: "orange" },
+            layout: { type: "choice", choice: "horizontal" },
+          },
+        });
+      }) as typeof fetch;
+
+      const result = await runKevTurn({
+        messages: [{ role: "user", content: prompt }],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(urls.some((url) => url.includes("/chat/completions")), false);
+      assert.ok(urls.length >= 4, `expected several System One calls, got ${urls.length}`);
+      assert.equal(result.mode, "kev");
+      assert.equal(result.model, "kev-latest");
+      assert.equal(result.intent, "add_shape");
+      assert.equal(result.fallback, undefined);
+      assert.equal(result.slots.label, "Complex 3 Tier Web App");
+      assert.equal(result.slots.shape, "rectangle");
+      assert.equal(result.slots.from, "Client");
+      assert.equal(result.slots.to, "Postgres");
+      assert.equal(result.slots.colorName, "orange");
+      assert.equal(result.slots.fillColor, "#ffe6cc");
+      assert.equal(result.slots.strokeColor, "#d79b00");
+      assert.equal(result.slots.layout, "horizontal");
+      assert.match(result.reply, /Client → App → Postgres/);
+      assert.equal(result.reply.includes("No diagram change"), false);
+      assert.ok((result.steps ?? []).length >= 3);
+      assert.equal(result.steps?.every((step) => step.accepted), true);
+      assert.notEqual(result.updatedXml, STARTER_XML);
+
+      const summary = summarizeDiagram(result.updatedXml);
+      assert.ok(summary.vertices.some((vertex) => vertex.label === "App"));
+      assert.ok(summary.edges.some((edge) => edge.from === "Client" && edge.to === "App"));
+      assert.ok(summary.edges.some((edge) => edge.from === "App" && edge.to === "Postgres"));
+      assert.ok(summary.vertices.every((vertex) => vertex.style.includes("fillColor=#ffe6cc")));
+      assert.equal(new Set(summary.vertices.map((vertex) => vertex.y)).size, 1);
+      const x = new Map(summary.vertices.map((vertex) => [vertex.label, vertex.x]));
+      assert.ok((x.get("Client") ?? 0) < (x.get("App") ?? 0));
+      assert.ok((x.get("App") ?? 0) < (x.get("Postgres") ?? 0));
+      assert.match(result.updatedXml, /id="0"/);
+      assert.match(result.updatedXml, /id="1"/);
+    }
+  });
+
+  it("asks for nodes when Jev refuses the architecture plan", async () => {
+    blankEnv();
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string }> };
+      if (body.questions.intent) {
+        return jsonResponse({
+          answers: {
+            intent: { type: "choice", choice: "style", confidence: 0.4 },
+            needs_xml_edit: { type: "noul", noul: 0.8 },
+            color: { type: "choice", choice: "orange" },
+          },
+        });
+      }
+      return jsonResponse({
+        answers: {
+          next: { type: "choice", choice: "noop", confidence: 0.6 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: "draw a Complex 3 Tier Web App: Client → Postgres, orange, horizontal" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(result.intent, "clarify");
+    assert.equal(result.updatedXml, STARTER_XML);
+    assert.match(result.reply, /Which nodes/);
+    assert.equal(result.steps?.[0]?.accepted, false);
+  });
+
+  it("gates a concrete edit that the first reading called noop", async () => {
+    blankEnv();
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let calls = 0;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1;
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string }> };
+      if (body.questions.intent) {
+        return jsonResponse({
+          answers: {
+            intent: { type: "choice", choice: "noop", confidence: 0.3 },
+            needs_xml_edit: { type: "noul", noul: 0.1 },
+          },
+        });
+      }
+      assert.equal(body.questions.confirm?.type, "noul");
+      return jsonResponse({
+        answers: {
+          next: { type: "choice", choice: "apply", confidence: 0.88 },
+          confirm: { type: "noul", noul: 0.91 },
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: "Add a Redis cache in front of the database" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(calls, 2);
+    assert.equal(result.intent, "add_shape");
+    assert.equal(result.steps?.[0]?.accepted, true);
+    const summary = summarizeDiagram(result.updatedXml);
+    assert.ok(summary.vertices.some((vertex) => vertex.label === "Redis"));
+    assert.ok(summary.edges.some((edge) => edge.from === "API" && edge.to === "Redis"));
+    assert.ok(summary.edges.some((edge) => edge.from === "Redis" && edge.to === "Postgres"));
+  });
+
+  it("still connects two shapes in one System One call", async () => {
+    blankEnv();
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return jsonResponse({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "connect", confidence: 0.86 },
+          needs_xml_edit: { type: "noul", noul: 0.9 },
+          source: { type: "choice", choice: "Client" },
+          target: { type: "choice", choice: "Postgres" },
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: "Connect the client to Postgres" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.intent, "connect");
+    assert.ok(summarizeDiagram(result.updatedXml).edges.some((edge) => edge.from === "Client" && edge.to === "Postgres"));
   });
 });

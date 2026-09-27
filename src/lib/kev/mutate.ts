@@ -359,7 +359,19 @@ function styleShapes(doc: XmlDocument, slots: DiagramSlots) {
 
 function layoutDiagram(doc: XmlDocument, slots: DiagramSlots) {
   const vertical = slots.layout === "vertical";
+  const order = new Map<string, number>();
+  for (const [index, label] of (slots.sequence ?? []).entries()) {
+    const key = normalizeName(label);
+    if (key && !order.has(key)) order.set(key, index);
+  }
   const vertices = [...listVertices(doc)].sort((a, b) => {
+    const leftRank = order.get(normalizeName(cellLabel(a)));
+    const rightRank = order.get(normalizeName(cellLabel(b)));
+    if (leftRank !== undefined || rightRank !== undefined) {
+      if (leftRank === undefined) return 1;
+      if (rightRank === undefined) return -1;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+    }
     const left = geometryOf(a);
     const right = geometryOf(b);
     if (vertical) return left.y - right.y || left.x - right.x;
