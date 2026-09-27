@@ -28,6 +28,10 @@ const TIER_RE = /\b(\d+|two|three|four|five)[\s-]*tier\b/i;
 export function matchTemplate(message: string): TemplateMatch | null {
   const text = message.trim();
   if (!text) return null;
+  // Named Azure services are not a generic Gateway → Service → Sql chain, and
+  // "Azure cloud architecture" is not the AWS VPC sketch. This has to win
+  // before the tier planner returns null and before isCloud.
+  if (isAzure(text)) return azureArchitecture(text);
   if (isRichWebTiers(text)) return richWebTiers();
   if (TIER_RE.test(text)) return null;
   if (isOauth(text)) return oauthSequence();
@@ -173,8 +177,8 @@ function isCqrs(text: string): boolean {
 
 function isEventDriven(text: string): boolean {
   if (/\bsequence\b/i.test(text)) return false;
-  // A named GCP product is not a generic bus, even when the sentence also says Pub/Sub or Kafka.
-  if (isGcp(text)) return false;
+  // A named GCP or Azure product is not a generic bus, even when the sentence also says Pub/Sub or Kafka.
+  if (isGcp(text) || isAzure(text)) return false;
   return /\bevent[- ]driven\b|\bpub(?:\/|\s)?sub\b|\bmessage bus\b|\bkafka\b/i.test(text);
 }
 
@@ -183,7 +187,7 @@ function isMicroservices(text: string): boolean {
 }
 
 function isCloud(text: string): boolean {
-  if (isGcp(text)) return false;
+  if (isGcp(text) || isAzure(text)) return false;
   return (
     /\b(vpc|aws|amazon web services)\b/i.test(text) ||
     /\bcloud architecture\b/i.test(text) ||
@@ -205,11 +209,11 @@ function mentionsDynamoDb(text: string): boolean {
 
 /**
  * AWS serverless asks name the service, the API Gateway + Lambda pair, or DynamoDB.
- * Checked before the generic VPC sketch. GCP (including Serverless VPC Access and
- * Cloud Functions) and Kubernetes keep their own templates.
+ * Checked before the generic VPC sketch. Azure, GCP (including Serverless VPC Access and
+ * Cloud Functions), and Kubernetes keep their own templates.
  */
 function isAwsServerless(text: string): boolean {
-  if (isGcp(text) || isKubernetes(text)) return false;
+  if (isGcp(text) || isAzure(text) || isKubernetes(text)) return false;
   if (/\bserverless\b/i.test(text)) return true;
   if (mentionsApiGateway(text) && mentionsLambda(text)) return true;
   return mentionsDynamoDb(text) && /\b(aws|amazon(?:\s+web\s+services)?|serverless)\b/i.test(text);
@@ -228,7 +232,7 @@ function isCdn(text: string): boolean {
 }
 
 function isLoadBalancer(text: string): boolean {
-  if (isCloud(text) || isGcp(text)) return false;
+  if (isCloud(text) || isGcp(text) || isAzure(text)) return false;
   return /\bload[\s-]?balanc/i.test(text);
 }
 
@@ -767,6 +771,145 @@ const GCP_SERVICES: Record<GcpServiceId, GcpService> = {
 
 const GCP_DEFAULT: GcpServiceId[] = ["lb", "run", "sql", "pubsub"];
 const GCP_TIER_ORDER: Array<GcpService["tier"]> = ["edge", "compute", "network", "data"];
+
+type AzureServiceId =
+  | "gateway"
+  | "appservice"
+  | "functions"
+  | "aks"
+  | "sql"
+  | "cosmos"
+  | "storage"
+  | "bus"
+  | "eventhubs"
+  | "keyvault";
+
+interface AzureService {
+  id: AzureServiceId;
+  label: string;
+  shape: LayerNode["shape"];
+  tier: "edge" | "compute" | "data";
+}
+
+const AZURE_SERVICES: Record<AzureServiceId, AzureService> = {
+  gateway: { id: "gateway", label: "Application Gateway", shape: "hexagon", tier: "edge" },
+  appservice: { id: "appservice", label: "App Service", shape: "rectangle", tier: "compute" },
+  functions: { id: "functions", label: "Azure Functions", shape: "rectangle", tier: "compute" },
+  aks: { id: "aks", label: "AKS", shape: "rectangle", tier: "compute" },
+  sql: { id: "sql", label: "Azure SQL", shape: "cylinder", tier: "data" },
+  cosmos: { id: "cosmos", label: "Cosmos DB", shape: "cylinder", tier: "data" },
+  storage: { id: "storage", label: "Blob Storage", shape: "cylinder", tier: "data" },
+  bus: { id: "bus", label: "Service Bus", shape: "queue", tier: "data" },
+  eventhubs: { id: "eventhubs", label: "Event Hubs", shape: "queue", tier: "data" },
+  keyvault: { id: "keyvault", label: "Key Vault", shape: "rectangle", tier: "data" },
+};
+
+const AZURE_DEFAULT: AzureServiceId[] = ["gateway", "appservice", "sql", "bus"];
+const AZURE_TIER_ORDER: Array<AzureService["tier"]> = ["edge", "compute", "data"];
+
+function mentionsAzure(text: string): boolean {
+  return /\bazure\b/i.test(text);
+}
+
+function namedAzureServices(text: string): AzureServiceId[] {
+  const ids: AzureServiceId[] = [];
+  if (/\b(?:application|app)\s+gateway\b/i.test(text)) ids.push("gateway");
+  if (/\bapp\s+service\b/i.test(text)) ids.push("appservice");
+  if (/\bazure\s+functions\b/i.test(text)) ids.push("functions");
+  if (/\baks\b|\bazure\s+kubernetes(?:\s+service)?\b/i.test(text)) ids.push("aks");
+  if (/\bazure\s+sql\b/i.test(text)) ids.push("sql");
+  if (/\bcosmos\s*db\b|\bcosmosdb\b/i.test(text)) ids.push("cosmos");
+  if (/\bblob\s+storage\b|\bazure\s+(?:blob|storage)\b/i.test(text)) ids.push("storage");
+  if (/\bservice\s+bus\b/i.test(text)) ids.push("bus");
+  if (/\bevent\s+hubs?\b/i.test(text)) ids.push("eventhubs");
+  if (/\bkey\s+vault\b/i.test(text)) ids.push("keyvault");
+  return ids;
+}
+
+/**
+ * Azure, or a concrete Azure product. Checked before the tier planner and the
+ * AWS VPC sketch. Sequences, workflows, and other typed diagrams keep their own templates.
+ */
+function isAzure(text: string): boolean {
+  if (/\bsequence\b/i.test(text) || isStateMachineRequest(text)) return false;
+  if (/\b(workflow|flowchart)\b/i.test(text)) return false;
+  if (isCacheAside(text) || isOauth(text) || isCheckout(text) || isEr(text) || isCqrs(text)) return false;
+  if (mentionsAzure(text)) return true;
+  return namedAzureServices(text).length > 0;
+}
+
+function azureSelection(text: string): AzureService[] {
+  const named = namedAzureServices(text);
+  if (named.length === 0) return AZURE_DEFAULT.map((id) => AZURE_SERVICES[id]);
+  return named.map((id) => AZURE_SERVICES[id]);
+}
+
+function azureEdgeLabel(from: string, to: AzureServiceId): string {
+  if (to === "sql" || to === "cosmos") return "SQL";
+  if (to === "bus" || to === "eventhubs") return "Publish";
+  if (to === "storage" || to === "keyvault") return "Read / write";
+  if (to === "gateway" || from === "internet") return "HTTPS";
+  if (from === "gateway") return "HTTP";
+  return "Call";
+}
+
+function azureArchitecture(text: string): TemplateMatch {
+  const selected = azureSelection(text);
+  const tiers = AZURE_TIER_ORDER.map((tier) => selected.filter((service) => service.tier === tier)).filter(
+    (services) => services.length > 0,
+  );
+  const groups: LayerGroup[] = [];
+  const edges: LayerEdge[] = [];
+  const hasFront = tiers.some((services) => services[0]?.tier === "edge" || services[0]?.tier === "compute");
+  if (hasFront) groups.push(col("clients", "Clients", [node("internet", "Internet", "cloud")]));
+
+  let anchor: string | null = hasFront ? "internet" : null;
+  for (const services of tiers) {
+    const tier = services[0]?.tier ?? "data";
+    const layerNodes = services.map((service) => node(service.id, service.label, service.shape));
+    const clusterId = tier === "edge" ? "edge" : tier === "compute" ? "compute" : "data";
+    const clusterLabel = tier === "edge" ? "Edge" : tier === "compute" ? "Compute" : "Data";
+    groups.push(col(clusterId, clusterLabel, layerNodes));
+    if (tier === "data" && anchor) {
+      const compute = selected.find((service) => service.tier === "compute");
+      const asyncSide = services.some((service) => service.id !== "bus" && service.id !== "eventhubs");
+      services.forEach((service, serviceIndex) => {
+        if (!anchor) return;
+        // Async messages leave App Service. They do not sit on the SQL path.
+        if ((service.id === "bus" || service.id === "eventhubs") && compute && asyncSide) {
+          edges.push(edge(compute.id, service.id, "Publish", true));
+          return;
+        }
+        edges.push(edge(anchor, service.id, azureEdgeLabel(anchor, service.id), serviceIndex > 0));
+      });
+      continue;
+    }
+    services.forEach((service, serviceIndex) => {
+      const from = serviceIndex === 0 ? anchor : (services[serviceIndex - 1]?.id ?? null);
+      if (from) edges.push(edge(from, service.id, azureEdgeLabel(from, service.id)));
+      anchor = service.id;
+    });
+  }
+
+  const names = selected.map((service) => service.label);
+  const full =
+    names.includes("Application Gateway") &&
+    names.includes("App Service") &&
+    names.includes("Azure SQL") &&
+    names.includes("Service Bus");
+  return {
+    context:
+      "On Azure, clients reach Application Gateway, App Service runs the workload, Azure SQL stores relational data, and Service Bus carries async messages.",
+    spec: layers(
+      "Azure",
+      full
+        ? "Drew an Azure architecture: Internet → Application Gateway → App Service, with Azure SQL and Service Bus."
+        : `Drew an Azure architecture with ${names.join(", ")}.`,
+      groups,
+      edges,
+    ),
+  };
+}
 
 function mentionsGcp(text: string): boolean {
   return /\bgcp\b|\bgoogle\s+cloud\b/i.test(text);

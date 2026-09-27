@@ -1095,6 +1095,7 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw an e-commerce data model",
       "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB",
       "draw an AWS VPC architecture with an ALB, ECS, and RDS",
+      "draw an Azure architecture with Application Gateway, App Service, Azure SQL, and Service Bus",
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
       "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.",
       "draw a kubernetes deployment",
@@ -1114,6 +1115,73 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       assert.deepEqual(geometrySignature(result.updatedXml), geometrySignature(expected), prompt);
       assertClean(result.updatedXml);
     }
+  });
+
+  it("draws the Azure prompt as Application Gateway, App Service, Azure SQL, and Service Bus", async () => {
+    installKev();
+    const prompt = "draw an Azure architecture with Application Gateway, App Service, Azure SQL, and Service Bus";
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: prompt }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(result.intent, "add_shape");
+    assert.equal(result.reply.includes("Which nodes should I draw"), false);
+    assert.doesNotMatch(result.reply, /Gateway → Service → Sql/);
+    assert.match(result.updatedXml, /<mxfile[\s>]/);
+    const labels = assessDiagram(result.updatedXml).nodes.map((node) => node.label);
+    for (const label of ["Application Gateway", "App Service", "Azure SQL", "Service Bus"]) {
+      assert.ok(labels.includes(label), label);
+    }
+    for (const stolen of ["Gateway", "Service", "Sql", "ALB", "ECS", "RDS"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    assertClean(result.updatedXml);
+  });
+
+  it("draws a 3-tier web app with Redis, then renames Redis to Cache", async () => {
+    installKev();
+    const prompt = "draw a 3-tier web app with Redis cache";
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: prompt }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(drawn.intent, "add_shape");
+    assert.match(drawn.reply, /Redis/);
+    assert.doesNotMatch(drawn.reply, /Client → App → Postgres\./);
+    const report = assertClean(drawn.updatedXml);
+    assert.deepEqual(
+      report.nodes.map((node) => node.label),
+      ["Client", "App", "Redis", "Postgres"],
+    );
+    assert.deepEqual(
+      report.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Redis", "Redis->Postgres"],
+    );
+    assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
+    const redis = report.nodes.find((node) => node.label === "Redis");
+    assert.match(redis?.style ?? "", /cylinder3/);
+
+    const renamed = await runKevTurn({
+      messages: [
+        { role: "user", content: prompt },
+        { role: "assistant", content: drawn.reply },
+        { role: "user", content: "rename Redis to Cache" },
+      ],
+      currentXml: drawn.updatedXml,
+      previousXml: STARTER_XML,
+    });
+    assert.equal(renamed.intent, "edit_shape");
+    assert.match(renamed.reply, /Renamed Redis to Cache/);
+    const after = assertClean(renamed.updatedXml);
+    assert.deepEqual(
+      after.nodes.map((node) => node.label),
+      ["Client", "App", "Cache", "Postgres"],
+    );
+    assert.equal(after.nodes.some((node) => node.label === "Redis"), false);
+    assert.deepEqual(
+      after.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Client->App", "App->Cache", "Cache->Postgres"],
+    );
   });
 
   it("draws the AWS serverless prompt as API Gateway, Lambda, and DynamoDB", async () => {

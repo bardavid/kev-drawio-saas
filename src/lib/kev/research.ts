@@ -21,6 +21,8 @@ export function redisDiagramRequest(message: string): boolean {
   if (/\bsequence\b/i.test(message)) return false;
   if (/\b(workflow|flowchart)\b/i.test(message)) return false;
   if (/\bin front of\b/i.test(message)) return false;
+  // "3-tier web app with Redis" is a tier stack that includes a cache, not a Redis usage diagram.
+  if (/\b(\d+|two|three|four|five)[\s-]*tier\b/i.test(message)) return false;
   return /\b(usage|diagram|architecture)\b/i.test(message);
 }
 
