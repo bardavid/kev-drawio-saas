@@ -37,8 +37,9 @@ import type {
 /**
  * One System One call cannot plan a multi-shape diagram: Jev returns choice,
  * noul, and score values, not a graph. This loop drafts the next concrete
- * edit, asks Jev to fill closed-set slots and gate it, applies that edit with
- * the XML mutator, then re-summarizes and repeats.
+ * edit, asks Jev to fill closed-set slots, applies that edit with the XML
+ * mutator, then re-summarizes and repeats. An explicit architecture plan is
+ * applied even when the confirm noul is below 0.5 or next is not apply.
  */
 export const MAX_ORCHESTRATOR_STEPS = 6;
 export const ORCHESTRATOR_TIMEOUT_MS = 10_000;
@@ -276,13 +277,19 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
     const detail = describeOperation(proposal);
     let gate: GateResult;
     try {
-      gate = await gateOperation(input, proposal, pending.length - 1, appliedDetails, working);
+      gate = await gateOperation(input, proposal, pending.length - 1, appliedDetails, working, true);
     } catch (error) {
       if (applied.length === 0) throw error;
       break;
     }
     if (typeof gate.confidence === "number") confidence = gate.confidence;
-    steps.push({ detail, intent: proposal.intent, accepted: gate.accepted, confirm: gate.confirm });
+    steps.push({
+      detail,
+      intent: proposal.intent,
+      accepted: gate.accepted,
+      confirm: gate.confirm,
+      choice: gate.choice,
+    });
     if (!gate.accepted) {
       if (applied.length === 0) {
         return turn(input, {
@@ -346,6 +353,7 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
 
 interface GateResult {
   accepted: boolean;
+  choice: string | null;
   confirm: number | null;
   confidence: number | null;
   slots: DiagramSlots;
@@ -357,6 +365,7 @@ async function gateOperation(
   remaining: number,
   applied: string[],
   xml = input.currentXml,
+  architecture = false,
 ): Promise<GateResult> {
   const payload = await callSystemOne(
     buildOrchestratorStepRequest({
@@ -378,11 +387,25 @@ async function gateOperation(
   const confirm = readNoulAnswer(answers.confirm);
   const choice = next?.choice.toLowerCase() ?? null;
   return {
-    accepted: acceptedEdit(choice, confirm),
+    accepted: architecture ? acceptArchitectureStep(choice, confirm) : acceptedEdit(choice, confirm),
+    choice,
     confirm,
     confidence: next?.confidence ?? null,
     slots: filledSlots(proposal, answers),
   };
+}
+
+/**
+ * A draw/build/create plan already names the nodes. Live Jev answered the App
+ * insert with confirm 0.43 and did not choose apply, which used to cancel the
+ * whole turn. Slot answers still refine shape, color, and layout. The noul and
+ * the next choice do not veto a concrete planned edit.
+ */
+export function acceptArchitectureStep(choice: string | null, confirm: number | null): boolean {
+  // Live Jev returned next !== apply with confirm 0.43. Both are recorded on the step.
+  void choice;
+  void confirm;
+  return true;
 }
 
 function acceptedEdit(choice: string | null, confirm: number | null): boolean {

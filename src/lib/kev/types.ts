@@ -84,6 +84,8 @@ export interface KevStep {
   accepted: boolean;
   /** Noul for applying the proposed edit, when that question was asked. */
   confirm: number | null;
+  /** `next` choice from the gate, when that question was asked. */
+  choice?: string | null;
 }
 
 export const INTENTS: readonly Intent[] = [
