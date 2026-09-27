@@ -334,12 +334,16 @@ describe("composition gate", { concurrency: 1 }, () => {
     });
     assert.deepEqual(calls, [
       "anchor,color,disruption,intent,layout,needs_xml_edit,place,shape,source,target",
+      "confirm,next",
+      "confirm,next",
       "color,confirm,next",
     ]);
     assert.equal(result.intent, "add_shape");
-    assert.equal(result.steps?.[0]?.accepted, true);
-    assert.equal(result.steps?.[0]?.confirm, 0.43);
-    assert.equal(result.steps?.[0]?.choice, "noop");
+    assert.deepEqual(
+      result.steps?.map((step) => step.detail),
+      ["Confirm the node outline", "Confirm the edges", "Confirm the diagram style"],
+    );
+    assert.equal(result.steps?.every((step) => step.accepted && step.confirm === 0.43 && step.choice === "noop"), true);
     const report = assertClean(result.updatedXml);
     assert.deepEqual(content(report.nodes).map((node) => node.label), ["User", "Browser", "Auth Service"]);
     assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
@@ -454,6 +458,63 @@ describe("composition gate", { concurrency: 1 }, () => {
     const report = assertClean(result.updatedXml);
     assert.ok(report.nodes.filter((node) => node.role === "node").length >= 4);
     assert.ok(report.edges.some((edge) => edge.from === "App" && edge.to === "Redis cache"));
+  });
+
+  it("researches an unknown topic, then gates outline, structure, and style", async () => {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const phases: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("wikipedia.org")) {
+        assert.match(url, /page\/summary\/Memcached$/);
+        return Response.json({
+          extract:
+            "Memcached is a distributed memory caching system. Applications read it before a database and fill it after a miss.",
+        });
+      }
+      const body = JSON.parse(String(init?.body)) as { state?: string; questions: Record<string, { type: string }> };
+      const phase = body.state?.match(/Phase: (\w+)/)?.[1];
+      if (phase) phases.push(phase);
+      if (body.questions.intent) {
+        return Response.json({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "noop", confidence: 0.4 },
+            needs_xml_edit: { type: "noul", noul: 0.2 },
+          },
+        });
+      }
+      if (phase === "outline") assert.match(body.state ?? "", /distributed memory caching/);
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          next: { type: "choice", choice: "apply", confidence: 0.8 },
+          confirm: { type: "noul", noul: 0.91 },
+          color: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: "Draw a memcached diagram usage" }],
+      currentXml: STARTER_XML,
+    });
+    assert.deepEqual(phases, ["outline", "structure", "style"]);
+    assert.deepEqual(
+      result.steps?.map((step) => step.detail),
+      ["Confirm the node outline", "Confirm the edges", "Confirm the diagram style"],
+    );
+    assert.equal(result.steps?.every((step) => step.accepted), true);
+    assert.equal(result.intent, "add_shape");
+    assert.match(result.reply, /Memcached/);
+    assert.equal(result.reply.includes("No diagram change"), false);
+    assert.notEqual(result.updatedXml, STARTER_XML);
+    const report = assertClean(result.updatedXml);
+    const labels = report.nodes.map((node) => node.label);
+    for (const label of ["Client", "App", "Memcached", "Database"]) assert.ok(labels.includes(label), label);
+    assert.ok(report.edges.some((edge) => edge.from === "App" && edge.to === "Memcached"));
+    assert.ok(report.edges.some((edge) => edge.label === "Read on miss"));
+    assert.equal(labels.includes("Redis cache"), false);
   });
 });
 
@@ -639,6 +700,22 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw io uring usage on XFS filesystem",
       "draw a workflow for tax filing process in US",
       "Draw a redis diagram usage",
+      "draw a microservices architecture",
+      "draw a CQRS architecture",
+      "draw an event-driven architecture",
+      "draw a cache-aside diagram",
+      "draw a CDN architecture",
+      "draw a load balancer architecture",
+      "draw a checkout sequence diagram",
+      "draw an OAuth login sequence",
+      "draw an API call sequence diagram",
+      "draw an approval workflow",
+      "draw an e-commerce data model",
+      "draw an AWS VPC architecture with an ALB, ECS, and RDS",
+      "draw a kubernetes deployment",
+      "draw an order state machine",
+      "draw a network diagram with a firewall and a DMZ",
+      "draw a system architecture",
     ];
     for (const prompt of prompts) {
       const result = await runKevTurn({

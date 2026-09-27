@@ -3,13 +3,14 @@ import { BLANK_XML } from "@/lib/drawio/starter";
 import { assertLoadableMxfile, summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
 import { KevError } from "@/lib/kev/client";
-import { compositionDecision, renderComposition, resolveComposition } from "@/lib/kev/compose";
+import { colorInMessage, compositionDecision, renderComposition, resolveComposition, sameMxfile } from "@/lib/kev/compose";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { architectureDecision, isArchitectureRequest, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
+import { composeFromBrief } from "@/lib/kev/templates";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
 import {
   isMutatingIntent,
@@ -270,13 +271,32 @@ function localDiagram(
   const composed = resolveComposition(userMessage);
   if (composed) {
     const xml = renderComposition(composed);
+    if (sameMxfile(xml, originalXml) || sameMxfile(xml, _currentXml)) {
+      return result(
+        { intent: "noop", slots: {}, operations: [], reply: "No diagram change.", updatedXml: null },
+        mode,
+        model,
+        originalXml,
+        false,
+      );
+    }
     return result(compositionDecision(composed, xml), mode, model, xml, false);
   }
   const plan = resolvePlan(userMessage);
   if (!plan) return null;
   const operations = operationsForPlan(plan, BLANK_XML);
   if (operations.length === 0) return null;
-  return finish(architectureDecision(plan, operations), mode, model, originalXml, BLANK_XML);
+  const drawn = finish(architectureDecision(plan, operations), mode, model, originalXml, BLANK_XML);
+  if (sameMxfile(drawn.updatedXml, originalXml) || sameMxfile(drawn.updatedXml, _currentXml)) {
+    return result(
+      { intent: "noop", slots: {}, operations: [], reply: "No diagram change.", updatedXml: null },
+      mode,
+      model,
+      originalXml,
+      false,
+    );
+  }
+  return drawn;
 }
 
 export async function runKevTurn(input: {
@@ -309,6 +329,21 @@ export async function runKevTurn(input: {
       return finish(decideDemo(userMessage), "demo", undefined, input.currentXml, currentXml);
     }
     const topicContext = await topicContextFor(userMessage, true);
+    const researched = composeFromBrief(userMessage, topicContext ?? "");
+    if (researched) {
+      if (!researched.colorName) researched.colorName = colorInMessage(userMessage);
+      const xml = renderComposition(researched);
+      if (sameMxfile(xml, input.currentXml) || sameMxfile(xml, currentXml)) {
+        return result(
+          { intent: "noop", slots: {}, operations: [], reply: "No diagram change.", updatedXml: null },
+          described.mode,
+          described.model,
+          input.currentXml,
+          false,
+        );
+      }
+      return result(compositionDecision(researched, xml), described.mode, described.model, xml, false);
+    }
     const client = new OpenAIKevClient();
     const decision = await client.decide({ ...request, topicContext });
     return finish(decision, "openai", client.model, input.currentXml, currentXml);
@@ -317,7 +352,10 @@ export async function runKevTurn(input: {
   const topicContext = await topicContextFor(userMessage, true);
   let reading: KevReading;
   const loopTimeout =
-    isArchitectureRequest(userMessage) || isBareDraw(userMessage) || resolveComposition(userMessage) !== null;
+    isArchitectureRequest(userMessage) ||
+    isBareDraw(userMessage) ||
+    resolveComposition(userMessage) !== null ||
+    wikipediaTitle(userMessage) !== null;
   try {
     reading = await askKev(
       {

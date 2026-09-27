@@ -1,7 +1,8 @@
 import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
-import { openDiagram, serializeDiagram } from "@/lib/drawio/xml";
+import { normalizeMxfile, openDiagram, serializeDiagram } from "@/lib/drawio/xml";
 import { withPalette } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
+import { matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
 
 type XmlElement = import("@xmldom/xmldom").Element;
@@ -80,6 +81,8 @@ export interface LayerGroup {
   id: string;
   label: string;
   nodes: LayerNode[];
+  /** `row` places children side by side. The default stacks them. */
+  flow?: "row" | "column";
 }
 
 export interface LayerEdge {
@@ -133,6 +136,16 @@ export function colorInMessage(message: string): string | null {
   return message.match(COLOR_RE)?.[1]?.toLowerCase() ?? null;
 }
 
+/** True when both strings are the same mxfile after normalization. */
+export function sameMxfile(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return normalizeMxfile(a) === normalizeMxfile(b);
+  } catch {
+    return false;
+  }
+}
+
 function wantsPicture(text: string): boolean {
   return /\b(draw|sketch|diagram|show|illustrate|map)\b/i.test(text);
 }
@@ -164,6 +177,7 @@ export function resolveComposition(
 ): Composition | null {
   const text = message.trim();
   if (!text || !wantsPicture(text)) return null;
+  const matched = matchTemplate(text);
   const spec = specFor(text);
   if (!spec) return null;
   const named = colorInMessage(text);
@@ -171,7 +185,7 @@ export function resolveComposition(
   return {
     spec,
     colorName: named ?? hints?.colorName ?? null,
-    context: hints?.context ?? brief?.summary ?? null,
+    context: hints?.context ?? brief?.summary ?? matched?.context ?? null,
     researchQuery: brief ? "Redis" : null,
   };
 }
@@ -207,6 +221,8 @@ export function renderComposition(composition: Composition): string {
 
 function specFor(text: string): CompositionSpec | null {
   if (isIoUring(text)) return ioUringSpec();
+  const matched = matchTemplate(text);
+  if (matched) return matched.spec;
   if (redisDiagramRequest(text)) return redisUsageSpec();
   if (isLoginSequence(text)) return loginSequence();
   if (isSequence(text)) return genericSequence(text);
@@ -399,6 +415,10 @@ function sizeFor(shape: ShapeKind): { width: number; height: number } {
   if (shape === "diamond") return { width: 156, height: 92 };
   if (shape === "cylinder") return { width: 168, height: 80 };
   if (shape === "document") return { width: 176, height: 72 };
+  if (shape === "cloud") return { width: 168, height: 96 };
+  if (shape === "hexagon") return { width: 168, height: 80 };
+  if (shape === "queue") return { width: 176, height: 72 };
+  if (shape === "ellipse") return { width: 150, height: 72 };
   return { width: 176, height: 64 };
 }
 
@@ -510,6 +530,166 @@ function link(source: Placed, target: Placed, edge: FlowEdge): DrawnEdge {
 }
 
 function drawLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+  if (spec.groups.some((group) => group.flow === "row" && group.nodes.length > 1)) return drawRowLayers(spec, paint);
+  return drawStackedLayers(spec, paint);
+}
+
+/** Equal slots so a single node lines up with the middle of an odd row. */
+const ROW_SLOT = 210;
+const ROW_PAD_X = 28;
+const ROW_HEADER = 34;
+const ROW_PAD_Y = 20;
+const ROW_CLUSTER_GAP = 56;
+const ROW_CENTER = 520;
+
+interface ClusterBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+  const nodes: Placed[] = [];
+  const clusters = new Map<string, ClusterBox>();
+  const nodeCluster = new Map<string, ClusterBox>();
+  let cursor = 48;
+
+  for (const group of spec.groups) {
+    const row = group.flow === "row" && group.nodes.length > 1;
+    const count = row ? group.nodes.length : 1;
+    const width = ROW_PAD_X + count * ROW_SLOT + ROW_PAD_X;
+    const sizes = group.nodes.map((node) => sizeFor(node.shape));
+    const body = row
+      ? Math.max(...sizes.map((size) => size.height))
+      : sizes.reduce((sum, size) => sum + size.height, 0) + 36 * Math.max(0, sizes.length - 1);
+    const height = ROW_HEADER + ROW_PAD_Y + body + ROW_PAD_Y;
+    const x = ROW_CENTER - width / 2;
+    const cluster: ClusterBox = { x, y: cursor, width, height };
+    clusters.set(group.id, cluster);
+    nodes.push({
+      id: group.id,
+      label: group.label,
+      x,
+      y: cursor,
+      width,
+      height,
+      style:
+        `swimlane;whiteSpace=wrap;html=1;startSize=${ROW_HEADER};rounded=1;arcSize=8;` +
+        `fillColor=${CLUSTER_HEADER};swimlaneFillColor=${CLUSTER_BODY};strokeColor=${CLUSTER_STROKE};` +
+        `fontColor=#475569;fontSize=12;fontStyle=1;fontFamily=Helvetica;drawai=cluster;`,
+    });
+    if (row) {
+      group.nodes.forEach((node, index) => {
+        const size = sizes[index] ?? sizeFor(node.shape);
+        const nodeX = x + ROW_PAD_X + index * ROW_SLOT + (ROW_SLOT - size.width) / 2;
+        const nodeY = cursor + ROW_HEADER + ROW_PAD_Y + (body - size.height) / 2;
+        nodes.push(placedNode(node, nodeX, nodeY, size, paint));
+        nodeCluster.set(node.id, cluster);
+      });
+    } else {
+      let nodeY = cursor + ROW_HEADER + ROW_PAD_Y;
+      group.nodes.forEach((node, index) => {
+        const size = sizes[index] ?? sizeFor(node.shape);
+        const nodeX = x + ROW_PAD_X + (ROW_SLOT - size.width) / 2;
+        nodes.push(placedNode(node, nodeX, nodeY, size, paint));
+        nodeCluster.set(node.id, cluster);
+        nodeY += size.height + 36;
+      });
+    }
+    cursor += height + ROW_CLUSTER_GAP;
+  }
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const laneX = Math.max(...nodes.filter((node) => node.style.includes("drawai=cluster")).map((node) => node.x + node.width)) + 56;
+  const edges: DrawnEdge[] = spec.edges.map((edge) => {
+    const source = byId.get(edge.from);
+    const target = byId.get(edge.to);
+    const sourceCluster = nodeCluster.get(edge.from);
+    const targetCluster = nodeCluster.get(edge.to);
+    if (!source || !target || !sourceCluster || !targetCluster) {
+      return { from: edge.from, to: edge.to, label: edge.label, points: [], style: edgeStyle() };
+    }
+    return routeLayerEdge(source, target, edge, sourceCluster, targetCluster, laneX);
+  });
+  return { nodes, edges };
+}
+
+function placedNode(
+  node: LayerNode,
+  x: number,
+  y: number,
+  size: { width: number; height: number },
+  paint: PalettePaint,
+): Placed {
+  return {
+    id: node.id,
+    label: node.label,
+    x: Math.round(x),
+    y: Math.round(y),
+    width: size.width,
+    height: size.height,
+    style: nodeStyle(node.shape, paint, "node"),
+  };
+}
+
+function routeLayerEdge(
+  source: Placed,
+  target: Placed,
+  edge: LayerEdge,
+  sourceCluster: ClusterBox,
+  targetCluster: ClusterBox,
+  laneX: number,
+): DrawnEdge {
+  if (edge.side) {
+    const startY = source.y + source.height / 2;
+    const endY = target.y + target.height / 2;
+    return {
+      from: source.id,
+      to: target.id,
+      label: edge.label,
+      points: [
+        { x: laneX, y: startY },
+        { x: laneX, y: endY },
+      ],
+      style:
+        "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=open;endFill=0;" +
+        "exitX=1;exitY=0.500;entryX=1;entryY=0.500;" +
+        "strokeColor=#64748b;fontColor=#334155;fontSize=12;labelBackgroundColor=#ffffff;drawai=routed;",
+    };
+  }
+  const sourceCx = source.x + source.width / 2;
+  const targetCx = target.x + target.width / 2;
+  const downward = target.y + target.height / 2 >= source.y + source.height / 2;
+  if (Math.abs(sourceCx - targetCx) <= 6) {
+    return {
+      from: source.id,
+      to: target.id,
+      label: edge.label,
+      points: [],
+      style:
+        edgeStyle() +
+        `exitX=0.500;exitY=${downward ? 1 : 0};entryX=0.500;entryY=${downward ? 0 : 1};drawai=routed;`,
+    };
+  }
+  const upper = downward ? sourceCluster : targetCluster;
+  const lower = downward ? targetCluster : sourceCluster;
+  const laneY = Math.round((upper.y + upper.height + lower.y) / 2);
+  return {
+    from: source.id,
+    to: target.id,
+    label: edge.label,
+    points: [
+      { x: Math.round(sourceCx), y: laneY },
+      { x: Math.round(targetCx), y: laneY },
+    ],
+    style:
+      edgeStyle() +
+      `exitX=0.500;exitY=${downward ? 1 : 0};entryX=0.500;entryY=${downward ? 0 : 1};drawai=routed;`,
+  };
+}
+
+function drawStackedLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
   const innerW = 188;
   const padX = 28;
   const header = 34;
