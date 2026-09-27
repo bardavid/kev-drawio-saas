@@ -10,7 +10,7 @@ export function Providers({ children }: { children: ReactNode }) {
     <ThemeProvider attribute="class" forcedTheme="light" enableSystem={false}>
       <TooltipProvider>
         {children}
-        <Toaster position="top-right" />
+        <Toaster position="top-center" offset={96} />
       </TooltipProvider>
     </ThemeProvider>
   );

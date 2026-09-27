@@ -22,12 +22,19 @@ function decision(
 }
 
 function cleanNoun(value: string): string {
-  const trimmed = value.replace(/[?.!,;:]+$/g, "").replace(/\s+/g, " ").trim();
-  const withoutArticle = trimmed.replace(/^(?:the|a|an)\s+/i, "");
-  const stripped = withoutArticle
-    .replace(/\s+(?:box|shape|node|component|service|database|db|cache|queue)$/i, "")
-    .trim();
-  return stripped || withoutArticle;
+  let text = value.replace(/[?.!,;:]+$/g, "").replace(/\s+/g, " ").trim();
+  text = text.replace(/^(?:the|a|an)\s+/i, "");
+  let previous = "";
+  while (previous !== text) {
+    previous = text;
+    text = text.replace(/\s+(?:box|shape|node|component|service|database|db|cache|queue)$/i, "").trim();
+  }
+  return text;
+}
+
+/** “Add a Redis…” names the shape. “Keep the existing layout” does not ask for a reflow. */
+function isNamedAddition(text: string): boolean {
+  return /^(?:please\s+)?(?:add|insert|place)\b/i.test(text.trim());
 }
 
 const SPECIAL: Record<string, string> = {
@@ -119,6 +126,8 @@ export function decideDemo(message: string): KevDecision {
     );
   }
 
+  if (isNamedAddition(text)) return parseAdd(text);
+
   if (
     /\b(reflow|relayout|re-layout|arrange|organize|organise)\b/.test(lower) ||
     /\blay(?:out)?\b/.test(lower) ||
@@ -208,18 +217,40 @@ export function decideDemo(message: string): KevDecision {
   return decision("clarify", HELP);
 }
 
+function firstClause(value: string): string {
+  const cut = value.search(/\.\s+/);
+  const sentence = cut === -1 ? value : value.slice(0, cut);
+  return sentence.replace(/[?.!]+$/g, "").trim();
+}
+
 function parseAdd(text: string): KevDecision {
   let rest = text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place)\s+/i, "");
   rest = rest.replace(/^(?:a|an|the)\s+/i, "");
+  rest = firstClause(rest);
+
+  const between = rest.match(/^(.+?)\s+between\s+(?:the\s+)?(.+?)\s+and\s+(?:the\s+)?(.+)$/i);
+  if (between?.[1] && between[2] && between[3]) {
+    const label = titleLabel(between[1]);
+    const from = titleLabel(between[2]);
+    const to = titleLabel(between[3]);
+    if (!label) {
+      return decision("clarify", "What should I add? For example, “Add a Redis cache in front of the database.”");
+    }
+    const slots: DiagramSlots = { ...shapeSlots(label, text), from, to };
+    return decision("add_shape", `Added ${label} between ${from} and ${to}.`, slots, [
+      { intent: "add_shape", slots },
+    ]);
+  }
 
   let place: DiagramSlots["place"] = null;
   let from: string | null = null;
   let target: string | null = null;
+  let to: string | null = null;
 
   const connectIt = rest.match(/^(.+?)\s+and\s+connect\s+(?:the\s+)?(.+?)\s+to\s+it\b(.*)$/i);
   const connected = rest.match(/^(.+?)\s+(?:connected|linked|wired)\s+to\s+(?:the\s+)?(.+)$/i);
-  const before = rest.match(/^(.+?)\s+(?:in front of|ahead of|before)\s+(?:the\s+)?(.+)$/i);
-  const after = rest.match(/^(.+?)\s+(?:behind|after)\s+(?:the\s+)?(.+)$/i);
+  const before = rest.match(/^(.+?)\s+(?:in front of|ahead of|\bbefore\b)\s+(?:the\s+)?(.+)$/i);
+  const after = rest.match(/^(.+?)\s+(?:behind|\bafter\b)\s+(?:the\s+)?(.+)$/i);
 
   if (connectIt?.[1] && connectIt[2]) {
     rest = connectIt[1];
@@ -244,6 +275,7 @@ function parseAdd(text: string): KevDecision {
   const slots: DiagramSlots = {
     ...shapeSlots(label, text),
     from,
+    to,
     target,
     place,
   };

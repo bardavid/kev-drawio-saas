@@ -3,7 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import { DRAWIO_EMBED_URL } from "../src/lib/drawio/protocol";
 import { SEEDED_XML } from "../src/lib/drawio/starter";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
-import { decideDemo } from "../src/lib/kev/demo";
+import { decideDemo, previewDemo } from "../src/lib/kev/demo";
 import { KevError } from "../src/lib/kev/client";
 import { describeMode, mergeKevWithDemo, runKevTurn } from "../src/lib/kev/run";
 import {
@@ -639,5 +639,41 @@ describe("configured pipeline", { concurrency: 1 }, () => {
     assert.equal(calls, 1);
     assert.equal(result.intent, "connect");
     assert.ok(summarizeDiagram(result.updatedXml).edges.some((edge) => edge.from === "Client" && edge.to === "Postgres"));
+  });
+
+  it("adds Redis between tiers when the reading has no label", async () => {
+    blankEnv();
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const prompt =
+      "Add a Redis cache box between the app servers and the database. Keep existing layout; only add the new box and edges.";
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "add_shape", confidence: 0.42 },
+          needs_xml_edit: { type: "noul", noul: 0.8 },
+          shape: { type: "choice", choice: "none" },
+          place: { type: "choice", choice: "none" },
+          layout: { type: "choice", choice: "horizontal" },
+        },
+      })) as typeof fetch;
+
+    const drawn = previewDemo("draw a 3 tier web app", SEEDED_XML).xml;
+    const before = summarizeDiagram(drawn);
+    const result = await runKevTurn({
+      messages: [{ role: "user", content: prompt }],
+      currentXml: drawn,
+    });
+    assert.equal(result.intent, "add_shape");
+    assert.equal(result.reply.includes("What should the new shape be called?"), false);
+    const summary = summarizeDiagram(result.updatedXml);
+    assert.ok(summary.vertices.some((vertex) => vertex.label === "Redis"));
+    const appBefore = before.vertices.find((vertex) => vertex.label === "App");
+    const appAfter = summary.vertices.find((vertex) => vertex.label === "App");
+    assert.ok(appBefore && appAfter);
+    assert.equal(appAfter.x, appBefore.x);
+    assert.equal(appAfter.y, appBefore.y);
+    assert.ok(summary.edges.some((edge) => edge.from === "App" && edge.to === "Redis"));
+    assert.ok(summary.edges.some((edge) => edge.from === "Redis" && edge.to === "Postgres"));
   });
 });

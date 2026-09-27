@@ -104,3 +104,10 @@
     background: oklch(0.92 0 0);
   }
 }
+
+/* Toasts sit below the header. The layer itself must not catch clicks on Reset or Clear. */
+[data-sonner-toaster],
+[data-sonner-toaster] [data-sonner-toast],
+.cn-toast {
+  pointer-events: none;
+}
