@@ -1083,6 +1083,8 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw a workflow for tax filing process in US",
       "Draw a redis diagram usage",
       "draw a microservices architecture",
+      "draw a microservices architecture with API gateway, auth service, orders service, and Kafka",
+      "draw a UML sequence diagram for user login with browser, auth service, and database",
       "draw a CQRS architecture",
       "draw an event-driven architecture",
       "draw a cache-aside diagram",
@@ -1095,8 +1097,10 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw an e-commerce data model",
       "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB",
       "draw an AWS VPC architecture with an ALB, ECS, and RDS",
+      "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache",
       "draw an Azure architecture with Application Gateway, App Service, Azure SQL, and Service Bus",
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
+      "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery",
       "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.",
       "draw a kubernetes deployment",
       "draw a Kubernetes deployment with Ingress, Service, Deployment, and Pods",
@@ -1198,5 +1202,51 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     for (const label of ["API Gateway", "Lambda", "DynamoDB"]) assert.ok(labels.includes(label), label);
     for (const stolen of ["ALB", "ECS", "RDS"]) assert.equal(labels.includes(stolen), false, stolen);
     assertClean(result.updatedXml);
+  });
+
+  it("draws the four live-QA prompts with every named component", async () => {
+    installKev();
+    const cases: Array<{ prompt: string; labels: string[]; absent: string[] }> = [
+      {
+        prompt: "draw a microservices architecture with API gateway, auth service, orders service, and Kafka",
+        labels: ["API Gateway", "Auth Service", "Orders Service", "Kafka"],
+        absent: ["App", "Postgres", "Event broker", "Web", "Billing", "Mail", "Catalog"],
+      },
+      {
+        prompt: "draw a UML sequence diagram for user login with browser, auth service, and database",
+        labels: ["Browser", "Auth Service", "Database"],
+        absent: ["User DB"],
+      },
+      {
+        prompt: "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache",
+        labels: ["ALB", "ECS Fargate", "RDS", "ElastiCache"],
+        absent: ["API Gateway", "Lambda", "DynamoDB"],
+      },
+      {
+        prompt: "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery",
+        labels: ["Pub/Sub", "Dataflow", "BigQuery"],
+        absent: ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Event broker"],
+      },
+    ];
+    for (const item of cases) {
+      const result = await runKevTurn({
+        messages: [{ role: "user", content: item.prompt }],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(result.intent, "add_shape", item.prompt);
+      assert.equal(result.reply.includes("Which nodes should I draw"), false, item.prompt);
+      assert.doesNotMatch(result.reply, /Client → App → Postgres/, item.prompt);
+      assert.notEqual(result.updatedXml, STARTER_XML, item.prompt);
+      const report = assertClean(result.updatedXml);
+      const labels = report.nodes.map((node) => node.label);
+      for (const label of item.labels) assert.ok(labels.includes(label), `${item.prompt} missing ${label}`);
+      for (const label of item.absent) assert.equal(labels.includes(label), false, `${item.prompt} stole ${label}`);
+      if (item.prompt.includes("sequence")) {
+        assert.ok(
+          report.nodes.filter((node) => node.role !== "lifeline").every((node) => node.style.includes("umlLifeline")),
+          item.prompt,
+        );
+      }
+    }
   });
 });
