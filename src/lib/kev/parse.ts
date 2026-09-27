@@ -45,7 +45,18 @@ export function slotsFromUnknown(value: unknown): DiagramSlots {
     edgeLabel: asText(record.edgeLabel, 80),
     layout: layout === "horizontal" || layout === "vertical" ? layout : null,
     place: place === "before" || place === "after" ? place : null,
+    sequence: sequenceFromUnknown(record.sequence),
   };
+}
+
+function sequenceFromUnknown(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const labels = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+  return labels.length > 0 ? labels : null;
 }
 
 export function stripFences(text: string): string {

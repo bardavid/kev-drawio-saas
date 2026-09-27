@@ -28,6 +28,8 @@ export interface DiagramSlots {
   edgeLabel?: string | null;
   layout?: "horizontal" | "vertical" | null;
   place?: "before" | "after" | null;
+  /** Preferred vertex order when reflowing. Labels missing from the diagram are ignored. */
+  sequence?: string[] | null;
 }
 
 export interface DiagramOperation {
@@ -71,6 +73,17 @@ export interface KevTurnResult {
   /** True when Kev could not be reached and the language model classified the turn. */
   fallback?: boolean;
   confidence?: number;
+  /** System One steps taken when the turn ran the diagram loop. */
+  steps?: KevStep[];
+}
+
+/** One decide / fill / gate iteration inside a Kev diagram turn. */
+export interface KevStep {
+  detail: string;
+  intent: Intent;
+  accepted: boolean;
+  /** Noul for applying the proposed edit, when that question was asked. */
+  confirm: number | null;
 }
 
 export const INTENTS: readonly Intent[] = [
