@@ -510,6 +510,39 @@ describe("popular diagram templates", () => {
     linked(states, "Review", "Rejected", "Reject");
   });
 
+  it("draws a sourdough feeding schedule as states, not a document lifecycle", () => {
+    const drawn = previewDemo("draw a sourdough starter feeding schedule as a state machine", STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /Client → App → Postgres/);
+    assert.doesNotMatch(drawn.decision.reply, /Draft/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.ok(labels.length >= 3);
+    assert.ok(labels.some((label) => /feed/i.test(label)));
+    assert.equal(labels.includes("Draft"), false);
+    assert.equal(labels.includes("Review"), false);
+    assert.equal(labels.includes("Published"), false);
+    assert.ok(report.edges.length >= 2);
+  });
+
+  it("uses states named in the request instead of a document lifecycle", () => {
+    const report = assertClean(previewDemo("draw a state machine: Mix → Bulk → Proof → Bake", STARTER_XML).xml);
+    assert.deepEqual(
+      content(report.nodes).map((node) => node.label),
+      ["Mix", "Bulk", "Proof", "Bake"],
+    );
+    linked(report, "Mix", "Bulk", "Next");
+    linked(report, "Proof", "Bake", "Next");
+  });
+
+  it("does not force an unrelated lifecycle onto documents", () => {
+    const report = assertClean(previewDemo("draw a subscription lifecycle", STARTER_XML).xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.ok(labels.some((label) => /subscription/i.test(label)));
+    assert.equal(labels.includes("Draft"), false);
+    assert.equal(labels.includes("Published"), false);
+  });
+
   it("leaves a generic sequence and flowchart alone", () => {
     const sequence = assertClean(previewDemo("draw a password reset sequence diagram", STARTER_XML).xml);
     assert.deepEqual(

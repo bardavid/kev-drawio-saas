@@ -11,7 +11,7 @@ import {
   templateCanvasPlan,
   type Composition,
 } from "@/lib/kev/compose";
-import { composeFromBrief } from "@/lib/kev/templates";
+import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
 import { decideDemo } from "@/lib/kev/demo";
@@ -611,6 +611,20 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
       choice,
     });
     if (!acceptTemplateStep(choice, confirm)) {
+      // A mismatched document preset used to make outline confirm clarify, which
+      // asked for Client → App → Postgres. A state machine draws its composed
+      // lifecycle instead of that example.
+      if (choice === "clarify" && isStateMachineRequest(input.userMessage)) {
+        const decision = compositionDecision(composition, xml);
+        return turn(input, {
+          reply: decision.reply,
+          updatedXml: xml,
+          intent: decision.intent,
+          slots: decision.slots,
+          steps,
+          confidence,
+        });
+      }
       return turn(input, {
         reply: choice === "clarify" ? CLARIFY_NODES : UNCHANGED_DIAGRAM_REPLY,
         updatedXml: input.originalXml,

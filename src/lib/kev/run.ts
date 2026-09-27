@@ -18,7 +18,7 @@ import { maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
 import { architectureDecision, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
-import { composeFromBrief } from "@/lib/kev/templates";
+import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
 import {
   isMutatingIntent,
@@ -362,6 +362,17 @@ async function runOpenAITurn(input: {
   const client = new OpenAIKevClient();
   let templateReference = templateReferenceFor(input.userMessage);
   let decision = await client.decide({ ...input.request, templateReference });
+  if (decision.intent === "clarify" && isStateMachineRequest(input.userMessage)) {
+    const composed = resolveComposition(input.userMessage);
+    if (composed) {
+      const xml = renderComposition(composed);
+      if (templateCanvasPlan(input.currentXml, xml) === "draw") {
+        return result(compositionDecision(composed, xml), "openai", client.model, xml, false, {
+          fallback: input.fallback,
+        });
+      }
+    }
+  }
   if (decision.intent === "clarify" || decision.intent === "noop") {
     const topicContext = await topicContextFor(input.userMessage, true);
     const researched = topicContext ? composeFromBrief(input.userMessage, topicContext) : null;
