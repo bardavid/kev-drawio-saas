@@ -71,8 +71,9 @@ import {
   type SystemOneQuestion,
   type SystemOneRequest,
 } from "@/lib/kev/systemone";
-import { OPEN_IDEA_REPLY } from "@/lib/kev/scale";
+import { OPEN_IDEA_REPLY, openIdeaDepthFollowUp } from "@/lib/kev/scale";
 import type {
+  ChatMessage,
   DiagramOperation,
   DiagramSlots,
   KevDecision,
@@ -112,6 +113,10 @@ export interface OrchestratorContext {
   model?: string;
   /** A composition already chosen from the depth reading. */
   prepared?: Composition | null;
+  /** Full chat. Used to continue an open idea after the user answers depth. */
+  messages?: readonly ChatMessage[];
+  /** The user already chose few or many. Place that drawing without another confirm loop. */
+  depthCommitted?: boolean;
 }
 
 export function buildSpecificityRequest(input: {
@@ -222,6 +227,15 @@ export function buildOrchestratorStepRequest(input: {
  * reading is already a complete single edit for the legacy path.
  */
 export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevTurnResult | null> {
+  const followUp = openIdeaDepthFollowUp(input.messages ?? []);
+  if (followUp) {
+    return planOpenIdea({
+      ...input,
+      userMessage: followUp.idea,
+      reading: { ...input.reading, depth: followUp.depth },
+      depthCommitted: true,
+    });
+  }
   if (isBareDraw(input.userMessage)) return bareDraw(input);
   if (unresolvedOpenIdea(input.userMessage)) return planOpenIdea(input);
 
@@ -555,15 +569,85 @@ const COMPOSITION_PHASES: Array<{ phase: CompositionPhase; detail: string }> = [
 ];
 
 /**
+ * Place a depth the user already chose. Research runs for a detailed answer.
+ * The confirm loop stays out of this path: the open-idea question was the confirm.
+ */
+export async function composeCommittedOpenIdea(
+  idea: string,
+  depth: "few" | "many",
+  currentXml: string,
+  topicContext?: string | null,
+): Promise<{ decision: KevDecision; xml: string }> {
+  if (overNamedCapacity(idea)) {
+    return {
+      decision: { intent: "clarify", reply: CAPACITY_REPLY, slots: {}, operations: [], updatedXml: null },
+      xml: currentXml,
+    };
+  }
+  if (depth === "few") {
+    const composition = highLevelComposition(idea);
+    if (!composition) return openIdeaClarify(currentXml);
+    return placeComposition(idea, currentXml, composition);
+  }
+  let composition = topicContext?.trim() ? composeDetailedFromBrief(idea, topicContext) : null;
+  if (!composition) {
+    const brief = await researchIdea(idea, { network: true });
+    if (brief?.summary) composition = composeDetailedFromBrief(idea, brief.summary);
+  }
+  if (!composition) return openIdeaClarify(currentXml);
+  return placeComposition(idea, currentXml, composition);
+}
+
+function openIdeaClarify(xml: string): { decision: KevDecision; xml: string } {
+  return {
+    decision: { intent: "clarify", reply: OPEN_IDEA_REPLY, slots: {}, operations: [], updatedXml: null },
+    xml,
+  };
+}
+
+function placeComposition(
+  idea: string,
+  currentXml: string,
+  composition: Composition,
+): { decision: KevDecision; xml: string } {
+  const placed = composeOnCanvas(idea, currentXml, composition, renderComposition(composition));
+  if (placed === "unchanged") {
+    return {
+      decision: { intent: "noop", reply: UNCHANGED_DIAGRAM_REPLY, slots: {}, operations: [], updatedXml: null },
+      xml: currentXml,
+    };
+  }
+  if (placed === "keep") {
+    return {
+      decision: { intent: "noop", reply: KEPT_CANVAS_REPLY, slots: {}, operations: [], updatedXml: null },
+      xml: currentXml,
+    };
+  }
+  return { decision: placed.decision, xml: placed.xml };
+}
+
+/**
  * A detailed idea with no named boxes is unsure about its components.
  * Topic notes supply them when a brief names enough interacting parts.
  * A shorter title is tried when the first brief does not. A high-level
  * reading stays one subject box. Otherwise ask which depth to draw.
+ * A depth the user already answered is placed without another confirm loop.
  */
 async function planOpenIdea(input: OrchestratorContext): Promise<KevTurnResult> {
+  const depth = input.reading.depth ?? null;
+  if (input.depthCommitted && (depth === "few" || depth === "many")) {
+    const placed = await composeCommittedOpenIdea(input.userMessage, depth, input.currentXml, input.topicContext);
+    return turn(input, {
+      reply: placed.decision.reply,
+      updatedXml: placed.xml,
+      intent: placed.decision.intent,
+      slots: withPalette(placed.decision.slots),
+      steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
   const prepared = hostPreparedComposition(input.userMessage);
   if (prepared) return runComposition({ ...input, prepared });
-  const depth = input.reading.depth ?? null;
   if (depth === "few") {
     const composition = highLevelComposition(input.userMessage);
     if (!composition) return clarifyOpen(input, OPEN_IDEA_REPLY);

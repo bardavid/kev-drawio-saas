@@ -9,11 +9,14 @@ import { describeMode, mergeKevWithDemo, runKevTurn } from "../src/lib/kev/run";
 import {
   INTENT_CRITERIA,
   KevUnreachableError,
+  SYSTEM_ONE_HISTORY_FALLBACK,
+  SystemOnePayloadError,
+  askKev,
   buildSystemOneRequest,
   needsXmlEdit,
   parseSystemOneResponse,
 } from "../src/lib/kev/systemone";
-import type { KevReading } from "../src/lib/kev/types";
+import type { ChatMessage, KevReading } from "../src/lib/kev/types";
 
 const ENV_KEYS = ["KEV_BASE_URL", "KEV_API_KEY", "KEV_MODEL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"] as const;
 const originalFetch = globalThis.fetch;
@@ -71,6 +74,23 @@ describe("system one contract", () => {
     assert.equal(typeof anchor.API, "string");
     assert.equal(typeof anchor.none, "string");
     assert.equal("currentXml" in request, false);
+  });
+
+  it("puts the chat history in the system one state", () => {
+    const request = buildSystemOneRequest({
+      userMessage: "Detailed diagram, you give the names",
+      messages: [
+        { role: "user", content: "Draw a distributed storage system" },
+        { role: "assistant", content: "Name the boxes, or say whether you want a high-level sketch or a detailed diagram." },
+        { role: "user", content: "Detailed diagram, you give the names" },
+      ],
+      summary: summarizeDiagram(SEEDED_XML),
+      currentXml: SEEDED_XML,
+    });
+    assert.match(
+      request.state,
+      /User message:\nDetailed diagram, you give the names\n\nConversation:\nUser: Draw a distributed storage system\nAssistant: Name the boxes/,
+    );
   });
 
   it("maps choice, noul, and score answers", () => {
@@ -800,4 +820,113 @@ describe("configured pipeline", { concurrency: 1 }, () => {
     assert.match(asked.reply, /What should the new shape be called/);
     assert.equal(asked.updatedXml, STARTER_XML);
   });
+
+  it("sends the full history, then retries the latest messages when the payload is rejected or times out", async () => {
+    const oldest = "marker-oldest-turn";
+    const messages: ChatMessage[] = [{ role: "user", content: oldest }];
+    for (let index = 1; index < SYSTEM_ONE_HISTORY_FALLBACK + 6; index += 1) {
+      messages.push({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `marker-${index}`,
+      });
+    }
+    messages.push({ role: "user", content: "Make the API box red" });
+    assert.ok(messages.length > SYSTEM_ONE_HISTORY_FALLBACK);
+
+    const failures: Array<{ status: number; body: unknown } | "timeout"> = [
+      { status: 413, body: { error: "payload too large" } },
+      { status: 400, body: { error: "maximum context length exceeded" } },
+      "timeout",
+    ];
+
+    for (const failure of failures) {
+      blankEnv();
+      process.env.KEV_BASE_URL = "http://kev.local";
+      const seen: string[] = [];
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { state: string };
+        seen.push(body.state);
+        if (seen.length === 1) {
+          if (failure === "timeout") {
+            const timeout = new Error("The operation was aborted due to timeout");
+            timeout.name = "TimeoutError";
+            throw timeout;
+          }
+          return jsonResponse(failure.body, failure.status);
+        }
+        return jsonResponse({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "noop", confidence: 0.2 },
+            needs_xml_edit: { type: "noul", noul: 0.1 },
+          },
+        });
+      }) as typeof fetch;
+
+      const reading = await askKev({
+        userMessage: "Make the API box red",
+        currentXml: SEEDED_XML,
+        messages,
+      });
+      assert.equal(reading.intent, "noop", String(failure));
+      assert.equal(seen.length, 2, String(failure));
+      assert.match(seen[0] ?? "", new RegExp(oldest), String(failure));
+      assert.match(seen[0] ?? "", /Make the API box red/, String(failure));
+      assert.equal((seen[1] ?? "").includes(oldest), false, String(failure));
+      assert.match(seen[1] ?? "", /Make the API box red/, String(failure));
+      const retry = conversationLines(seen[1] ?? "");
+      assert.equal(retry.length, SYSTEM_ONE_HISTORY_FALLBACK, String(failure));
+      assert.match(retry[retry.length - 1] ?? "", /Make the API box red/, String(failure));
+    }
+  });
+
+  it("does not shrink history for a short transcript or a rejection that is not about size", async () => {
+    blankEnv();
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return jsonResponse({ error: "payload too large" }, 413);
+    }) as typeof fetch;
+    await assert.rejects(
+      () =>
+        askKev({
+          userMessage: "hi",
+          currentXml: SEEDED_XML,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      (error: unknown) => error instanceof SystemOnePayloadError,
+    );
+    assert.equal(calls, 1);
+
+    calls = 0;
+    const longHistory: ChatMessage[] = Array.from({ length: SYSTEM_ONE_HISTORY_FALLBACK + 4 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `note ${index}`,
+    }));
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return jsonResponse({ error: "bad questions" }, 400);
+    }) as typeof fetch;
+    await assert.rejects(
+      () =>
+        askKev({
+          userMessage: "note 0",
+          currentXml: SEEDED_XML,
+          messages: longHistory,
+        }),
+      (error: unknown) => error instanceof KevError && !(error instanceof SystemOnePayloadError) && !(error instanceof KevUnreachableError),
+    );
+    assert.equal(calls, 1);
+  });
 });
+
+function conversationLines(state: string): string[] {
+  const marker = "Conversation:\n";
+  const start = state.indexOf(marker);
+  if (start < 0) return [];
+  const rest = state.slice(start + marker.length);
+  const end = rest.indexOf("\n\n");
+  const block = end === -1 ? rest : rest.slice(0, end);
+  return block.split("\n").filter((line) => line.trim().length > 0);
+}

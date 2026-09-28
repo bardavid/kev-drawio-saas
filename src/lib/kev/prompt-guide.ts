@@ -12,6 +12,7 @@ Syntax. The host states the diagram. You answer the questions. Do not invent coo
 - Diagram diff: added, removed, and changed cells after a hand edit. Repeat that kind of change only when the user asks.
 - Previous mxfile: a clip from before a hand edit. Current mxfile: a clip of the open canvas. Both are evidence. Do not write XML back.
 - Topic context: notes the host already fetched. Use them. Do not ask for a lookup.
+- Conversation: earlier user and assistant turns, oldest first, when the host has them. Read them with the latest user message. When the latest line only chooses a depth or asks for names, the idea is the earlier user turn.
 - Reference template: optional. If it fits → use it. If the user asked to change it → adapt it. If it does not fit → set it aside.
 
 Practice. If the canvas already has shapes → edit those shapes. If the user did not name a shape to remove → keep it. Do not replace the file.
@@ -82,7 +83,7 @@ export const TARGET_INSTRUCTIONS =
 
 export const DISRUPTION_INSTRUCTIONS = `How much of the current diagram should change? If nothing was requested → leave the diagram alone. If only color, stroke, or a label changes → a small local edit. If a few edges are rewired → rewire a few shapes. If they asked to rebuild positions → rebuild the layout. ${BETWEEN_FORK} Do not score placement fluff as a rebuild.`;
 
-export const DEPTH_INSTRUCTIONS = `Is this a high-level diagram or a low-level, detailed one? Judge the idea. If the user named the boxes, counted them, or drew a short chain → few. If the idea needs many components and the interactions between them → many. If they ask for many nodes, more detail, or a more complex drawing → many. Leftover noun fragments of the sentence are not those components. “Two boxes: A and B” is few. A vague description of a rich system is many. Pick one.`;
+export const DEPTH_INSTRUCTIONS = `Is this a high-level diagram or a low-level, detailed one? Judge the idea. If the user named the boxes, counted them, or drew a short chain → few. If the idea needs many components and the interactions between them → many. If they ask for many nodes, more detail, or a more complex drawing → many. Leftover noun fragments of the sentence are not those components. “Two boxes: A and B” is few. A vague description of a rich system is many. When the conversation has an earlier idea and the latest line only chooses high-level or detailed, or asks you to name the boxes, judge that earlier idea. Pick one.`;
 
 export const DEPTH_CRITERIA = {
   few: "If a few boxes express the idea, or the user already named them → this.",

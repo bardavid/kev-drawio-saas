@@ -11,7 +11,14 @@ import { runKevTurn } from "../src/lib/kev/run";
 import { extractNamedEntities } from "../src/lib/kev/entities";
 import { isLimitInstruction, stripTrailingLimits } from "../src/lib/kev/plan";
 import { topicLookupCandidates } from "../src/lib/kev/research";
-import { componentsFromBrief, ideaSubject, longUnlistedDescription, OPEN_IDEA_REPLY } from "../src/lib/kev/scale";
+import {
+  componentsFromBrief,
+  depthFromOpenAnswer,
+  ideaSubject,
+  longUnlistedDescription,
+  OPEN_IDEA_REPLY,
+  openIdeaDepthFollowUp,
+} from "../src/lib/kev/scale";
 import { buildSystemOneRequest } from "../src/lib/kev/systemone";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 
@@ -471,5 +478,177 @@ describe("diagram depth", () => {
     assert.equal(highLabels.length, 1);
     assert.match(highLabels[0] ?? "", /Memo/);
     assert.doesNotMatch(high.reply, /topic notes did not name/);
+  });
+});
+
+const STORAGE_IDEA =
+  "Draw a distributed storage system that uses ibverbs and io uring for zero syscall zero copy data transfer";
+const STORAGE_ANSWER = "Detailed diagram, you give the names";
+const STORAGE_NOTES =
+  "Applications send to the storage nodes. The storage nodes replicate to the peers. The peers persist to the journal. The journal notifies the applications.";
+
+describe("open idea depth follow-up", { concurrency: 1 }, () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+  });
+
+  it("treats a depth answer as a continuation only after the open-idea question", () => {
+    assert.equal(depthFromOpenAnswer(STORAGE_ANSWER), "many");
+    assert.equal(depthFromOpenAnswer("you name the boxes"), "many");
+    assert.equal(depthFromOpenAnswer("you give the names"), "many");
+    assert.equal(depthFromOpenAnswer("High-level sketch"), "few");
+    assert.equal(depthFromOpenAnswer("High-level, you name the boxes"), "few");
+    assert.equal(depthFromOpenAnswer("Draw it in detail"), "many");
+    assert.equal(depthFromOpenAnswer("Draw a high-level sketch"), "few");
+    assert.equal(depthFromOpenAnswer("Draw a detailed payment system"), null);
+    assert.equal(depthFromOpenAnswer("draw"), null);
+    assert.equal(depthFromOpenAnswer("three tier web app"), null);
+    assert.equal(depthFromOpenAnswer("redraw this from scratch and make it more complex"), null);
+
+    const transcript = [
+      { role: "user", content: STORAGE_IDEA },
+      { role: "assistant", content: OPEN_IDEA_REPLY },
+      { role: "user", content: STORAGE_ANSWER },
+    ];
+    assert.deepEqual(openIdeaDepthFollowUp(transcript), { idea: STORAGE_IDEA, depth: "many" });
+    assert.equal(openIdeaDepthFollowUp([{ role: "user", content: STORAGE_ANSWER }]), null);
+    const alone = previewDemo(STORAGE_ANSWER, STARTER_XML);
+    assert.equal(alone.decision.reply, "Describe a diagram change.");
+    assert.equal(alone.xml, STARTER_XML);
+  });
+
+  it("composes a detailed diagram when the user answers the open-idea question", async () => {
+    const messages = [
+      { role: "user" as const, content: STORAGE_IDEA },
+      { role: "assistant" as const, content: OPEN_IDEA_REPLY },
+      { role: "user" as const, content: STORAGE_ANSWER },
+    ];
+
+    let wiki = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("wikipedia.org")) {
+        wiki += 1;
+        return Response.json({ extract: STORAGE_NOTES });
+      }
+      return Response.json({ error: "system one should not run" }, { status: 500 });
+    }) as typeof fetch;
+
+    const demo = await runKevTurn({ messages, currentXml: STARTER_XML });
+    assert.equal(demo.mode, "demo");
+    assert.ok(wiki >= 1);
+    assert.equal(demo.intent, "add_shape");
+    assert.doesNotMatch(demo.reply, /Describe a diagram change/);
+    assert.notEqual(demo.updatedXml, STARTER_XML);
+    const demoReport = assertClean(demo.updatedXml);
+    const demoLabels = content(demoReport.nodes).map((node) => node.label);
+    assert.ok(demoLabels.length >= 4, demoLabels.join(", "));
+    assert.ok(demoReport.nodes.some((node) => node.role === "cluster"));
+    assert.ok(demoReport.edges.length >= 3);
+    assert.ok(demoReport.edges.every((edge) => edge.label.length > 0));
+    for (const node of content(demoReport.nodes)) {
+      const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+      assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${node.label} ${fill}`);
+    }
+
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const states: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("wikipedia.org")) return Response.json({ extract: STORAGE_NOTES });
+      const request = JSON.parse(String(init?.body)) as { state?: string };
+      states.push(request.state ?? "");
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "clarify", confidence: 0.3 },
+          needs_xml_edit: { type: "noul", noul: 0.1 },
+          depth: { type: "choice", choice: "few", confidence: 0.4 },
+          next: { type: "choice", choice: "clarify", confidence: 0.2 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+
+    const kev = await runKevTurn({ messages, currentXml: STARTER_XML });
+    assert.equal(kev.mode, "kev");
+    assert.match(
+      states[0] ?? "",
+      /Conversation:\nUser: Draw a distributed storage system that uses ibverbs[\s\S]*Assistant: That idea needs its own components[\s\S]*User: Detailed diagram, you give the names/,
+    );
+    assert.match(states[0] ?? "", /User message:\nDetailed diagram, you give the names/);
+    assert.equal(kev.intent, "add_shape");
+    assert.doesNotMatch(kev.reply, /Describe a diagram change/);
+    const kevLabels = content(assertClean(kev.updatedXml).nodes).map((node) => node.label);
+    assert.ok(kevLabels.length >= 4, kevLabels.join(", "));
+    assert.deepEqual(kevLabels, demoLabels);
+  });
+
+  it("keeps bare draw, a thin three-tier ask, and a wipe on the existing guards", async () => {
+    const bare = await runKevTurn({
+      messages: [
+        { role: "user", content: STORAGE_IDEA },
+        { role: "assistant", content: OPEN_IDEA_REPLY },
+        { role: "user", content: "draw" },
+      ],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(bare.intent, "clarify");
+    assert.match(bare.reply, /What should I draw/);
+    assert.equal(bare.updatedXml, STARTER_XML);
+
+    const tier = await runKevTurn({
+      messages: [
+        { role: "user", content: STORAGE_IDEA },
+        { role: "assistant", content: OPEN_IDEA_REPLY },
+        { role: "user", content: "three tier web app" },
+      ],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(tier.intent, "add_shape");
+    assert.deepEqual(content(assertClean(tier.updatedXml).nodes).map((node) => node.label), [
+      "Client",
+      "App",
+      "Postgres",
+    ]);
+
+    const base = previewDemo("draw a 3 tier web app", STARTER_XML);
+    const before = content(assessDiagram(base.xml).nodes).map((node) => node.label);
+    const replaced = await runKevTurn({
+      messages: [
+        { role: "user", content: STORAGE_IDEA },
+        { role: "assistant", content: OPEN_IDEA_REPLY },
+        { role: "user", content: "redraw this from scratch and make it more complex" },
+      ],
+      currentXml: base.xml,
+    });
+    const after = content(assessDiagram(replaced.updatedXml).nodes).map((node) => node.label);
+    for (const kept of before) assert.ok(after.includes(kept), kept);
+    assert.equal(summarizeDiagram(replaced.updatedXml).vertices.length >= summarizeDiagram(base.xml).vertices.length, true);
+  });
+
+  it("draws one subject box for a high-level answer and does not look up topic notes", async () => {
+    let wiki = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("wikipedia.org")) wiki += 1;
+      return Response.json({ extract: STORAGE_NOTES });
+    }) as typeof fetch;
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: STORAGE_IDEA },
+        { role: "assistant", content: OPEN_IDEA_REPLY },
+        { role: "user", content: "High-level sketch" },
+      ],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(wiki, 0);
+    assert.equal(result.intent, "add_shape");
+    assert.doesNotMatch(result.reply, /Describe a diagram change/);
+    const labels = content(assertClean(result.updatedXml).nodes).map((node) => node.label);
+    assert.equal(labels.length, 1);
+    assert.match(labels[0] ?? "", /Storage/);
   });
 });
