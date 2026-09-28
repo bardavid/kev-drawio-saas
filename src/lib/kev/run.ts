@@ -17,7 +17,7 @@ import {
 } from "@/lib/kev/compose";
 import { decideDemo, edgeRestyleDecision } from "@/lib/kev/demo";
 import { placeExpansion, placeResearchedExpansion } from "@/lib/kev/expand";
-import { DiagramXmlError, applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
+import { DiagramXmlError, applyOperations, edgeQuery, groundDecision, nodeToEdgeLabelTurn } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { composeCommittedOpenIdea, maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
@@ -599,6 +599,12 @@ export async function runKevTurn(input: {
   // Connector colors are a host stroke edit, applied before any model fill.
   // Hue families share one edge stroke: pink/magenta/fuchsia near 300,
   // coral/salmon/tomato near 16, amber/gold/orange near 40.
+  const users = input.messages.filter((message) => message.role === "user" && message.content.trim());
+  const earlierUser = users.length >= 2 ? users[users.length - 2]?.content ?? "" : "";
+  const asEdgeLabel = nodeToEdgeLabelTurn(userMessage, currentXml, earlierUser);
+  if (asEdgeLabel) {
+    return result(asEdgeLabel.decision, described.mode, described.model, asEdgeLabel.xml, false);
+  }
   const utteredEdges = edgeRestyleDecision(userMessage);
   if (utteredEdges) {
     return finish(utteredEdges, described.mode, described.model, input.currentXml, currentXml, { userMessage });

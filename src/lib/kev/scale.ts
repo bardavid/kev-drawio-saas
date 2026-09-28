@@ -47,6 +47,18 @@ function delegatesComponentNames(text: string): boolean {
   // “You give the names” delegates. “Give the boxes a color” does not.
   if (/\b(?:you|yourself)\b/i.test(text) && /\bgive\b/i.test(text) && /\b(?:names?|labels?)\b/i.test(text)) return true;
   if (NAMING_IMPERATIVE.test(text) && NAMING_TARGET.test(text) && contentWords(text).length <= 8) return true;
+  // “You figure out names”, “you figure it out”, and “figure out the names”.
+  if (
+    /\bfigure\b/i.test(text) &&
+    /\bout\b/i.test(text) &&
+    contentWords(text).length <= 10 &&
+    !/\b(?:colou?r|paint|recolor|recolour)\b/i.test(text)
+  ) {
+    if (NAMING_TARGET.test(text) || NAMING_DELEGATE.test(text)) return true;
+  }
+  if (/\byou\b/i.test(text) && /\bpick\b/i.test(text) && contentWords(text).length <= 6 && !/\b(?:colou?r|paint)\b/i.test(text)) {
+    return true;
+  }
   return false;
 }
 
@@ -319,133 +331,6 @@ function solidBriefLabel(label: string): boolean {
   if (/\b(?:is|are|was|were)\b/i.test(label)) return false;
   if (/^(?:it|this|there|they|which|that)\b/i.test(label)) return false;
   return true;
-}
-
-const IDEA_CLAUSE =
-  /\s+(that|which|who|where|when|for|using|via|with|through|and|uses|use|so)\s+/i;
-/** A finite verb that introduces the next noun, not a name. Local to clause boxes. */
-const OPEN_PREDICATE =
-  /^(?:batch(?:es|ed|ing)?|stay(?:s|ed|ing)?|saturat(?:e|es|ed|ing)|show(?:s|n|ed|ing)?|keep(?:s|ing)?|remain(?:s|ed|ing)?)$/i;
-const LEADING_USE = /^(?:use|uses|using|used)$/i;
-
-/**
- * Components named by splitting the idea on its own clauses.
- * Used only after the user asked for a detailed diagram and topic notes
- * did not name the parts. The clauses are the user's words, not a template.
- */
-export function componentsFromOpenIdea(message: string): { nodes: string[]; edges: BriefLink[] } | null {
-  const body = ideaRemainder(message);
-  if (!body.trim()) return null;
-  const pieces = body.split(IDEA_CLAUSE);
-  const nodes: string[] = [];
-  const edges: BriefLink[] = [];
-  const seen = new Set<string>();
-  let previous: string | null = null;
-  let marker: string | null = null;
-  for (let index = 0; index < pieces.length; index += 1) {
-    const piece = pieces[index] ?? "";
-    if (index % 2 === 1) {
-      marker = piece;
-      continue;
-    }
-    const cleaned = cleanIdeaPhrase(piece);
-    if (!cleaned) continue;
-    const chunks = splitLongPhrase(cleaned.label);
-    chunks.forEach((label, chunkIndex) => {
-      if (nodes.length >= 8) return;
-      const key = label.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      if (previous) {
-        const labelFor = chunkIndex === 0 ? (cleaned.verb ?? clauseEdgeLabel(marker)) : "Connects";
-        edges.push({ from: previous, to: label, label: labelFor });
-      }
-      nodes.push(label);
-      previous = label;
-    });
-    marker = null;
-    if (nodes.length >= 8) break;
-  }
-  if (nodes.length < 4) return null;
-  const kept = new Set(nodes.map((label) => label.toLowerCase()));
-  return {
-    nodes,
-    edges: edges.filter((link) => kept.has(link.from.toLowerCase()) && kept.has(link.to.toLowerCase())),
-  };
-}
-
-function ideaRemainder(message: string): string {
-  let text = message.trim();
-  text = text.replace(PICTURE_LEAD_STRIP, "");
-  text = text.replace(
-    /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how)\s+(?:a|an|the\s+)?/i,
-    "",
-  );
-  text = text.replace(/^(?:please\s+)?(?:picture|trace|follow|describe|explain)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "");
-  text = text.replace(/\s+and\s+(?:its|their|his|her)\s+\S+\s*$/i, "");
-  // A dash tail is an instruction ("— show the moving parts"), not another part.
-  text = text.replace(/\s+[—–]\s+[\s\S]*$/, "");
-  text = text.replace(/\s+-\s+(?:show|draw|sketch|illustrate|map)\b[\s\S]*$/i, "");
-  return text;
-}
-
-function cleanIdeaPhrase(raw: string): { label: string; verb: string | null } | null {
-  const words = raw
-    .replace(/[^A-Za-z0-9\s.+_-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-  let verb: string | null = null;
-  while (
-    words.length > 0 &&
-    (GLUE.test(words[0] ?? "") ||
-      isClauseVerb(words[0] ?? "") ||
-      LEADING_USE.test(words[0] ?? "") ||
-      OPEN_PREDICATE.test(words[0] ?? ""))
-  ) {
-    if (LEADING_USE.test(words[0] ?? "") || isClauseVerb(words[0] ?? "") || OPEN_PREDICATE.test(words[0] ?? "")) {
-      verb = displayWord(words[0] ?? "");
-    }
-    words.shift();
-  }
-  const predicateAt = words.findIndex((word, index) => index > 0 && OPEN_PREDICATE.test(word));
-  if (predicateAt > 0) words.splice(predicateAt);
-  while (words.length > 0 && (GLUE.test(words[words.length - 1] ?? "") || isClauseVerb(words[words.length - 1] ?? ""))) {
-    words.pop();
-  }
-  if (words.length > 8) words.splice(8);
-  if (words.length === 0) return null;
-  if (words.length === 1 && GENERIC_LABEL.test(words[0] ?? "")) return null;
-  if (words.every((word) => /^(?:interactions?|diagrams?|overviews?|sketches?|please)$/i.test(word))) return null;
-  const label = words.map(displayWord).join(" ");
-  if (label.length < 3 || /^(?:it|this|that|there|they)$/i.test(label)) return null;
-  return { label, verb };
-}
-
-/** A long clause is several names, not one box. Pairs keep each name readable. */
-function splitLongPhrase(label: string): string[] {
-  const words = label.split(/\s+/).filter(Boolean);
-  if (words.length <= 4) return [label];
-  const chunks: string[] = [];
-  for (let index = 0; index < words.length; index += 2) {
-    const slice = words.slice(index, index + 2);
-    if (slice.length === 1 && chunks.length > 0) {
-      chunks[chunks.length - 1] = `${chunks[chunks.length - 1]} ${slice[0]}`;
-      continue;
-    }
-    chunks.push(slice.join(" "));
-  }
-  return chunks;
-}
-
-function clauseEdgeLabel(marker: string | null): string {
-  const token = (marker ?? "").toLowerCase();
-  if (token === "for") return "For";
-  if (token === "with") return "With";
-  if (token === "via" || token === "through") return "Via";
-  if (token === "using" || token === "use" || token === "uses") return "Uses";
-  if (token === "so") return "For";
-  if (token === "that" || token === "which" || token === "who" || token === "where" || token === "when") return "Includes";
-  return "Connects";
 }
 
 function listLinks(sentence: string): BriefLink[] | null {

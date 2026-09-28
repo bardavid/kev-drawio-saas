@@ -94,14 +94,22 @@ function leadingScore(label: string, query: string): number {
   return 70 + Math.min(q.length, 9);
 }
 
+function isContentVertex(vertex: XmlElement): boolean {
+  if (vertex.getAttribute("vertex") !== "1") return false;
+  if ((vertex.getAttribute("style") ?? "").includes("drawai=cluster")) return false;
+  return cellLabel(vertex).trim().length > 0;
+}
+
 function bestVertex(
   doc: XmlDocument,
   query: string,
   score: (label: string, query: string) => number,
+  include: (vertex: XmlElement) => boolean = () => true,
 ): XmlElement | null {
   let best: XmlElement | null = null;
   let bestScore = 0;
   for (const vertex of listVertices(doc)) {
+    if (!include(vertex)) continue;
     const value = score(cellLabel(vertex), query);
     if (value > bestScore) {
       best = vertex;
@@ -723,4 +731,403 @@ export function applyOperations(xml: string, operations: DiagramOperation[]): st
   const structural = operations.some((operation) => operation.intent !== "style");
   if (structural) polishDiagram(doc);
   return serializeDiagram(doc);
+}
+
+const PRONOUN_NODE = /^(?:it|this|that|this node|that node|this shape|that shape|this box|that box|the node|the shape|the box)$/i;
+const EDGE_ONLY = /^(?:edges?|arrows?|connectors?|lines?)$/i;
+
+function cleanNodeQuery(raw: string): string {
+  return raw
+    .replace(/^(?:the|a|an)\s+/i, "")
+    .replace(/\s+(?:a|an|the)$/i, "")
+    .replace(/\s+(?:node|shape|box|vertex)$/i, "")
+    .replace(/[?.!]+$/g, "")
+    .trim();
+}
+
+function splitNodeNames(raw: string): string[] {
+  const parts = raw
+    .split(/\s*,\s*|\s+\band\s+/i)
+    .map((part) => cleanNodeQuery(part))
+    .filter((part) => part && !EDGE_ONLY.test(part));
+  const named = parts.filter((part) => !PRONOUN_NODE.test(part));
+  return named;
+}
+
+/**
+ * “Make X a label”, “X should be labels instead of nodes”, “make it a label instead of a node”.
+ * `queries` is empty when the node is a pronoun (“it”, “this node”).
+ * Null when the message is not that edit.
+ */
+export function parseNodeToEdgeLabel(message: string): { queries: string[] } | null {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text || !/\blabels?\b/i.test(text)) return null;
+
+  const should = text.match(
+    /^(?:please\s+)?(.+?)\s+(?:should|must|needs?\s+to)\s+be\s+(?:an?\s+)?(?:edge\s+)?labels?\s+instead\s+of\s+(?:an?\s+)?nodes?\s*$/i,
+  );
+  if (should?.[1]) {
+    const queries = splitNodeNames(should[1]);
+    if (queries.length === 0 && !PRONOUN_NODE.test(cleanNodeQuery(should[1]))) return null;
+    return { queries };
+  }
+
+  const instead = text.match(
+    /^(?:please\s+)?(?:(?:make|turn|use)\s+)?(?:(.+?)\s+)?labels?\s+instead\s+of\s+(?:an?\s+)?nodes?(?:\s+(?:for|on)\s+(?:the\s+)?(.+))?\s*$/i,
+  );
+  if (instead) {
+    const queries = splitNodeNames(instead[2] || instead[1] || "");
+    return { queries };
+  }
+
+  const asLabel = text.match(/\buse\s+(?:the\s+)?(.+?)\s+as\s+(?:an?\s+)?(?:edge\s+)?labels?(?:\s+instead\s+of\s+(?:an?\s+)?nodes?)?\s*$/i);
+  if (asLabel?.[1]) {
+    const named = cleanNodeQuery(asLabel[1]);
+    if (!named || EDGE_ONLY.test(named)) return null;
+    return { queries: PRONOUN_NODE.test(named) ? [] : splitNodeNames(named) };
+  }
+
+  const into = text.match(
+    /\b(?:make|turn|convert|change)\s+(?:the\s+)?(.+?)\s+(?:(?:into|to|as)\s+)?(?:an?\s+)?(?:edge\s+)?labels?(?:\s+instead\s+of\s+(?:an?\s+)?nodes?)?\s*$/i,
+  );
+  if (!into?.[1]) return null;
+  const named = cleanNodeQuery(into[1]);
+  if (!named || EDGE_ONLY.test(named)) return null;
+  return { queries: PRONOUN_NODE.test(named) ? [] : splitNodeNames(named) };
+}
+
+function isBareShapeName(message: string): boolean {
+  const text = message.trim().replace(/[?.!]+$/g, "");
+  if (!text || text.length > 80) return false;
+  if (/\b(?:make|turn|draw|label|instead|should|edit|change|colou?r|figure|invent|detailed|sketch)\b/i.test(text)) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length >= 1 && words.length <= 6;
+}
+
+function contentVertices(doc: XmlDocument): XmlElement[] {
+  return listVertices(doc).filter(isContentVertex);
+}
+
+function foldToken(token: string): string {
+  const word = token.toLowerCase();
+  if (word.endsWith("ies") && word.length > 4) return `${word.slice(0, -3)}y`;
+  if (word.endsWith("s") && !word.endsWith("ss") && word.length > 3) return word.slice(0, -1);
+  return word;
+}
+
+function fuzzyNameScore(label: string, query: string): number {
+  const direct = scoreVertex(label, query);
+  if (direct >= 50) return direct;
+  const queryTokens = significantTokens(query).map(foldToken);
+  const labelTokens = significantTokens(label).map(foldToken);
+  if (queryTokens.length === 0 || labelTokens.length === 0) return 0;
+  if (queryTokens.join(" ") === labelTokens.join(" ")) return 96;
+  if (queryTokens.every((token) => labelTokens.includes(token))) return 88;
+  return 0;
+}
+
+function findContentVertex(doc: XmlDocument, query: string): XmlElement | null {
+  const direct = bestVertex(doc, query, fuzzyNameScore, isContentVertex);
+  if (direct) return direct;
+  const tokens = mentionTokens(query);
+  const stripped = tokens.join(" ");
+  if (stripped && stripped !== normalizeName(query)) {
+    const colored = bestVertex(doc, stripped, fuzzyNameScore, isContentVertex);
+    if (colored) return colored;
+  }
+  for (let count = tokens.length - 1; count >= 1; count -= 1) {
+    const prefix = tokens.slice(0, count).join(" ");
+    const hit = bestVertex(doc, prefix, leadingScore, isContentVertex);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function recency(cell: XmlElement): number {
+  const id = cell.getAttribute("id") ?? "";
+  const numeric = Number(id);
+  if (Number.isFinite(numeric)) return numeric;
+  const digits = id.match(/(\d+)/);
+  if (digits?.[1]) return Number(digits[1]);
+  return absoluteGeometry(cell).x;
+}
+
+function mentioned(label: string, text: string): boolean {
+  const needle = normalizeName(label);
+  const hay = normalizeName(text);
+  if (!needle || !hay) return false;
+  return ` ${hay} `.includes(` ${needle} `);
+}
+
+function resolveLabelVertex(doc: XmlDocument, query: string | null, earlier: string): XmlElement | null {
+  if (query) {
+    const found = findContentVertex(doc, query);
+    if (found) return found;
+  }
+  const content = contentVertices(doc);
+  const named = earlier.trim() ? content.filter((vertex) => mentioned(cellLabel(vertex), earlier)) : [];
+  const pool = named.length > 0 ? named : content;
+  if (pool.length === 0) return null;
+  return pool.reduce((best, vertex) => (recency(vertex) > recency(best) ? vertex : best));
+}
+
+interface Side {
+  edge: XmlElement;
+  other: XmlElement;
+}
+
+function contentEnd(doc: XmlDocument, id: string | null, skip: XmlElement): XmlElement | null {
+  if (!id) return null;
+  const cell = findCellById(doc, id);
+  if (!cell || cell === skip || !isContentVertex(cell)) return null;
+  return cell;
+}
+
+function sidesOf(doc: XmlDocument, vertex: XmlElement): { incoming: Side[]; outgoing: Side[] } {
+  const id = vertex.getAttribute("id");
+  const incoming: Side[] = [];
+  const outgoing: Side[] = [];
+  for (const edge of listEdges(doc)) {
+    if (edge.getAttribute("target") === id) {
+      const other = contentEnd(doc, edge.getAttribute("source"), vertex);
+      if (other) incoming.push({ edge, other });
+    } else if (edge.getAttribute("source") === id) {
+      const other = contentEnd(doc, edge.getAttribute("target"), vertex);
+      if (other) outgoing.push({ edge, other });
+    }
+  }
+  return { incoming, outgoing };
+}
+
+function removeVertex(doc: XmlDocument, target: XmlElement) {
+  const id = target.getAttribute("id");
+  const cells = doc.getElementsByTagName("mxCell");
+  const attached: XmlElement[] = [];
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index];
+    if (!cell || cell === target) continue;
+    if (cell.getAttribute("parent") === id || cell.getAttribute("source") === id || cell.getAttribute("target") === id) {
+      attached.push(cell);
+    }
+  }
+  for (const cell of attached) cell.parentNode?.removeChild(cell);
+  target.parentNode?.removeChild(target);
+}
+
+function survivorEnds(
+  doc: XmlDocument,
+  vertex: XmlElement,
+  direction: "in" | "out",
+  doomed: Set<XmlElement>,
+): XmlElement[] {
+  const { incoming, outgoing } = sidesOf(doc, vertex);
+  const sides = direction === "in" ? incoming : outgoing;
+  const found: XmlElement[] = [];
+  for (const side of sides) {
+    const end = doomed.has(side.other) ? nearestNeighbor(doc, side.other, direction, doomed) : side.other;
+    if (end && !found.includes(end)) found.push(end);
+  }
+  return found;
+}
+
+function nearestNeighbor(
+  doc: XmlDocument,
+  vertex: XmlElement,
+  direction: "in" | "out",
+  doomed: Set<XmlElement>,
+  seen = new Set<XmlElement>(),
+): XmlElement | null {
+  if (seen.has(vertex)) return null;
+  seen.add(vertex);
+  const { incoming, outgoing } = sidesOf(doc, vertex);
+  const sides = direction === "in" ? incoming : outgoing;
+  for (const side of sides) {
+    if (!doomed.has(side.other)) return side.other;
+  }
+  for (const side of sides) {
+    const further = nearestNeighbor(doc, side.other, direction, doomed, seen);
+    if (further) return further;
+  }
+  return null;
+}
+
+function putEdgeLabel(doc: XmlDocument, from: XmlElement, to: XmlElement, label: string, written: Set<XmlElement>) {
+  let edge = findEdgeBetween(doc, from, to);
+  if (!edge) {
+    connectCells(doc, from, to, label);
+    edge = findEdgeBetween(doc, from, to);
+    if (edge) written.add(edge);
+    return;
+  }
+  const current = edge.getAttribute("value") ?? "";
+  if (written.has(edge)) {
+    if (current && !current.split(/,\s*/).includes(label)) edge.setAttribute("value", `${current}, ${label}`);
+    else if (!current) edge.setAttribute("value", label);
+    return;
+  }
+  edge.setAttribute("value", label);
+  written.add(edge);
+}
+
+interface LabelMove {
+  name: string;
+  from: string;
+  to: string;
+}
+
+function promoteVertices(doc: XmlDocument, vertices: XmlElement[]): { moves: LabelMove[]; stuck: string[] } {
+  const doomed = new Set(vertices);
+  const ordered = [...vertices].sort((left, right) => absoluteGeometry(left).x - absoluteGeometry(right).x);
+  const bridges: Array<{ vertex: XmlElement; from: XmlElement; to: XmlElement }> = [];
+  const leaves: Array<{ vertex: XmlElement; edge: XmlElement }> = [];
+  const stuck: string[] = [];
+  for (const vertex of ordered) {
+    const left = nearestNeighbor(doc, vertex, "in", doomed);
+    const right = nearestNeighbor(doc, vertex, "out", doomed);
+    if (left && right && left !== right) {
+      bridges.push({ vertex, from: left, to: right });
+      continue;
+    }
+    const neighbor = left ?? right;
+    if (!neighbor) {
+      stuck.push(cellLabel(vertex));
+      continue;
+    }
+    const neighborId = neighbor.getAttribute("id");
+    const doomedIds = new Set([...doomed].map((item) => item.getAttribute("id")));
+    const others = listEdges(doc).filter((edge) => {
+      const source = edge.getAttribute("source");
+      const target = edge.getAttribute("target");
+      const touchesNeighbor = source === neighborId || target === neighborId;
+      const otherId = source === neighborId ? target : target === neighborId ? source : null;
+      return touchesNeighbor && Boolean(otherId) && !doomedIds.has(otherId);
+    });
+    const best = others.find((edge) => edge.getAttribute("target") === neighborId) ?? others[0];
+    if (!best) {
+      stuck.push(cellLabel(vertex));
+      continue;
+    }
+    leaves.push({ vertex, edge: best });
+  }
+  const written = new Set<XmlElement>();
+  const moves: LabelMove[] = [];
+  for (const bridge of bridges) {
+    const name = cellLabel(bridge.vertex);
+    putEdgeLabel(doc, bridge.from, bridge.to, name, written);
+    for (const source of survivorEnds(doc, bridge.vertex, "in", doomed)) {
+      for (const target of survivorEnds(doc, bridge.vertex, "out", doomed)) {
+        if (source === target || (source === bridge.from && target === bridge.to)) continue;
+        connectCells(doc, source, target, "");
+      }
+    }
+    moves.push({ name, from: cellLabel(bridge.from), to: cellLabel(bridge.to) });
+  }
+  for (const leaf of leaves) {
+    const name = cellLabel(leaf.vertex);
+    const current = leaf.edge.getAttribute("value") ?? "";
+    if (written.has(leaf.edge) && current && !current.split(/,\s*/).includes(name)) leaf.edge.setAttribute("value", `${current}, ${name}`);
+    else leaf.edge.setAttribute("value", name);
+    written.add(leaf.edge);
+    const fromCell = findCellById(doc, leaf.edge.getAttribute("source") ?? "");
+    const toCell = findCellById(doc, leaf.edge.getAttribute("target") ?? "");
+    moves.push({
+      name,
+      from: fromCell ? cellLabel(fromCell) : "",
+      to: toCell ? cellLabel(toCell) : "",
+    });
+  }
+  for (const move of moves) {
+    const vertex = ordered.find((item) => cellLabel(item) === move.name);
+    if (vertex) removeVertex(doc, vertex);
+  }
+  return { moves, stuck };
+}
+
+function movedReply(moves: LabelMove[]): string {
+  const groups = new Map<string, { from: string; to: string; names: string[] }>();
+  for (const move of moves) {
+    const key = `${move.from}\0${move.to}`;
+    const group = groups.get(key) ?? { from: move.from, to: move.to, names: [] };
+    if (!group.names.includes(move.name)) group.names.push(move.name);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => {
+      const names = group.names.map((name) => `"${name}"`).join(" and ");
+      if (group.from && group.to) return `Moved ${names} onto the edge between ${group.from} and ${group.to}.`;
+      return `Moved ${names} onto the connecting edge.`;
+    })
+    .join(" ");
+}
+
+function labelDecision(reply: string, slots: DiagramSlots = {}, intent: KevDecision["intent"] = "clarify"): KevDecision {
+  return { intent, reply, slots, operations: [], updatedXml: null };
+}
+
+/**
+ * Host edit: the named vertex's text becomes the label of the best connecting
+ * edge, neighbors are reconnected, and the vertex is removed.
+ * Null when the message is not that request.
+ */
+export function nodeToEdgeLabelTurn(
+  message: string,
+  xml: string,
+  earlier = "",
+): { decision: KevDecision; xml: string } | null {
+  let parsed = parseNodeToEdgeLabel(message);
+  if (!parsed && isBareShapeName(message) && parseNodeToEdgeLabel(earlier)) {
+    parsed = { queries: splitNodeNames(message) };
+  }
+  if (!parsed) return null;
+  let doc: XmlDocument;
+  try {
+    doc = openDiagram(xml);
+  } catch {
+    return null;
+  }
+  let queries = parsed.queries;
+  if (queries.length === 0) {
+    const prior = earlier ? parseNodeToEdgeLabel(earlier) : null;
+    if (prior && prior.queries.length > 0) queries = prior.queries;
+  }
+  const vertices: XmlElement[] = [];
+  const missing: string[] = [];
+  if (queries.length === 0) {
+    const vertex = resolveLabelVertex(doc, null, earlier);
+    if (vertex) vertices.push(vertex);
+    else missing.push("that node");
+  } else {
+    for (const query of queries) {
+      const vertex = findContentVertex(doc, query);
+      if (vertex && !vertices.includes(vertex)) vertices.push(vertex);
+      else if (!vertex) missing.push(query);
+    }
+  }
+  if (vertices.length === 0) {
+    const name = missing[0] && missing[0] !== "that node" ? missing.join(" or ") : "that node";
+    return {
+      decision: labelDecision(missing[0] === "that node" ? "I don't see a node to turn into a label." : `I don't see ${name} on the diagram.`),
+      xml,
+    };
+  }
+  const promoted = promoteVertices(doc, vertices);
+  if (promoted.moves.length === 0) {
+    const name = promoted.stuck[0] ?? cellLabel(vertices[0]!);
+    return {
+      decision: labelDecision(`${name} has to sit between two shapes before it can become an edge label.`),
+      xml,
+    };
+  }
+  polishDiagram(doc);
+  const next = serializeDiagram(doc);
+  const primary = promoted.moves[0]!;
+  return {
+    decision: labelDecision(movedReply(promoted.moves), {
+      target: primary.name,
+      edgeLabel: primary.name,
+      from: primary.from || null,
+      to: primary.to || null,
+    }, "delete_shape"),
+    xml: next,
+  };
 }
