@@ -158,7 +158,13 @@ const CATALOG: CatalogEntry[] = [
   { id: "redis", label: "Redis", role: "data", shape: "cylinder", phrases: ["redis"] },
   { id: "mysql", label: "MySQL", role: "data", shape: "cylinder", phrases: ["mysql"] },
   { id: "mongo", label: "MongoDB", role: "data", shape: "cylinder", phrases: ["mongodb", "mongo"] },
-  { id: "object-storage", label: "Object storage", role: "storage", shape: "cloud", phrases: ["object storage"] },
+  {
+    id: "object-storage",
+    label: "Object storage",
+    role: "storage",
+    shape: "cloud",
+    phrases: ["object storage", "object store", "blobs", "blob"],
+  },
   { id: "browser", label: "Browser", role: "client", phrases: ["browser"], listed: true },
   { id: "client", label: "Client", role: "client", phrases: ["client"], listed: true },
   { id: "user", label: "User", role: "actor", shape: "actor", phrases: ["user"], listed: true },
@@ -297,24 +303,16 @@ function mentionTokens(segment: string): string[] {
   );
 }
 
+/** Adjectives in a title ("Complex 3 Tier") are not service names. */
+const TITLE_WORD = new Set(["complex", "simple", "basic", "clean", "sample", "example", "generic", "modern"]);
+
 function looksNamed(token: string, segment: string): boolean {
+  if (/^\d+$/.test(token) || TITLE_WORD.has(token)) return false;
   if (token.includes(".") || /\d/.test(token)) return true;
   const match = segment.match(new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"));
   if (!match || match.index === undefined) return false;
   const raw = segment.slice(match.index, match.index + match[0].length);
   return /^[A-Z]/.test(raw);
-}
-
-/**
- * Tokens the user named beside a role phrase. "Tigris object storage" keeps Tigris.
- * The role phrase still supplies the group and the shape.
- */
-function brandTokens(segment: string, matched: Set<string>): string[] {
-  const leftovers = mentionTokens(segment).filter((token) => !matched.has(token) && !ROLE_WORDS.has(token));
-  const named = leftovers.filter((token) => looksNamed(token, segment));
-  if (named.length > 0) return named.slice(0, 3);
-  if (leftovers.length > 0 && leftovers.length <= 2) return leftovers;
-  return [];
 }
 
 function containsPhrase(words: string[], phrase: string[]): boolean {
@@ -373,15 +371,143 @@ const HARD_CUE = new Set([
   "layout",
 ]);
 
+/** Clause crumbs. They choose a role or point at one; they are not a node. */
+const CRUMB = new Set([
+  "there",
+  "here",
+  "that",
+  "this",
+  "these",
+  "those",
+  "keeps",
+  "keep",
+  "keeping",
+  "caches",
+  "caching",
+  "cached",
+  "stores",
+  "store",
+  "storing",
+  "stored",
+  "compute",
+  "layer",
+  "layers",
+  "runs",
+  "finishes",
+  "uses",
+  "use",
+  "using",
+  "hang",
+  "off",
+  "where",
+  "which",
+  "when",
+  "also",
+  "just",
+  "then",
+]);
+
 function adHoc(segment: string): { label: string; role: EntityRole } | null {
   const words = mentionTokens(segment);
   // "draw a diagram" is not a node. A dotted brand in that sentence still is ("Draw Fly.io").
   const hard = wordsOf(segment).some((word) => HARD_CUE.has(word));
   const kept = hard ? words.filter((word) => word.includes(".")) : words;
   if (kept.length === 0 || kept.length > 3) return null;
-  const label = titleLabel(kept);
+  const named = kept.filter((token) => looksNamed(token, segment));
+  const substantive = kept.filter((token) => !CRUMB.has(token));
+  const chosen = named.length > 0 ? named : substantive;
+  if (chosen.length === 0 || chosen.length > 3) return null;
+  const label = titleLabel(chosen);
   if (label.length < 2) return null;
   return { label, role: inferRole(label) };
+}
+
+const BRAND_WINDOW = 4;
+
+function isBrandToken(token: string, segment: string): boolean {
+  if (CUE.has(token) || HARD_CUE.has(token) || MODIFIERS.has(token) || ROLE_WORDS.has(token) || CRUMB.has(token)) {
+    return false;
+  }
+  return looksNamed(token, segment);
+}
+
+function nearestBrand(tokens: string[], segment: string, fromEnd: boolean): { token: string; dist: number } | null {
+  if (fromEnd) {
+    for (let index = tokens.length - 1; index >= 0; index -= 1) {
+      const token = tokens[index] ?? "";
+      if (!isBrandToken(token, segment)) continue;
+      return { token, dist: tokens.length - 1 - index };
+    }
+    return null;
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (!isBrandToken(token, segment)) continue;
+    return { token, dist: index };
+  }
+  return null;
+}
+
+/**
+ * The brand sitting next to a role phrase. "blobs in Tigris" keeps Tigris.
+ * A farther name in the same sentence ("Fly.io … blobs in Tigris") stays its own node.
+ * Glue such as "hang off" is not a brand.
+ */
+function brandsBeside(
+  segment: { start: number; text: string },
+  span: Span,
+  neighbors: Span[],
+): string[] {
+  const relStart = span.start - segment.start;
+  const relEnd = span.end - segment.start;
+  let leftCut = 0;
+  let rightCut = segment.text.length;
+  for (const other of neighbors) {
+    if (other === span) continue;
+    const start = other.start - segment.start;
+    const end = other.end - segment.start;
+    if (end <= relStart && end > leftCut) leftCut = end;
+    if (start >= relEnd && start < rightCut) rightCut = start;
+  }
+  const before = wordsOf(segment.text.slice(leftCut, Math.max(leftCut, relStart)));
+  const after = wordsOf(segment.text.slice(relEnd, rightCut));
+  const left = nearestBrand(before, segment.text, true);
+  const right = nearestBrand(after, segment.text, false);
+  const leftOk = Boolean(left && left.dist <= BRAND_WINDOW);
+  const rightOk = Boolean(right && right.dist <= BRAND_WINDOW);
+  if (leftOk && rightOk && left && right) return left.dist <= right.dist ? [left.token] : [right.token];
+  if (leftOk && left) return [left.token];
+  if (rightOk && right) return [right.token];
+  const pool = [...before.slice(-BRAND_WINDOW), ...after.slice(0, BRAND_WINDOW)].filter(
+    (token) =>
+      !CUE.has(token) &&
+      !HARD_CUE.has(token) &&
+      !MODIFIERS.has(token) &&
+      !ROLE_WORDS.has(token) &&
+      !CRUMB.has(token) &&
+      !TITLE_WORD.has(token) &&
+      !/^\d+$/.test(token),
+  );
+  if (pool.length > 0 && pool.length <= 2) return pool;
+  return [];
+}
+
+function looseNames(
+  segment: { start: number; text: string },
+  used: Set<string>,
+): Array<{ label: string; order: number }> {
+  const found: Array<{ label: string; order: number }> = [];
+  for (const match of segment.text.matchAll(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g)) {
+    const token = match[0].toLowerCase();
+    if (used.has(token) || CUE.has(token) || HARD_CUE.has(token) || MODIFIERS.has(token)) continue;
+    if (ROLE_WORDS.has(token) || CRUMB.has(token) || TITLE_WORD.has(token) || /^\d+$/.test(token)) continue;
+    if (!looksNamed(token, segment.text)) continue;
+    found.push({
+      label: titleLabel([token]),
+      order: segment.start + (match.index ?? 0),
+    });
+  }
+  return found;
 }
 
 function inferRole(label: string): EntityRole {
@@ -409,6 +535,11 @@ function pastel(role: EntityRole, indexInRole: number): { fill: string; stroke: 
   const name = indexInRole === 0 ? ROLE_COLOR[role] : PASTEL_CYCLE[(indexInRole + ROLE_ORDER.indexOf(role)) % PASTEL_CYCLE.length]!;
   const color = PALETTE[name] ?? PALETTE.blue!;
   return { fill: color.fill, stroke: color.stroke };
+}
+
+/** Same pastel a named-entity stack uses for this role. Templates share it instead of flat white. */
+export function rolePaint(role: EntityRole, index: number): { fill: string; stroke: string } {
+  return pastel(role, index);
 }
 
 function slug(label: string, used: Set<string>): string {
@@ -455,21 +586,35 @@ export function extractNamedEntities(message: string): NamedEntity[] {
       const owned = overlapping.filter(
         (span) => !consumed.has(span) && segment.start <= span.start && segment.end >= span.end,
       );
-      if (owned.length === 1) {
-        const span = owned[0]!;
-        consumed.add(span);
-        const matched = new Set(wordsOf(text.slice(span.start, span.end)));
-        const brand = brandTokens(segment.text, matched);
-        const branded = brand.length > 0;
-        const label = branded ? titleLabel(brand) : span.entry.label;
-        pushDraft({
-          id: branded ? label.toLowerCase() : span.entry.id,
-          label,
-          role: span.entry.role,
-          shape: shapeFor(span.entry, label),
-          order: segment.start,
-          origin: branded ? "adhoc" : "catalog",
-        });
+      if (owned.length > 0) {
+        const used = new Set<string>();
+        for (const span of owned) {
+          consumed.add(span);
+          for (const token of wordsOf(text.slice(span.start, span.end))) used.add(token);
+          const brand = brandsBeside(segment, span, owned);
+          for (const token of brand) used.add(token);
+          const branded = brand.length > 0;
+          const label = branded ? titleLabel(brand) : span.entry.label;
+          const brandAt = branded ? segment.text.toLowerCase().indexOf(brand[0] ?? "") : -1;
+          pushDraft({
+            id: branded ? label.toLowerCase() : span.entry.id,
+            label,
+            role: span.entry.role,
+            shape: shapeFor(span.entry, label),
+            order: brandAt >= 0 ? segment.start + brandAt : span.start,
+            origin: branded ? "adhoc" : "catalog",
+          });
+        }
+        for (const extra of looseNames(segment, used)) {
+          pushDraft({
+            id: extra.label.toLowerCase(),
+            label: extra.label,
+            role: inferRole(extra.label),
+            shape: shapeFor({ role: inferRole(extra.label) }, extra.label),
+            order: extra.order,
+            origin: "adhoc",
+          });
+        }
       }
       continue;
     }

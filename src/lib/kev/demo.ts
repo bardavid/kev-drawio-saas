@@ -2,7 +2,7 @@ import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/s
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
 import { compositionDecision, renderComposition, resolveComposition, sameMxfile, templateCanvasPlan } from "@/lib/kev/compose";
-import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { architectureDecision, isBareDraw, isBetweenEdit, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY } from "@/lib/kev/reply";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
@@ -322,7 +322,7 @@ export function decideDemo(message: string): KevDecision {
   const utteredEdges = edgeRestyleDecision(text);
   if (utteredEdges) return utteredEdges;
 
-  if (isNamedAddition(text)) return parseAdd(text);
+  if (isBetweenEdit(text) || isNamedAddition(text)) return parseAdd(text);
   if (
     /^(?:please\s+)?(?:put|drop)\b/i.test(text) &&
     /\b(?:between|in front of|ahead of|before|behind|after)\b/i.test(text)
@@ -399,16 +399,59 @@ function firstClause(value: string): string {
   return sentence.replace(/[?.!]+$/g, "").trim();
 }
 
+/** Trailing words that describe the diagram, not a canvas label. */
+const ANCHOR_FLUFF = new Set([
+  "step",
+  "steps",
+  "stage",
+  "stages",
+  "pipeline",
+  "pipelines",
+  "flow",
+  "flows",
+  "diagram",
+  "diagrams",
+  "into",
+  "in",
+  "on",
+  "of",
+  "the",
+  "this",
+  "that",
+  "a",
+  "an",
+  "and",
+  "to",
+]);
+
+function fluffToken(word: string): boolean {
+  return ANCHOR_FLUFF.has(word.toLowerCase().replace(/[^a-z0-9]/g, ""));
+}
+
+/** Drop trailing "stages / pipeline / flow / step / of the …" so they are not a new shape. */
+function anchorLabel(value: string): string {
+  const words = cleanNoun(value).split(/\s+/).filter(Boolean);
+  while (words.length > 1 && fluffToken(words[words.length - 1] ?? "")) words.pop();
+  while (words.length > 1 && fluffToken(words[0] ?? "")) words.shift();
+  return titleLabel(words.join(" "));
+}
+
+function insertionRest(text: string): string {
+  const between = text.match(/\b(?:add|insert|place|put|drop|splice|wedge)\b\s+([\s\S]*\bbetween\b[\s\S]*)$/i);
+  if (between?.[1]) return between[1];
+  return text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place|put|drop|splice|wedge)\s+/i, "");
+}
+
 function parseAdd(text: string): KevDecision {
-  let rest = text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place|put|drop)\s+/i, "");
+  let rest = insertionRest(text);
   rest = rest.replace(/^(?:a|an|the)\s+/i, "");
   rest = firstClause(rest);
 
   const between = rest.match(/^(.+?)\s+between\s+(?:the\s+)?(.+?)\s+and\s+(?:the\s+)?(.+)$/i);
   if (between?.[1] && between[2] && between[3]) {
-    const label = titleLabel(between[1]);
-    const from = titleLabel(between[2]);
-    const to = titleLabel(between[3]);
+    const label = anchorLabel(between[1]);
+    const from = anchorLabel(between[2]);
+    const to = anchorLabel(between[3]);
     if (!label) {
       return decision("clarify", "What should I add? For example, “Add a Redis cache in front of the database.”");
     }

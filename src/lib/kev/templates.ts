@@ -10,6 +10,7 @@ import type {
   SequenceSpec,
   WorkflowSpec,
 } from "@/lib/kev/compose";
+import { rolePaint } from "@/lib/kev/entities";
 import { layoutDefault } from "@/lib/kev/plan";
 import { redisDiagramRequest, wikipediaTitle } from "@/lib/kev/research";
 
@@ -416,22 +417,27 @@ function cicdPipeline(text: string): TemplateMatch {
   const chain = stages.map((stage) => stage.label).join(" → ");
   return {
     context: `A CI/CD pipeline runs in ${actions}, keeps a Build stage, then deploys. ${deploy} is the deploy stage. Build is not optional.`,
-    spec: {
-      kind: "workflow",
-      title: "CI/CD",
-      reply: `Drew a CI/CD pipeline: ${chain}.`,
-      nodes: stages.map((stage, index) => ({
-        id: stage.id,
-        label: stage.label,
-        shape: "rectangle" as const,
-        column: index,
-        row: 0,
-      })),
-      edges: [
-        { from: "actions", to: "build", label: "Build" },
-        { from: "build", to: "deploy", label: "Deploy" },
+    spec: layers(
+      "CI/CD",
+      `Drew a CI/CD pipeline: ${chain}.`,
+      [
+        row(
+          "steps",
+          "Steps",
+          stages.map((stage, index) => {
+            const paint = rolePaint("step", index);
+            return {
+              id: stage.id,
+              label: stage.label,
+              shape: "rectangle" as const,
+              fill: paint.fill,
+              stroke: paint.stroke,
+            };
+          }),
+        ),
       ],
-    },
+      [edge("actions", "build", "Build"), edge("build", "deploy", "Deploy")],
+    ),
   };
 }
 

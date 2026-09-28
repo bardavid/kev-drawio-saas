@@ -67,10 +67,15 @@ export function isArchitectureRequest(message: string): boolean {
   return parseArchitecture(message) !== null;
 }
 
-/** "Add X between A and B" edits the open canvas. It is not a new architecture chain. */
-function isBetweenInsert(text: string): boolean {
+const INSERT_VERB = /\b(?:add|insert|place|put|drop|splice|wedge)\b/i;
+
+/**
+ * splice / wedge / insert / put / add / place + "between X and Y" edits the open canvas.
+ * It is not a new architecture chain, even when a stage name such as Build looks like a draw verb.
+ */
+export function isBetweenEdit(text: string): boolean {
   const trimmed = text.trim();
-  return /^(?:please\s+)?(?:add|insert|place|put|drop)\b/i.test(trimmed) && /\bbetween\b/i.test(trimmed);
+  return INSERT_VERB.test(trimmed) && /\bbetween\s+(?:the\s+)?.+\s+and\s+/i.test(trimmed);
 }
 
 /** "Make the boxes orange" restyles. "Build" inside it is not a draw verb. */
@@ -84,7 +89,7 @@ function isColorRestyle(text: string): boolean {
 
 export function parseArchitecture(message: string): ArchitecturePlan | null {
   const text = message.trim();
-  if (!text || isBareDraw(text) || isBetweenInsert(text) || isColorRestyle(text)) return null;
+  if (!text || isBareDraw(text) || isBetweenEdit(text) || isColorRestyle(text)) return null;
   const hasVerb = DRAW_VERB.test(text);
   const hasArrow = /→|->|=>|—>|-->|–>/.test(text);
   const tiers = tierCount(text);

@@ -1,7 +1,7 @@
 import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
 import { diagramIsBlank, normalizeMxfile, openDiagram, serializeDiagram } from "@/lib/drawio/xml";
 import { composeNamedDiagram, extractNamedEntities } from "@/lib/kev/entities";
-import { layoutDefault, parseArchitecture, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { isBetweenEdit, layoutDefault, parseArchitecture, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
@@ -204,6 +204,8 @@ function isSingleInsert(text: string): boolean {
 
 function isIncrementalEdit(text: string): boolean {
   const trimmed = text.trim();
+  // "Splice Test between Build and Deploy stages" edits the open edge. It is not a new chain.
+  if (isBetweenEdit(trimmed)) return true;
   if (/^(?:please\s+)?(?:rename|relabel|delete|remove|connect)\b/i.test(trimmed)) return true;
   if (/^(?:please\s+)?(?:add|insert|place|put|drop)\b/i.test(trimmed)) {
     // "Put Client, API, and Postgres" names a new diagram. "Add X in front of Y" edits one.
