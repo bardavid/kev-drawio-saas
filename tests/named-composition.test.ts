@@ -481,6 +481,78 @@ describe("named composition", () => {
     }
   });
 
+  it("keeps only the stage name when a between-insert has placement wording", () => {
+    const drawn = previewDemo(
+      "Sketch the release pipeline. GitHub Actions runs Build, then it finishes at Deploy to Vercel",
+      STARTER_XML,
+    );
+    const placed = (xml: string) =>
+      content(assessDiagram(xml).nodes).map((node) => ({
+        label: node.label,
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
+      }));
+    const before = placed(drawn.xml);
+    const phrases = [
+      { text: "Drop Lint into place between Build and Deploy", label: "Lint" },
+      { text: "Put Review into place between the Build and Deploy stages", label: "Review" },
+      { text: "Splice QA into the pipeline between Build and Deploy", label: "QA" },
+      { text: "Wedge Approval into the pipeline between Build and the Deploy stages", label: "Approval" },
+      { text: "Drop Smoke Test into place between Build and Deploy", label: "Smoke Test" },
+      { text: "Put Unit Tests into the pipeline between Build and Deploy stages", label: "Unit Tests" },
+      { text: "Wedge Signoff in between Build and Deploy", label: "Signoff" },
+      { text: "Drop Gate here between Build and Deploy", label: "Gate" },
+      { text: "Put Canary there between Build and Deploy", label: "Canary" },
+      { text: "Splice Rollback somewhere between Build and Deploy", label: "Rollback" },
+      { text: "Wedge Hold anywhere between Build and Deploy", label: "Hold" },
+      { text: "Drop Place Order into place between Build and Deploy", label: "Place Order" },
+    ];
+    for (const phrase of phrases) {
+      const edited = previewDemo(phrase.text, drawn.xml);
+      assert.equal(edited.decision.intent, "add_shape", phrase.text);
+      assert.equal(edited.decision.slots.label, phrase.label, phrase.text);
+      assert.equal(edited.decision.reply, `Added ${phrase.label} between Build and Deploy.`, phrase.text);
+      const report = assertClean(edited.xml);
+      const labels = content(report.nodes).map((node) => node.label);
+      assert.equal(labels.includes("Stages"), false, phrase.text);
+      assert.equal(labels.includes("Deploy Stages"), false, phrase.text);
+      assert.deepEqual(
+        [...content(report.nodes)].sort((a, b) => a.x - b.x).map((node) => node.label),
+        ["GitHub Actions", "Build", phrase.label, "Deploy to Vercel"],
+        phrase.text,
+      );
+      assert.ok(report.edges.some((edge) => edge.from === "Build" && edge.to === phrase.label), phrase.text);
+      assert.ok(
+        report.edges.some((edge) => edge.from === phrase.label && edge.to === "Deploy to Vercel"),
+        phrase.text,
+      );
+      assert.equal(
+        report.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
+        false,
+        phrase.text,
+      );
+      const order = [...content(report.nodes)].sort((a, b) => a.x - b.x);
+      const build = order.find((node) => node.label === "Build");
+      const inserted = order.find((node) => node.label === phrase.label);
+      const deploy = order.find((node) => node.label === "Deploy to Vercel");
+      assert.ok(build && inserted && deploy, phrase.text);
+      assert.ok(build.x < inserted.x && inserted.x < deploy.x, phrase.text);
+      const kept = placed(edited.xml);
+      assert.deepEqual(
+        kept.find((node) => node.label === "GitHub Actions"),
+        before.find((node) => node.label === "GitHub Actions"),
+        phrase.text,
+      );
+      assert.deepEqual(
+        kept.find((node) => node.label === "Build"),
+        before.find((node) => node.label === "Build"),
+        phrase.text,
+      );
+    }
+  });
+
   it("keeps Tigris beside blobs and does not mint a node from clause crumbs", () => {
     const prompt = "A Fly.io service keeps blobs in Tigris and uses Upstash Redis as its cache";
     const labels = extractNamedEntities(prompt).map((entity) => entity.label);
