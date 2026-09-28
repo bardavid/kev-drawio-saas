@@ -113,33 +113,38 @@ describe("diagram quality", () => {
   it("draws a 3 tier web app as an aligned chain", () => {
     const xml = previewDemo("draw a 3 tier web app", EMPTY_XML).xml;
     const report = assertClean(xml);
+    const boxes = content(report.nodes);
     assert.deepEqual(
-      report.nodes.map((node) => node.label),
+      boxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
     assert.deepEqual(
       report.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
-    const postgres = report.nodes.find((node) => node.label === "Postgres");
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assert.ok(report.nodes.filter((node) => node.role === "cluster").length >= 3);
+    const postgres = boxes.find((node) => node.label === "Postgres");
     assert.match(postgres?.style ?? "", /cylinder3/);
-    assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
-    const gaps = rowGaps(report.nodes);
+    assert.ok(boxes.every((node) => /fillColor=#[0-9a-f]{6}/i.test(node.style) && !node.style.includes("fillColor=#ffffff")));
+    const gaps = rowGaps(boxes);
     assert.ok(gaps.every((gap) => gap >= 48));
     assert.ok(Math.max(...gaps) - Math.min(...gaps) <= 1);
-    const xs = report.nodes.map((node) => node.x);
+    const xs = boxes.map((node) => node.x);
     assert.deepEqual(xs, [...xs].sort((a, b) => a - b));
-    assert.ok(report.nodes.every((node) => node.x >= 80));
+    assert.ok(boxes.every((node) => node.x >= 80));
     const fromStarter = assessDiagram(previewDemo("draw a 3 tier web app", STARTER_XML).xml);
+    const starterBoxes = content(fromStarter.nodes);
     assert.deepEqual(
-      fromStarter.nodes.map((node) => node.label),
+      starterBoxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
     assert.deepEqual(
       fromStarter.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
-    assert.ok(fromStarter.edges.every((edge) => edge.label === ""));
+    assert.ok(fromStarter.edges.every((edge) => edge.label.length > 0));
+    assert.ok(fromStarter.nodes.some((node) => node.role === "cluster"));
   });
 
   it("routes a skip edge around the node sitting between its ends", () => {
@@ -432,7 +437,7 @@ describe("diagram quality", () => {
     const restyled = previewDemo("make all boxes red", drawn).xml;
     assert.deepEqual(geometrySignature(restyled), before);
     const report = assessDiagram(restyled);
-    assert.ok(report.nodes.every((node) => node.style.includes("fillColor=#f8cecc")));
+    assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#f8cecc")));
     assert.deepEqual(
       report.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
@@ -837,18 +842,22 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       currentXml: STARTER_XML,
     });
     const report = assertClean(drawn.updatedXml);
+    const boxes = content(report.nodes);
     assert.deepEqual(
-      report.nodes.map((node) => node.label),
+      boxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
     assert.deepEqual(
       report.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
-    assert.ok(report.edges.every((edge) => edge.label === ""));
-    assert.equal(report.nodes.some((node) => node.label === "API"), false);
-    assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
-    assert.match(report.nodes.find((node) => node.label === "Postgres")?.style ?? "", /cylinder3/);
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    assert.equal(boxes.some((node) => node.label === "API"), false);
+    const gaps = rowGaps(boxes);
+    assert.ok(gaps.every((gap) => gap >= 48));
+    assert.ok(Math.max(...gaps) - Math.min(...gaps) <= 1);
+    assert.match(boxes.find((node) => node.label === "Postgres")?.style ?? "", /cylinder3/);
     const before = geometrySignature(drawn.updatedXml);
 
     const restyled = await runKevTurn({
@@ -864,12 +873,13 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     assert.equal(restyled.reply, "Set every shape to red.");
     assert.deepEqual(geometrySignature(restyled.updatedXml), before);
     const after = assessDiagram(restyled.updatedXml);
+    const afterBoxes = content(after.nodes);
     assert.deepEqual(
-      after.nodes.map((node) => node.label),
+      afterBoxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
-    assert.ok(after.nodes.every((node) => node.style.includes("fillColor=#f8cecc")));
-    assert.ok(after.nodes.every((node) => node.style.includes("strokeColor=#b85450")));
+    assert.ok(afterBoxes.every((node) => node.style.includes("fillColor=#f8cecc")));
+    assert.ok(afterBoxes.every((node) => node.style.includes("strokeColor=#b85450")));
     assert.deepEqual(
       after.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
@@ -913,16 +923,18 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       currentXml: STARTER_XML,
     });
     const report = assertClean(drawn.updatedXml);
+    const boxes = content(report.nodes);
     assert.deepEqual(
-      report.nodes.map((node) => node.label),
+      boxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
     assert.deepEqual(
       report.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
-    assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
-    const gaps = rowGaps(report.nodes);
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    const gaps = rowGaps(boxes);
     assert.ok(gaps.every((gap) => gap >= 48));
     assert.ok(Math.max(...gaps) - Math.min(...gaps) <= 1);
     assert.doesNotMatch(drawn.reply, /stacked vertically/i);
@@ -939,16 +951,20 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       currentXml: STARTER_XML,
     });
     const report = assertClean(drawn.updatedXml);
+    const boxes = content(report.nodes);
     assert.deepEqual(
-      report.nodes.map((node) => node.label),
+      boxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
     assert.deepEqual(
       report.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
-    assert.equal(new Set(report.nodes.map((node) => node.x)).size, 1);
-    const ys = report.nodes.map((node) => node.y);
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    const xs = boxes.map((node) => node.x);
+    assert.ok(Math.max(...xs) - Math.min(...xs) <= 16);
+    const ys = boxes.map((node) => node.y);
     assert.deepEqual(ys, [...ys].sort((a, b) => a - b));
     assert.ok(ys[1]! > ys[0]! && ys[2]! > ys[1]!);
     assert.match(drawn.reply, /stacked vertically/i);
@@ -983,12 +999,13 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     assert.equal(restyled.repaired, true);
     assert.deepEqual(geometrySignature(restyled.updatedXml), before);
     const after = assessDiagram(restyled.updatedXml);
+    const afterBoxes = content(after.nodes);
     assert.deepEqual(
-      after.nodes.map((node) => node.label),
+      afterBoxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
-    assert.ok(after.nodes.every((node) => node.style.includes("fillColor=#f8cecc")));
-    assert.ok(after.nodes.every((node) => node.style.includes("strokeColor=#b85450")));
+    assert.ok(afterBoxes.every((node) => node.style.includes("fillColor=#f8cecc")));
+    assert.ok(afterBoxes.every((node) => node.style.includes("strokeColor=#b85450")));
   });
 
   it("recolors every edge when a reading scopes arrows to the first shape", async () => {
@@ -1162,14 +1179,16 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     assert.doesNotMatch(drawn.reply, /Client → App → Postgres\./);
     const report = assertClean(drawn.updatedXml);
     assert.deepEqual(
-      report.nodes.map((node) => node.label),
+      content(report.nodes).map((node) => node.label),
       ["Client", "App", "Redis", "Postgres"],
     );
     assert.deepEqual(
       report.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Redis", "Redis->Postgres"],
     );
-    assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
+    assert.equal(new Set(content(report.nodes).map((node) => node.y)).size, 1);
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
     const redis = report.nodes.find((node) => node.label === "Redis");
     assert.match(redis?.style ?? "", /cylinder3/);
 
@@ -1186,7 +1205,7 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     assert.match(renamed.reply, /Renamed Redis to Cache/);
     const after = assertClean(renamed.updatedXml);
     assert.deepEqual(
-      after.nodes.map((node) => node.label),
+      content(after.nodes).map((node) => node.label),
       ["Client", "App", "Cache", "Postgres"],
     );
     assert.equal(after.nodes.some((node) => node.label === "Redis"), false);

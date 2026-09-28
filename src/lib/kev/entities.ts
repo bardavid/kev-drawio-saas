@@ -169,6 +169,7 @@ const CATALOG: CatalogEntry[] = [
   { id: "user", label: "User", role: "actor", shape: "actor", phrases: ["user"], listed: true },
   { id: "api", label: "API", role: "compute", phrases: ["api"], listed: true },
   { id: "app", label: "App", role: "compute", phrases: ["app"], listed: true },
+  { id: "application", label: "Application", role: "compute", phrases: ["application"], listed: true },
   { id: "database", label: "Database", role: "data", shape: "cylinder", phrases: ["database", "db"], listed: true },
   { id: "cache", label: "Cache", role: "data", shape: "cylinder", phrases: ["cache"], listed: true },
   { id: "queue", label: "Queue", role: "bus", shape: "queue", phrases: ["queue"], listed: true },
@@ -895,6 +896,28 @@ function looseNames(
   return found;
 }
 
+/** Role of one named tier in an architecture chain. Redis and a gateway stay in their topic group. */
+export function chainRole(label: string): EntityRole {
+  const text = label.toLowerCase();
+  if (/\b(redis|memcached|cache)\b/.test(text)) return "data";
+  if (/\b(browser|client|frontend|shopper)\b/.test(text)) return "client";
+  if (/\b(user|actor|customer|admin)\b/.test(text)) return "actor";
+  if (/\b(gateway|balancer|cdn|proxy|cloudfront)\b/.test(text)) return "edge";
+  return inferRole(label);
+}
+
+export function topicLabelFor(role: EntityRole): string {
+  return GROUP_LABEL[role];
+}
+
+/** Label on the edge between two named tiers. Same words the layered stacks use. */
+export function chainEdgeLabel(fromLabel: string, toLabel: string): string {
+  return linkLabel(
+    { role: chainRole(fromLabel), label: fromLabel } as NamedEntity,
+    { role: chainRole(toLabel), label: toLabel } as NamedEntity,
+  );
+}
+
 function inferRole(label: string): EntityRole {
   const text = label.toLowerCase();
   if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch)\b/.test(text)) return "data";
@@ -1131,14 +1154,43 @@ function salvageBigrams(
 }
 
 /**
- * Comma-separated steps after a process, workflow, or procedure.
+ * The clause that lists steps.
+ * A process, workflow, or procedure with a separator needs two steps.
+ * A flow, flowchart, or "listing" needs four, so a short aside is not a procedure.
+ */
+function processListBody(text: string): { body: string; minimum: number } | null {
+  const listing = text.match(/\blisting\b\s+/i);
+  if (
+    listing &&
+    listing.index !== undefined &&
+    /\b(?:flowchart|flow\s*chart|workflows?|process|procedure|pipelines?|flow)\b/i.test(text)
+  ) {
+    return { body: text.slice(listing.index + listing[0].length), minimum: 4 };
+  }
+  const strict = text.match(/\b(?:process|workflow|procedure)\b\s*[:,—–-]\s*/i);
+  if (strict && strict.index !== undefined) {
+    return { body: text.slice(strict.index + strict[0].length), minimum: 2 };
+  }
+  const headed = text.match(
+    /\b(?:flowchart|flow\s*chart|workflows?|process|procedure|pipelines?|flow)\b[^:]{0,80}:\s*/i,
+  );
+  if (headed && headed.index !== undefined) {
+    const strictCue = /\b(?:process|workflow|procedure)\b/i.test(headed[0]);
+    return { body: text.slice(headed.index + headed[0].length), minimum: strictCue ? 2 : 4 };
+  }
+  return null;
+}
+
+/**
+ * Comma-separated steps after a process, workflow, flow, or "listing".
  * A list that already names catalog services stays on that path.
+ * Four or more named steps stay one vertex each. "to" inside a step is not a chain break.
  */
 export function listedProcessSteps(message: string): string[] | null {
   const text = normalize(message);
-  const marker = text.match(/\b(?:process|workflow|procedure)\b\s*[:—–-]\s*/i);
-  if (!marker || marker.index === undefined) return null;
-  const body = text.slice(marker.index + marker[0].length);
+  const found = processListBody(text);
+  if (!found) return null;
+  const body = found.body;
   const parts = body
     .split(/\s*(?:,|;)\s*|\s+\bthen\b\s+/i)
     .map((part) => part.trim())
@@ -1157,7 +1209,7 @@ export function listedProcessSteps(message: string): string[] | null {
     if (rawWords.every((word) => rejectedToken(word.toLowerCase()) || ORDINARY.has(word.toLowerCase()))) continue;
     steps.push(rawWords.map((word) => displayToken(word)).join(" "));
   }
-  return steps.length >= 2 ? steps : null;
+  return steps.length >= found.minimum ? steps : null;
 }
 
 /** "Sql" or "Object storage" beside a real product of that role is the role, not another vertex. */

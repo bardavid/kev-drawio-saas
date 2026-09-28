@@ -84,11 +84,14 @@ describe("architecture plan", () => {
       assert.match(drawn.decision.reply, /Redis/, prompt);
       assert.doesNotMatch(drawn.decision.reply, /Client → App → Postgres\./, prompt);
       const summary = summarizeDiagram(drawn.xml);
+      const shapes = summary.vertices.filter((vertex) => !vertex.style.includes("drawai=cluster"));
       assert.deepEqual(
-        summary.vertices.map((vertex) => vertex.label),
+        shapes.map((vertex) => vertex.label),
         ["Client", "App", "Redis", "Postgres"],
         prompt,
       );
+      assert.ok(summary.vertices.some((vertex) => vertex.style.includes("drawai=cluster")), prompt);
+      assert.ok(summary.edges.every((edge) => edge.label.length > 0), prompt);
       assert.deepEqual(
         summary.edges.map((edge) => `${edge.from}->${edge.to}`),
         ["Client->App", "App->Redis", "Redis->Postgres"],
@@ -100,7 +103,9 @@ describe("architecture plan", () => {
     const renamed = previewDemo("rename Redis to Cache", drawn.xml);
     assert.equal(renamed.decision.intent, "edit_shape");
     assert.match(renamed.decision.reply, /Renamed Redis to Cache/);
-    const labelsAfter = summarizeDiagram(renamed.xml).vertices.map((vertex) => vertex.label);
+    const labelsAfter = summarizeDiagram(renamed.xml)
+      .vertices.filter((vertex) => !vertex.style.includes("drawai=cluster"))
+      .map((vertex) => vertex.label);
     assert.deepEqual(labelsAfter, ["Client", "App", "Cache", "Postgres"]);
     assert.deepEqual(
       summarizeDiagram(renamed.xml).edges.map((edge) => `${edge.from}->${edge.to}`),
@@ -134,12 +139,14 @@ describe("architecture plan", () => {
     assert.equal(decision.slots.layout, "horizontal");
     assert.notEqual(xml, STARTER_XML);
     const summary = summarizeDiagram(xml);
-    assert.ok(labels(xml).includes("App"));
+    const shapes = summary.vertices.filter((vertex) => !vertex.style.includes("drawai=cluster"));
+    assert.ok(shapes.some((vertex) => vertex.label === "App"));
     assert.ok(summary.edges.some((edge) => edge.from === "Client" && edge.to === "App"));
     assert.ok(summary.edges.some((edge) => edge.from === "App" && edge.to === "Postgres"));
-    assert.ok(summary.vertices.every((vertex) => vertex.style.includes("fillColor=#ffe6cc")));
-    assert.equal(new Set(summary.vertices.map((vertex) => vertex.y)).size, 1);
-    const byLabel = new Map(summary.vertices.map((vertex) => [vertex.label, vertex.x]));
+    assert.ok(summary.edges.every((edge) => edge.label.length > 0));
+    assert.ok(summary.vertices.some((vertex) => vertex.style.includes("drawai=cluster")));
+    assert.ok(shapes.every((vertex) => vertex.style.includes("fillColor=#ffe6cc")));
+    const byLabel = new Map(shapes.map((vertex) => [vertex.label, vertex.x]));
     assert.ok((byLabel.get("Client") ?? 0) < (byLabel.get("App") ?? 0));
     assert.ok((byLabel.get("App") ?? 0) < (byLabel.get("Postgres") ?? 0));
   });
@@ -155,14 +162,17 @@ describe("architecture plan", () => {
   it("creates client, app, and a postgres cylinder on an empty diagram", () => {
     const xml = previewDemo("draw a 3 tier web app", EMPTY_XML).xml;
     const summary = summarizeDiagram(xml);
+    const shapes = summary.vertices.filter((vertex) => !vertex.style.includes("drawai=cluster"));
     assert.deepEqual(
-      summary.vertices.map((vertex) => vertex.label),
+      shapes.map((vertex) => vertex.label),
       ["Client", "App", "Postgres"],
     );
     assert.deepEqual(
       summary.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
+    assert.ok(summary.edges.every((edge) => edge.label.length > 0));
+    assert.ok(summary.vertices.some((vertex) => vertex.style.includes("drawai=cluster")));
     const postgres = summary.vertices.find((vertex) => vertex.label === "Postgres");
     assert.match(postgres?.style ?? "", /cylinder3/);
   });

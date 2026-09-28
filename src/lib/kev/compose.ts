@@ -1,4 +1,4 @@
-import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
+import { PALETTE, SHAPE_STYLE, applyColors, inferShape, type ShapeKind } from "@/lib/drawio/styles";
 import {
   cellLabel,
   diagramIsBlank,
@@ -13,8 +13,26 @@ import {
   openDiagram,
   serializeDiagram,
 } from "@/lib/drawio/xml";
-import { composeNamedDiagram, extractNamedEntities, listedProcessSteps } from "@/lib/kev/entities";
-import { isBetweenEdit, isRenameEdit, layoutDefault, parseArchitecture, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
+import {
+  chainEdgeLabel,
+  chainRole,
+  composeNamedDiagram,
+  extractNamedEntities,
+  listedProcessSteps,
+  rolePaint,
+  topicLabelFor,
+} from "@/lib/kev/entities";
+import {
+  architectureDecision,
+  isBetweenEdit,
+  isRenameEdit,
+  layoutDefault,
+  operationsForPlan,
+  parseArchitecture,
+  requestedLayout,
+  resolvePlan,
+  withPalette,
+} from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
@@ -127,6 +145,11 @@ export interface LayerSpec {
   groups: LayerGroup[];
   edges: LayerEdge[];
   enclosure?: LayerEnclosure;
+  /**
+   * `horizontal` places topic groups left to right.
+   * Omitted groups stay stacked top to bottom.
+   */
+  axis?: "horizontal" | "vertical";
 }
 
 export type CompositionSpec = SequenceSpec | WorkflowSpec | LayerSpec;
@@ -424,6 +447,76 @@ function compositionFromNamed(text: string): Composition | null {
     `The user named ${listed}. Draw each one.`,
     true,
   );
+}
+
+/**
+ * A blank-canvas architecture chain: one topic group per named tier, pastel fills,
+ * and a label on every edge. A named color still replaces the pastel. A process
+ * list of four or more steps is not an architecture chain.
+ */
+export function blankArchitectureVisual(message: string): Composition | null {
+  const steps = listedProcessSteps(message);
+  if (steps && steps.length >= 4) return null;
+  const plan = parseArchitecture(message);
+  if (!plan || plan.nodes.length < 2) return null;
+  const perRole = new Map<ReturnType<typeof chainRole>, number>();
+  const nodes = plan.nodes.map((label, index) => {
+    const role = chainRole(label);
+    const nth = perRole.get(role) ?? 0;
+    perRole.set(role, nth + 1);
+    const paint = rolePaint(role, nth);
+    return {
+      id: `tier-${index + 1}`,
+      label,
+      shape: inferShape(label),
+      fill: paint.fill,
+      stroke: paint.stroke,
+      group: topicLabelFor(role),
+    };
+  });
+  const horizontal = plan.layout !== "vertical";
+  const spec: LayerSpec = {
+    kind: "layers",
+    title: plan.title ?? "Architecture",
+    reply: plan.nodes.join(" → "),
+    axis: horizontal ? "horizontal" : "vertical",
+    groups: nodes.map((node) => ({
+      id: `group-${node.id}`,
+      label: node.group,
+      flow: "column" as const,
+      nodes: [{ id: node.id, label: node.label, shape: node.shape, fill: node.fill, stroke: node.stroke }],
+    })),
+    edges: nodes.slice(1).map((node, index) => ({
+      from: nodes[index]?.id ?? node.id,
+      to: node.id,
+      label: chainEdgeLabel(nodes[index]?.label ?? node.label, node.label),
+    })),
+  };
+  return {
+    spec,
+    colorName: plan.colorName,
+    context: null,
+    researchQuery: null,
+    layout: horizontal ? "horizontal" : "vertical",
+    grounded: true,
+  };
+}
+
+/**
+ * Blank-canvas architecture uses the visual bar. A page that already has shapes
+ * keeps the edit planner.
+ */
+export function renderBlankArchitecture(
+  message: string,
+  xml: string,
+): { decision: KevDecision; xml: string } | null {
+  if (!diagramIsBlank(xml)) return null;
+  const visual = blankArchitectureVisual(message);
+  const plan = resolvePlan(message);
+  if (!visual || !plan) return null;
+  const operations = operationsForPlan(plan, xml);
+  if (operations.length === 0) return null;
+  return { decision: architectureDecision(plan, operations), xml: renderComposition(visual) };
 }
 
 /**
@@ -1103,8 +1196,156 @@ function link(source: Placed, target: Placed, edge: FlowEdge): DrawnEdge {
 }
 
 function drawLayers(spec: LayerSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
+  if (spec.axis === "horizontal") return drawHorizontalBands(spec, paint, force);
+  if (spec.axis === "vertical") return drawVerticalBands(spec, paint, force);
   if (spec.groups.some((group) => group.flow === "row" && group.nodes.length > 1)) return drawRowLayers(spec, paint, force);
   return drawStackedLayers(spec, paint, force);
+}
+
+const BAND_HEADER = 34;
+const BAND_PAD_X = 18;
+const BAND_PAD_Y = 16;
+const BAND_GAP = 64;
+
+function clusterStyle(header: number): string {
+  return (
+    `swimlane;whiteSpace=wrap;html=1;startSize=${header};rounded=1;arcSize=8;` +
+    `fillColor=${CLUSTER_HEADER};swimlaneFillColor=${CLUSTER_BODY};strokeColor=${CLUSTER_STROKE};` +
+    `fontColor=#475569;fontSize=12;fontStyle=1;fontFamily=Helvetica;drawai=cluster;`
+  );
+}
+
+/** Topic groups in a row. Edges run through the gap, so a taller tier does not cross its neighbor. */
+function drawHorizontalBands(spec: LayerSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
+  const measured = spec.groups.map((group) => {
+    const sizes = group.nodes.map((node) => sizeFor(node.shape));
+    const stackH = sizes.reduce((sum, size) => sum + size.height, 0) + 20 * Math.max(0, sizes.length - 1);
+    const innerW = Math.max(...sizes.map((size) => size.width), 150);
+    return {
+      sizes,
+      stackH,
+      width: BAND_PAD_X * 2 + innerW,
+      height: BAND_HEADER + BAND_PAD_Y * 2 + stackH,
+    };
+  });
+  const rowH = Math.max(...measured.map((band) => band.height), BAND_HEADER + BAND_PAD_Y * 2);
+  const nodes: Placed[] = [];
+  const midY = new Map<string, number>();
+  let cursor = 80;
+  spec.groups.forEach((group, index) => {
+    const band = measured[index];
+    if (!band) return;
+    nodes.push({
+      id: group.id,
+      label: group.label,
+      x: cursor,
+      y: 72,
+      width: band.width,
+      height: rowH,
+      style: clusterStyle(BAND_HEADER),
+    });
+    const contentTop = 72 + BAND_HEADER + BAND_PAD_Y;
+    let nodeY = contentTop;
+    group.nodes.forEach((node, nodeIndex) => {
+      const size = band.sizes[nodeIndex] ?? sizeFor(node.shape);
+      const nodeX = cursor + (band.width - size.width) / 2;
+      nodes.push(placedNode(node, nodeX, nodeY, size, paint, force));
+      midY.set(node.id, nodeY + size.height / 2);
+      nodeY += size.height + 20;
+    });
+    cursor += band.width + BAND_GAP;
+  });
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edges: DrawnEdge[] = spec.edges.map((edge) => {
+    const source = byId.get(edge.from);
+    const target = byId.get(edge.to);
+    if (!source || !target) {
+      return { from: edge.from, to: edge.to, label: edge.label, points: [], style: edgeStyle() };
+    }
+    const sourceMid = midY.get(edge.from) ?? source.y + source.height / 2;
+    const targetMid = midY.get(edge.to) ?? target.y + target.height / 2;
+    const exitY = Math.min(0.85, Math.max(0.15, (sourceMid - source.y) / source.height));
+    const entryY = Math.min(0.85, Math.max(0.15, (targetMid - target.y) / target.height));
+    const points =
+      Math.abs(sourceMid - targetMid) < 1
+        ? []
+        : [
+            { x: Math.round((source.x + source.width + target.x) / 2), y: Math.round(sourceMid) },
+            { x: Math.round((source.x + source.width + target.x) / 2), y: Math.round(targetMid) },
+          ];
+    return {
+      from: source.id,
+      to: target.id,
+      label: edge.label,
+      points,
+      style: edgeStyle() + `exitX=1;exitY=${exitY.toFixed(3)};entryX=0;entryY=${entryY.toFixed(3)};drawai=routed;`,
+    };
+  });
+  return { nodes, edges };
+}
+
+/** Topic groups in a column. Content nodes share an x so a repeat draw does not reflow them. */
+function drawVerticalBands(spec: LayerSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
+  const gap = 56;
+  const left = 80;
+  const measured = spec.groups.map((group) => {
+    const sizes = group.nodes.map((node) => sizeFor(node.shape));
+    const stackH = sizes.reduce((sum, size) => sum + size.height, 0) + 20 * Math.max(0, sizes.length - 1);
+    const innerW = Math.max(...sizes.map((size) => size.width), 150);
+    return { sizes, stackH, innerW, height: BAND_HEADER + BAND_PAD_Y * 2 + stackH };
+  });
+  const innerW = Math.max(...measured.map((band) => band.innerW), 150);
+  const clusterW = BAND_PAD_X * 2 + innerW;
+  const nodes: Placed[] = [];
+  let cursor = 48;
+  spec.groups.forEach((group, index) => {
+    const band = measured[index];
+    if (!band) return;
+    nodes.push({
+      id: group.id,
+      label: group.label,
+      x: left,
+      y: cursor,
+      width: clusterW,
+      height: band.height,
+      style: clusterStyle(BAND_HEADER),
+    });
+    let nodeY = cursor + BAND_HEADER + BAND_PAD_Y;
+    group.nodes.forEach((node, nodeIndex) => {
+      const size = band.sizes[nodeIndex] ?? sizeFor(node.shape);
+      nodes.push(placedNode(node, left + BAND_PAD_X, nodeY, size, paint, force));
+      nodeY += size.height + 20;
+    });
+    cursor += band.height + gap;
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edges: DrawnEdge[] = spec.edges.map((edge) => {
+    const source = byId.get(edge.from);
+    const target = byId.get(edge.to);
+    if (!source || !target) {
+      return { from: edge.from, to: edge.to, label: edge.label, points: [], style: edgeStyle() };
+    }
+    const sourceCx = source.x + source.width / 2;
+    const targetCx = target.x + target.width / 2;
+    const exitX = Math.min(0.85, Math.max(0.15, (sourceCx - source.x) / source.width));
+    const entryX = Math.min(0.85, Math.max(0.15, (targetCx - target.x) / target.width));
+    const points =
+      Math.abs(sourceCx - targetCx) < 1
+        ? []
+        : [
+            { x: Math.round(sourceCx), y: Math.round((source.y + source.height + target.y) / 2) },
+            { x: Math.round(targetCx), y: Math.round((source.y + source.height + target.y) / 2) },
+          ];
+    return {
+      from: source.id,
+      to: target.id,
+      label: edge.label,
+      points,
+      style: edgeStyle() + `exitX=${exitX.toFixed(3)};exitY=1;entryX=${entryX.toFixed(3)};entryY=0;drawai=routed;`,
+    };
+  });
+  return { nodes, edges };
 }
 
 /** Equal slots so a single node lines up with the middle of an odd row. */
