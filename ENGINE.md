@@ -30,6 +30,8 @@ Provider and model names (`kev-latest`, `jev-latest`, and similar) stay off the 
 
 12. **One draw at a time.** While a request is in flight the diagram does not accept edits, and another draw cannot be sent, until that request finishes.
 
+13. **Refresh keeps this browser's session.** The chat transcript and the open diagram are stored in localStorage on this device. Reloading the page shows them again. Trash clears that saved session along with the screen. Another browser does not see it.
+
 ## Already true in the host
 
 - The embedded editor opens on an empty mxfile (`STARTER_XML` is blank).
