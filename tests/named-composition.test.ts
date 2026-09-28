@@ -1175,6 +1175,102 @@ describe("named composition", () => {
     assertPastel(content(report.nodes), prompt);
   });
 
+  it("keeps every named actor on a hop, message-flow, or handoff, including whoever starts it", async () => {
+    const prompts = [
+      {
+        text: "Warehouse intake hop: Dock Clerk asks Customs Officer for a Manifest; afterward Carrier Agent loads the crate",
+        actors: ["Dock Clerk", "Customs Officer", "Carrier Agent"],
+        payload: "Manifest",
+        absent: ["Warehouse", "Intake", "Hop", "Crate", "Clerk", "Officer"],
+      },
+      {
+        text: "Message flow: Front Desk asks Gate Checker for a Pass; afterward Escort Worker opens the door",
+        actors: ["Front Desk", "Gate Checker", "Escort Worker"],
+        payload: "Pass",
+        absent: ["Message", "Flow", "Door", "Desk", "Checker"],
+      },
+      {
+        text: "Parcel choreography: Dispatch Desk asks Route Checker for a Ticket; afterward Courier Worker delivers the parcel",
+        actors: ["Dispatch Desk", "Route Checker", "Courier Worker"],
+        payload: "Ticket",
+        absent: ["Parcel", "Choreography", "Checker", "Desk"],
+      },
+      {
+        text: "Shift handoff: Billing Desk asks Fraud Checker for a Permit; afterward Ledger Worker posts the entry",
+        actors: ["Billing Desk", "Fraud Checker", "Ledger Worker"],
+        payload: "Permit",
+        absent: ["Shift", "Handoff", "Entry", "Desk"],
+      },
+      {
+        text: "Booking hop. Front Office asks Rate Checker for a Quote. Later Housekeeping Crew prepares the room.",
+        actors: ["Front Office", "Rate Checker", "Housekeeping Crew"],
+        payload: "Quote",
+        absent: ["Booking", "Hop", "Later", "Room", "Later Housekeeping Crew"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      for (const name of [...prompt.actors, prompt.payload]) {
+        assert.ok(labels.includes(name), `${prompt.text} → ${labels.join(", ")} missing ${name}`);
+      }
+      for (const stolen of prompt.absent) {
+        assert.equal(labels.includes(stolen), false, `${prompt.text} stole ${stolen} (${labels.join(", ")})`);
+      }
+      assert.equal(labels[0], prompt.actors[0], `${prompt.text} dropped the actor who starts the exchange`);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.match(drawn.decision.reply, /Drew a sequence with/, prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /Drew Architecture/);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+      assert.doesNotMatch(drawn.decision.reply, /Which nodes should I draw/);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      assert.deepEqual(drawnLabels, labels, prompt.text);
+      assert.ok(content(report.nodes).every((node) => node.style.includes("umlLifeline")), prompt.text);
+      assert.ok(report.edges.length >= 2, prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt.text);
+      assert.ok(
+        report.edges.some((edge) => edge.from === prompt.actors[0] && edge.to === prompt.actors[1]),
+        `${prompt.text} ${report.edges.map((edge) => `${edge.from}->${edge.to}:${edge.label}`).join(", ")}`,
+      );
+      assert.ok(
+        report.edges.some((edge) => edge.from === prompt.actors[2] || edge.to === prompt.actors[2]),
+        prompt.text,
+      );
+      assertPastel(content(report.nodes), prompt.text);
+    }
+
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async () => {
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "clarify", confidence: 0.22 },
+          needs_xml_edit: { type: "noul", noul: 0.12 },
+          color: { type: "choice", choice: "none" },
+          shape: { type: "choice", choice: "none" },
+          layout: { type: "choice", choice: "none" },
+          anchor: { type: "choice", choice: "none" },
+          next: { type: "choice", choice: "clarify", confidence: 0.2 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+
+    const prompted = prompts[0]!;
+    const kev = await runKevTurn({
+      messages: [{ role: "user", content: prompted.text }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(kev.intent, "add_shape");
+    assert.doesNotMatch(kev.reply, /What should the new shape be called/);
+    assert.doesNotMatch(kev.reply, /Which nodes should I draw/);
+    const kevLabels = content(assertClean(kev.updatedXml).nodes).map((node) => node.label);
+    for (const name of [...prompted.actors, prompted.payload]) {
+      assert.ok(kevLabels.includes(name), kevLabels.join(", "));
+    }
+  });
+
   it("connects ordered pipeline stages so a connector tint can restyle the stroke", () => {
     const prompt = "Buildkite sketch: Bundle the artifact first, then Promote onto Fly.io";
     const drawn = previewDemo(prompt, STARTER_XML);

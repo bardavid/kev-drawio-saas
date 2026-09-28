@@ -211,6 +211,7 @@ const CUE = new Set([
   "architecture", "architectures", "stack", "stacks", "path", "paths", "diagram", "diagrams",
   "sequence", "sequences", "flow", "flowchart", "pipeline", "system", "systems", "edge",
   "choreography", "choreograph", "choreographed",
+  "hop", "hops", "handoff", "handoffs", "message-flow",
   "messaging", "payment", "payments", "simple", "basic", "blank", "canvas", "using", "include",
   "including", "with", "via", "then", "and", "plus", "front", "ahead", "behind", "underneath",
   "above", "below", "fan", "out", "through", "into", "onto", "from", "for", "the", "a", "an",
@@ -410,6 +411,11 @@ const HARD_CUE = new Set([
   "layout",
   "choreography",
   "choreograph",
+  "hop",
+  "hops",
+  "handoff",
+  "handoffs",
+  "message-flow",
 ]);
 
 /**
@@ -1071,8 +1077,12 @@ interface Compound {
   rawWords: string[];
 }
 
-/** Consecutive capitalized words are one product token. "App Platform", "Managed Redis". */
-function compoundsIn(text: string): Compound[] {
+/**
+ * Consecutive capitalized words are one product token. "App Platform", "Managed Redis".
+ * In a message exchange, a cue or gloss at the front ("Front Desk", "Route Checker")
+ * is still the participant. Outside an exchange those heads stay closed.
+ */
+function compoundsIn(text: string, keepClosedHeads = false): Compound[] {
   const found: Compound[] = [];
   const pattern = /\b[A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)+\b/g;
   for (const match of text.matchAll(pattern)) {
@@ -1082,7 +1092,13 @@ function compoundsIn(text: string): Compound[] {
     let cursor = 0;
     // "Draw Fly" is a verb plus a name. "Diagram Heroku Dyno" keeps the product after the verb.
     // Other cue heads ("Tier Web App") still drop the whole span.
-    while (words.length >= 2 && /^(?:please|draw|sketch|diagram|show|illustrate|map|build|create|architect|outline)$/.test(words[0] ?? "")) {
+    // "Later Housekeeping Crew" — the sentence adverb is not part of the name.
+    while (
+      words.length >= 2 &&
+      /^(?:please|draw|sketch|diagram|show|illustrate|map|build|create|architect|outline|later|afterward|afterwards|then)$/.test(
+        words[0] ?? "",
+      )
+    ) {
       const word = rawWords[0] ?? "";
       const at = full.indexOf(word, cursor);
       cursor = at + word.length;
@@ -1093,10 +1109,18 @@ function compoundsIn(text: string): Compound[] {
     if (words.length < 2) continue;
     const head = words[0] ?? "";
     // "App Platform" keeps the role word that is part of the product.
-    if ((CUE.has(head) || HARD_CUE.has(head) || ORDINARY.has(head)) && !ROLE_WORDS.has(head) && !MODIFIER.has(head)) {
+    // A closed head is a cue or an ordinary word ("Front Desk", "Route Checker").
+    // An exchange still names that participant. A diagram title ("Login Sequence") does not.
+    const closedHead =
+      (CUE.has(head) || HARD_CUE.has(head) || ORDINARY.has(head)) && !ROLE_WORDS.has(head) && !MODIFIER.has(head);
+    if (closedHead && !keepClosedHeads) continue;
+    if (
+      words.every(
+        (word) => ORDINARY.has(word) || DIAGRAM_KIND.has(word) || (rejectedToken(word) && !ROLE_WORDS.has(word)),
+      )
+    ) {
       continue;
     }
-    if (words.every((word) => ORDINARY.has(word) || (rejectedToken(word) && !ROLE_WORDS.has(word)))) continue;
     const start = (match.index ?? 0) + cursor;
     found.push({
       start,
@@ -1287,6 +1311,20 @@ export function isClauseVerb(word: string): boolean {
 }
 
 /**
+ * Predicates of a message exchange. Inflected forms share one list with the
+ * clause splitter. A gloss or cue head ("Returns Desk", "Front Desk") stays a
+ * name when the next word is one of these.
+ */
+const MESSAGE_VERB_BODY =
+  "requests?|sends?|checks?|calls?|asks?|verifies?|validates?|returns?|replies|invokes?|queries?|notifies?|issues?|authenticates?|posts?|talks?|speaks?|credits?|opens?|delivers?|loads?|packs?|greets?|confirms?|approves?|prepares?|rejects?";
+
+const MESSAGE_VERB = new RegExp(`\\b(${MESSAGE_VERB_BODY})\\b`, "i");
+
+function isMessagePredicate(word: string): boolean {
+  return new RegExp(`^(?:${MESSAGE_VERB_BODY})$`, "i").test(word);
+}
+
+/**
  * Another content word still belongs to this noun phrase.
  * A following verb ("hosts", "leaves") or a preposition ends the name.
  */
@@ -1302,6 +1340,8 @@ function continuesNounPhrase(text: string, end: number): boolean {
   if (/^(?:and|or|with|for|to|of|in|on|via|using|then|its|their|his|her|a|an|the|as|by|at|into|onto)$/.test(token)) {
     return false;
   }
+  // The next word is the predicate ("asks"), not another word of the name.
+  if (isMessagePredicate(token)) return false;
   return true;
 }
 
@@ -1430,6 +1470,11 @@ const DIAGRAM_KIND = new Set([
   "workflow",
   "process",
   "journey",
+  "hop",
+  "hops",
+  "handoff",
+  "handoffs",
+  "message-flow",
 ]);
 
 function leadingImperative(label: string, text: string): boolean {
@@ -2047,9 +2092,10 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   }
 
     if (!steps) for (const segment of segmentsOf(text)) {
+    if (isDiagramHeading(segment.text)) continue;
     const overlapping = spans.filter((span) => span.start < segment.end && segment.start < span.end);
     const blocked = new Set<string>();
-    for (const local of compoundsIn(segment.text)) {
+    for (const local of compoundsIn(segment.text, isMessageExchange(text))) {
       // "Distributed Message delivery" is the start of a longer noun, not a box.
       // "App Platform hosts" ends at the verb, so the product stays.
       const head = local.words[0] ?? "";
@@ -2187,8 +2233,24 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     }
   }
 
-  const kept = applyStackTiers(text, dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts)));
+  const stacked = applyStackTiers(text, dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts)));
+  const kept = isMessageExchange(text) ? dropEmbeddedFragments(stacked) : stacked;
   return entitiesFromDrafts(kept);
+}
+
+/**
+ * "Checker" beside "Route Checker" is the same participant.
+ * Only an exchange does this. An architecture may name both API and API Gateway.
+ */
+function dropEmbeddedFragments(drafts: Draft[]): Draft[] {
+  return drafts.filter((draft) => {
+    if (/\s/.test(draft.label)) return true;
+    const key = draft.label.toLowerCase();
+    return !drafts.some((other) => {
+      if (other === draft || !/\s/.test(other.label)) return false;
+      return other.label.toLowerCase().split(/\s+/).includes(key);
+    });
+  });
 }
 
 function linkLabel(from: NamedEntity, to: NamedEntity): string {
@@ -2291,7 +2353,7 @@ function topicTitle(text: string): string | null {
   if (/\bstripe\b/i.test(text)) return "Stripe";
   if (/\b(gcp|google cloud)\b/i.test(text)) return "GCP";
   if (/\bmicroservice/i.test(text)) return "Microservices";
-  if (/\bsequence\b/i.test(text)) return "Sequence";
+  if (/\b(?:sequences?|choreograph\w*|message[-\s]?flows?|handoffs?|hops?)\b/i.test(text)) return "Sequence";
   const heading = text.match(/^(.*?)\b(?:process|workflow|procedure|journey|path|flow)\b/i);
   if (heading?.[1]) {
     const words = (heading[1].match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter((word) => {
@@ -2303,20 +2365,45 @@ function topicTitle(text: string): string | null {
   return null;
 }
 
-const MESSAGE_VERB =
-  /\b(requests?|sends?|checks?|calls?|asks?|verifies?|validates?|returns?|replies|invokes?|queries?|notifies?|issues?|authenticates?|posts?|talks?|speaks?)\b/i;
-
 const CHECK_VERB = /^(?:checks?|verifies?|validates?|authenticates?)$/i;
 
-/** Sign-in, login, choreography, or sequence language plus a message verb. */
-function isExchange(text: string): boolean {
-  const kind = /\b(?:sequence|choreograph\w*|sign[\s-]?in|log[\s-]?in)\b/i.test(text);
-  return kind && MESSAGE_VERB.test(text);
+const EXCHANGE_KIND =
+  /\b(?:sequences?|choreograph\w*|sign[\s-]?ins?|log[\s-]?ins?|message[-\s]?flows?|handoffs?|hops?)\b/i;
+
+/** Hop, message-flow, handoff, and choreography are message diagrams even before a verb is spelled out. */
+const EXCHANGE_SHAPE = /\b(?:choreograph\w*|message[-\s]?flows?|handoffs?|hops?)\b/i;
+
+/**
+ * A sequence, sign-in, choreography, hop, handoff, or message-flow.
+ * Sequence and sign-in still need a message verb. Hop and the other shapes do not.
+ */
+export function isMessageExchange(text: string): boolean {
+  if (!EXCHANGE_KIND.test(text)) return false;
+  return EXCHANGE_SHAPE.test(text) || MESSAGE_VERB.test(text);
 }
 
-function nodesInClause(clause: string, nodes: NamedEntity[]): NamedEntity[] {
+/**
+ * A short title clause: "Warehouse intake hop", "Message flow", "Login sequence".
+ * Names in that clause are the topic. Actors are the participants after it.
+ * A clause that already contains a message verb is the exchange itself.
+ */
+function isDiagramHeading(segment: string): boolean {
+  const text = segment.trim().replace(/[.!?]+$/g, "");
+  if (!text || text.length > 96 || MESSAGE_VERB.test(text)) return false;
+  return /^(?:[A-Za-z][\w'-]*\s+){0,8}(?:sequences?|choreograph\w*|message[-\s]?flows?|handoffs?|hops?|sign[\s-]?ins?|log[\s-]?ins?)$/i.test(
+    text,
+  );
+}
+
+interface ClauseHit {
+  node: NamedEntity;
+  at: number;
+  end: number;
+}
+
+function clauseHits(clause: string, nodes: NamedEntity[]): ClauseHit[] {
   const hay = clause.toLowerCase();
-  const hits: Array<{ node: NamedEntity; at: number; end: number }> = [];
+  const hits: ClauseHit[] = [];
   for (const node of nodes) {
     const needle = node.label.toLowerCase();
     let from = 0;
@@ -2331,12 +2418,19 @@ function nodesInClause(clause: string, nodes: NamedEntity[]): NamedEntity[] {
     }
   }
   hits.sort((left, right) => left.at - right.at || right.end - right.at - (left.end - left.at));
-  const kept: Array<{ node: NamedEntity; at: number; end: number }> = [];
+  const kept: ClauseHit[] = [];
   for (const hit of hits) {
     if (kept.some((other) => other.at <= hit.at && other.end >= hit.end && other.end - other.at > hit.end - hit.at)) continue;
     kept.push(hit);
   }
-  return kept.map((hit) => hit.node);
+  return kept;
+}
+
+/** A lowercase predicate. A capitalized token inside a name is not the verb. */
+function predicateIn(clause: string): RegExpMatchArray | null {
+  const matches = [...clause.matchAll(new RegExp(MESSAGE_VERB.source, "gi"))];
+  if (matches.length === 0) return null;
+  return matches.find((match) => /^[a-z]/.test(match[0])) ?? matches[matches.length - 1] ?? null;
 }
 
 function verbStem(verb: string): string {
@@ -2376,6 +2470,20 @@ function messageObject(clause: string, verb: RegExpMatchArray, mentioned: NamedE
   return words.map((word) => displayToken(word)).join(" ");
 }
 
+/** "asks Y for an RMA" — the name after for/about is the payload when the direct object is the actor. */
+function namedPayload(clause: string, verb: RegExpMatchArray): string | null {
+  const after = clause.slice((verb.index ?? 0) + verb[0].length);
+  const match = after.match(
+    /\b(?:for|about)\s+(?:(?:a|an|the)\s+)?([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)?|[A-Z]{2,})\b/,
+  );
+  const raw = match?.[1];
+  if (!raw) return null;
+  return raw
+    .split(/\s+/)
+    .map((word) => displayToken(word))
+    .join(" ");
+}
+
 /** One message per clause that names an actor and a verb. A lone check lands on the previous actor. */
 function exchangeMessages(text: string, nodes: NamedEntity[]): Array<{ from: string; to: string; label: string }> {
   const clauses = text
@@ -2385,19 +2493,27 @@ function exchangeMessages(text: string, nodes: NamedEntity[]): Array<{ from: str
   const messages: Array<{ from: string; to: string; label: string }> = [];
   let previous: NamedEntity | null = null;
   for (const clause of clauses) {
-    const mentioned = nodesInClause(clause, nodes);
-    const verb = clause.match(MESSAGE_VERB);
+    const hits = clauseHits(clause, nodes);
+    const mentioned = hits.map((hit) => hit.node);
+    const verb = predicateIn(clause);
     if (mentioned.length === 0) continue;
     if (!verb) {
       previous = mentioned[mentioned.length - 1] ?? previous;
       continue;
     }
-    const label = messageObject(clause, verb, mentioned);
+    const direct = messageObject(clause, verb, mentioned);
+    const payload = namedPayload(clause, verb);
+    const label = direct === verbStem(verb[1] ?? verb[0]) && payload ? payload : direct;
     if (mentioned.length >= 2) {
-      const from = mentioned[0];
-      const to = mentioned[mentioned.length - 1];
+      const verbAt = verb.index ?? 0;
+      const verbEnd = verbAt + verb[0].length;
+      const before = hits.filter((hit) => hit.end <= verbAt);
+      const after = hits.filter((hit) => hit.at >= verbEnd);
+      // "X asks Y for Z" addresses Y. Z stays a node. The last name is not always the addressee.
+      const from = (before.length > 0 ? before[before.length - 1] : hits[0])?.node;
+      const to = (after.length > 0 ? after[0] : hits[hits.length - 1])?.node;
       if (from && to && from.id !== to.id) messages.push({ from: from.id, to: to.id, label });
-      previous = to ?? previous;
+      previous = to ?? from ?? previous;
       continue;
     }
     const only = mentioned[0];
@@ -2436,7 +2552,7 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
   const text = normalize(message);
   const nodes = entities ?? extractNamedEntities(text);
   if (nodes.length < 2) return null;
-  const sequence = /\bsequence\b/i.test(text) || isExchange(text);
+  const sequence = /\bsequence\b/i.test(text) || isMessageExchange(text);
   const stackLabels = sequence ? null : stackTiers(text)?.map((tier) => tier.label) ?? null;
   const stacked =
     stackLabels !== null &&
