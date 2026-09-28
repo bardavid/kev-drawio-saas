@@ -164,6 +164,33 @@ const CATALOG: CatalogEntry[] = [
     shape: "cloud",
     phrases: ["object storage", "object store", "blobs", "blob", "objects"],
   },
+  {
+    id: "spa",
+    label: "SPA",
+    role: "client",
+    phrases: ["single page application", "single-page application", "single page app", "single-page app", "spa"],
+  },
+  {
+    id: "ui",
+    label: "UI",
+    role: "client",
+    phrases: ["user interface", "ui"],
+    // "SPA for the UI" names the SPA. The purpose gloss is not a second tier.
+    when: (text) => !/\bfor\s+(?:the\s+)?(?:ui|user interface)\b/i.test(text),
+  },
+  {
+    id: "app-servers",
+    label: "Application servers",
+    role: "compute",
+    phrases: ["application servers", "application server", "app servers", "app server"],
+  },
+  {
+    id: "business-logic",
+    label: "Business logic",
+    role: "compute",
+    phrases: ["business logic"],
+    when: (text) => !/\bfor\s+(?:the\s+)?business logic\b/i.test(text),
+  },
   { id: "browser", label: "Browser", role: "client", phrases: ["browser"], listed: true },
   { id: "client", label: "Client", role: "client", phrases: ["client"], listed: true },
   { id: "user", label: "User", role: "actor", shape: "actor", phrases: ["user"], listed: true },
@@ -183,6 +210,7 @@ const CUE = new Set([
   "please", "draw", "sketch", "show", "illustrate", "map", "build", "create", "architect",
   "architecture", "architectures", "stack", "stacks", "path", "paths", "diagram", "diagrams",
   "sequence", "sequences", "flow", "flowchart", "pipeline", "system", "systems", "edge",
+  "choreography", "choreograph", "choreographed",
   "messaging", "payment", "payments", "simple", "basic", "blank", "canvas", "using", "include",
   "including", "with", "via", "then", "and", "plus", "front", "ahead", "behind", "underneath",
   "above", "below", "fan", "out", "through", "into", "onto", "from", "for", "the", "a", "an",
@@ -380,6 +408,8 @@ const HARD_CUE = new Set([
   "draw",
   "sketch",
   "layout",
+  "choreography",
+  "choreograph",
 ]);
 
 /**
@@ -1121,6 +1151,10 @@ function salvageBigrams(
     const right = second[0].toLowerCase();
     if (blocked.has(left) || blocked.has(right)) continue;
     if (ORDINARY.has(left) || ORDINARY.has(right) || NAME_FILLER.has(right)) continue;
+    // "app requests" is a verb, not a product. "app platform" still joins.
+    if (/^(?:requests?|sends?|checks?|calls?|asks?|verifies?|validates?|talks?|speaks?|runs?|holds?|keeps?|stores?)$/.test(right)) {
+      continue;
+    }
     if (MODIFIERS.has(left) || /^(?:a|an|the)$/.test(left)) continue;
     // "managed redis" keeps the product. "app platform" keeps the cue that would be stripped.
     // "web app" and "redis cache" are two role words and stay on the catalog path.
@@ -1153,17 +1187,68 @@ function salvageBigrams(
   return drafts;
 }
 
+/** A drawing verb at the start of the request is not a tier. "Outline a stack" is not a node named Outline. */
+const DRAWING_VERBS = new Set(["outline", "outlining", "outlined", "depict", "depicting", "chart", "trace", "render", "rendering"]);
+
+const DIAGRAM_KIND = new Set([
+  "sequence",
+  "choreography",
+  "choreograph",
+  "signin",
+  "sign-in",
+  "login",
+  "log-in",
+  "flow",
+  "flowchart",
+  "diagram",
+  "sketch",
+  "path",
+  "stack",
+  "pipeline",
+  "architecture",
+  "layout",
+  "workflow",
+  "process",
+  "journey",
+]);
+
+function leadingImperative(label: string, text: string): boolean {
+  if (label.includes(" ")) return false;
+  const word = label.toLowerCase();
+  if (!DRAWING_VERBS.has(word)) return false;
+  const hay = text.toLowerCase();
+  const at = hay.indexOf(word);
+  if (at < 0) return false;
+  const before = hay.slice(0, at).trim();
+  if (before && !/^(?:please|kindly)$/.test(before)) return false;
+  const after = hay.slice(at + word.length);
+  return /^\s+(?:me\s+)?(?:a|an|the|our|my|this|these|those|\d+|two|three|four|five)\b/.test(after);
+}
+
+/** "Careful sketch" / "Passwordless sign-in" — an adjective glued to the diagram kind is not a service. */
+function diagramAdjective(label: string, text: string): boolean {
+  const parts = label.toLowerCase().split(/\s+/);
+  if (parts.length !== 1) return false;
+  const word = parts[0] ?? "";
+  if (!/(?:less|ful)$/.test(word)) return false;
+  const hay = text.toLowerCase();
+  const at = hay.indexOf(word);
+  if (at < 0) return false;
+  const next = hay.slice(at + word.length).match(/^\s+([a-z0-9]+(?:-[a-z0-9]+)*)/);
+  return DIAGRAM_KIND.has(next?.[1] ?? "");
+}
+
 /**
  * The clause that lists steps.
  * A process, workflow, or procedure with a separator needs two steps.
- * A flow, flowchart, or "listing" needs four, so a short aside is not a procedure.
+ * A flow, flowchart, path, journey, or "listing" needs four, so a short aside is not a procedure.
  */
 function processListBody(text: string): { body: string; minimum: number } | null {
   const listing = text.match(/\blisting\b\s+/i);
   if (
     listing &&
     listing.index !== undefined &&
-    /\b(?:flowchart|flow\s*chart|workflows?|process|procedure|pipelines?|flow)\b/i.test(text)
+    /\b(?:flowchart|flow\s*chart|workflows?|process|procedure|pipelines?|flow|path|journey)\b/i.test(text)
   ) {
     return { body: text.slice(listing.index + listing[0].length), minimum: 4 };
   }
@@ -1172,7 +1257,7 @@ function processListBody(text: string): { body: string; minimum: number } | null
     return { body: text.slice(strict.index + strict[0].length), minimum: 2 };
   }
   const headed = text.match(
-    /\b(?:flowchart|flow\s*chart|workflows?|process|procedure|pipelines?|flow)\b[^:]{0,80}:\s*/i,
+    /\b(?:flowchart|flow\s*chart|workflows?|process|procedure|pipelines?|flow|path|journey)\b[^:]{0,80}:\s*/i,
   );
   if (headed && headed.index !== undefined) {
     const strictCue = /\b(?:process|workflow|procedure)\b/i.test(headed[0]);
@@ -1182,7 +1267,7 @@ function processListBody(text: string): { body: string; minimum: number } | null
 }
 
 /**
- * Comma-separated steps after a process, workflow, flow, or "listing".
+ * Comma-separated steps after a process, workflow, path, journey, flow, or "listing".
  * A list that already names catalog services stays on that path.
  * Four or more named steps stay one vertex each. "to" inside a step is not a chain break.
  */
@@ -1362,7 +1447,9 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   const consumed = new Set<Span>();
 
   function pushDraft(draft: Draft) {
-    if (draft.origin === "adhoc" && junkLabel(draft.label)) return;
+    if (draft.origin === "adhoc" && (junkLabel(draft.label) || leadingImperative(draft.label, text) || diagramAdjective(draft.label, text))) {
+      return;
+    }
     const key = draft.origin === "catalog" ? draft.id : draft.label.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
@@ -1620,12 +1707,133 @@ function topicTitle(text: string): string | null {
   if (/\b(gcp|google cloud)\b/i.test(text)) return "GCP";
   if (/\bmicroservice/i.test(text)) return "Microservices";
   if (/\bsequence\b/i.test(text)) return "Sequence";
-  const heading = text.match(/^(.*?)\b(?:process|workflow|procedure)\b/i);
+  const heading = text.match(/^(.*?)\b(?:process|workflow|procedure|journey|path|flow)\b/i);
   if (heading?.[1]) {
-    const words = wordsOf(heading[1]).filter((word) => !rejectedToken(word) && !ORDINARY.has(word) && !NAME_FILLER.has(word));
+    const words = (heading[1].match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter((word) => {
+      const key = word.toLowerCase();
+      return !rejectedToken(key) && !ORDINARY.has(key) && !NAME_FILLER.has(key);
+    });
     if (words.length >= 1 && words.length <= 6) return words.map((word) => displayToken(word)).join(" ");
   }
   return null;
+}
+
+const MESSAGE_VERB =
+  /\b(requests?|sends?|checks?|calls?|asks?|verifies?|validates?|returns?|replies|invokes?|queries?|notifies?|issues?|authenticates?|posts?|talks?|speaks?)\b/i;
+
+const CHECK_VERB = /^(?:checks?|verifies?|validates?|authenticates?)$/i;
+
+/** Sign-in, login, choreography, or sequence language plus a message verb. */
+function isExchange(text: string): boolean {
+  const kind = /\b(?:sequence|choreograph\w*|sign[\s-]?in|log[\s-]?in)\b/i.test(text);
+  return kind && MESSAGE_VERB.test(text);
+}
+
+function nodesInClause(clause: string, nodes: NamedEntity[]): NamedEntity[] {
+  const hay = clause.toLowerCase();
+  const hits: Array<{ node: NamedEntity; at: number; end: number }> = [];
+  for (const node of nodes) {
+    const needle = node.label.toLowerCase();
+    let from = 0;
+    while (from < hay.length) {
+      const at = hay.indexOf(needle, from);
+      if (at === -1) break;
+      const end = at + needle.length;
+      from = end;
+      if (!bounded(hay, at, end)) continue;
+      hits.push({ node, at, end });
+      break;
+    }
+  }
+  hits.sort((left, right) => left.at - right.at || right.end - right.at - (left.end - left.at));
+  const kept: Array<{ node: NamedEntity; at: number; end: number }> = [];
+  for (const hit of hits) {
+    if (kept.some((other) => other.at <= hit.at && other.end >= hit.end && other.end - other.at > hit.end - hit.at)) continue;
+    kept.push(hit);
+  }
+  return kept.map((hit) => hit.node);
+}
+
+function verbStem(verb: string): string {
+  const lower = verb.toLowerCase();
+  if (/^requests?$/.test(lower)) return "Request";
+  if (/^checks?$/.test(lower)) return "Check";
+  if (/^talks?$/.test(lower)) return "Talk";
+  if (/^speaks?$/.test(lower)) return "Speak";
+  if (/^sends?$/.test(lower)) return "Send";
+  if (/^calls?$/.test(lower)) return "Call";
+  if (/^asks?$/.test(lower)) return "Ask";
+  if (/^verif/.test(lower)) return "Verify";
+  if (/^validat/.test(lower)) return "Validate";
+  if (/^authentica/.test(lower)) return "Authenticate";
+  if (/^notifies?$/.test(lower)) return "Notify";
+  if (/^invokes?$/.test(lower)) return "Invoke";
+  if (/^queries?$/.test(lower)) return "Query";
+  if (/^returns?$/.test(lower)) return "Return";
+  if (/^replies?$/.test(lower)) return "Reply";
+  if (/^issues?$/.test(lower)) return "Issue";
+  if (/^posts?$/.test(lower)) return "Post";
+  return displayToken(lower);
+}
+
+function messageObject(clause: string, verb: RegExpMatchArray, mentioned: NamedEntity[]): string {
+  const start = (verb.index ?? 0) + verb[0].length;
+  let rest = clause.slice(start);
+  const stop = rest.search(/\b(?:from|to|into|onto|via|using|with|for|by|and|then)\b/i);
+  if (stop >= 0) rest = rest.slice(0, stop);
+  const skip = new Set(["a", "an", "the", "its", "their", "his", "her", "this", "that"]);
+  const mentionedWords = new Set(mentioned.flatMap((node) => node.label.toLowerCase().split(/\s+/)));
+  const words = (rest.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter((word) => {
+    const key = word.toLowerCase();
+    return !skip.has(key) && !mentionedWords.has(key);
+  });
+  if (words.length === 0) return verbStem(verb[1] ?? verb[0]);
+  return words.map((word) => displayToken(word)).join(" ");
+}
+
+/** One message per clause that names an actor and a verb. A lone check lands on the previous actor. */
+function exchangeMessages(text: string, nodes: NamedEntity[]): Array<{ from: string; to: string; label: string }> {
+  const clauses = text
+    .split(/\s*(?:;|\.\s+)\s*|\s+\b(?:later|then|afterward|afterwards)\b\s*/i)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  const messages: Array<{ from: string; to: string; label: string }> = [];
+  let previous: NamedEntity | null = null;
+  for (const clause of clauses) {
+    const mentioned = nodesInClause(clause, nodes);
+    const verb = clause.match(MESSAGE_VERB);
+    if (mentioned.length === 0) continue;
+    if (!verb) {
+      previous = mentioned[mentioned.length - 1] ?? previous;
+      continue;
+    }
+    const label = messageObject(clause, verb, mentioned);
+    if (mentioned.length >= 2) {
+      const from = mentioned[0];
+      const to = mentioned[mentioned.length - 1];
+      if (from && to && from.id !== to.id) messages.push({ from: from.id, to: to.id, label });
+      previous = to ?? previous;
+      continue;
+    }
+    const only = mentioned[0];
+    if (only && previous && previous.id !== only.id) {
+      const inward = CHECK_VERB.test(verb[1] ?? verb[0]);
+      messages.push(inward ? { from: previous.id, to: only.id, label } : { from: only.id, to: previous.id, label });
+    }
+    previous = only ?? previous;
+  }
+  return messages;
+}
+
+function chainInOrder(nodes: NamedEntity[]): DiagramEdge[] {
+  const edges: DiagramEdge[] = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    const from = nodes[index - 1];
+    const to = nodes[index];
+    if (!from || !to || from.id === to.id) continue;
+    edges.push({ from: from.id, to: to.id, label: "Next" });
+  }
+  return edges;
 }
 
 /** A layered or sequence diagram made only from the entities the user named. */
@@ -1633,10 +1841,10 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
   const text = normalize(message);
   const nodes = entities ?? extractNamedEntities(text);
   if (nodes.length < 2) return null;
-  const sequence = /\bsequence\b/i.test(text);
+  const sequence = /\bsequence\b/i.test(text) || isExchange(text);
   const labels = nodes.map((node) => node.label);
-  const title = topicTitle(text) ?? "Architecture";
-  const reply = `Drew ${title} with ${labels.join(", ")}.`;
+  const title = topicTitle(text) ?? (sequence ? "Sequence" : "Architecture");
+  const reply = sequence ? `Drew a sequence with ${labels.join(", ")}.` : `Drew ${title} with ${labels.join(", ")}.`;
   const byRole = new Map<EntityRole, NamedEntity[]>();
   for (const node of nodes) {
     const list = byRole.get(node.role) ?? [];
@@ -1652,15 +1860,23 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
       nodes: groupNodes,
     };
   });
-  const edges = layerEdges(nodes);
-  const messages = nodes.slice(1).map((node, index) => {
-    const from = nodes[index];
-    return {
-      from: from?.id ?? node.id,
-      to: node.id,
-      label: from ? linkLabel(from, node) : "Next",
-    };
-  });
+  let edges = layerEdges(nodes);
+  // A same-role row has no tier boundary. Ordered stages still need a connector between neighbors.
+  if (!sequence && edges.length === 0 && nodes.length >= 2 && /\b(?:first|then|followed by)\b/i.test(text)) {
+    edges = chainInOrder(nodes);
+  }
+  const parsed = sequence ? exchangeMessages(text, nodes) : [];
+  const messages =
+    parsed.length > 0
+      ? parsed
+      : nodes.slice(1).map((node, index) => {
+          const from = nodes[index];
+          return {
+            from: from?.id ?? node.id,
+            to: node.id,
+            label: from ? linkLabel(from, node) : "Next",
+          };
+        });
   return {
     title,
     reply,

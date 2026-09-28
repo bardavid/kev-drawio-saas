@@ -145,7 +145,7 @@ function findRestyleColor(text: string): { token: string; index: number; length:
 function edgeSubject(text: string, color: { index: number; length: number }): string {
   const raw = `${text.slice(0, color.index)} ${text.slice(color.index + color.length)}`;
   return raw
-    .replace(/^(?:please\s+)?(?:change|make|turn|paint|color|colour|recolor|recolour|restyle|style|set)\s+/i, "")
+    .replace(/^(?:please\s+)?(?:change|make|turn|paint|tint|color|colour|recolor|recolour|restyle|style|set)\s+/i, "")
     .replace(/\bplease\b/gi, " ")
     .replace(/\b(?:to|color|colour)\s*$/i, "")
     .replace(/[?.!,;:]+/g, " ")
