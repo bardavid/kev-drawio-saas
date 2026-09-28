@@ -73,7 +73,7 @@ import {
   type SystemOneQuestion,
   type SystemOneRequest,
 } from "@/lib/kev/systemone";
-import { OPEN_IDEA_REPLY, depthContinuation } from "@/lib/kev/scale";
+import { OPEN_IDEA_REPLY, briefFitsIdea, depthContinuation } from "@/lib/kev/scale";
 import type {
   ChatMessage,
   DiagramOperation,
@@ -598,11 +598,13 @@ export async function composeCommittedOpenIdea(
     if (!composition) return openIdeaClarify(currentXml);
     return placeComposition(idea, currentXml, composition, replace);
   }
-  let composition = topicContext?.trim() ? composeDetailedFromBrief(idea, topicContext) : null;
+  const fromBrief = (summary: string) => (briefFitsIdea(idea, summary) ? composeDetailedFromBrief(idea, summary) : null);
+  let composition = topicContext?.trim() ? fromBrief(topicContext) : null;
   if (!composition) {
     const brief = await researchIdea(idea, { network: true });
-    if (brief?.summary) composition = composeDetailedFromBrief(idea, brief.summary);
+    if (brief?.summary) composition = fromBrief(brief.summary);
   }
+  // A category list, or notes about a different topic, are not this idea's roles.
   // Notes that do not name parts are not another copy of the same question.
   if (!composition) composition = composeDetailedFromIdea(idea);
   if (!composition) return openIdeaClarify(currentXml);
