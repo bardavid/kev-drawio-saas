@@ -20,6 +20,7 @@ import {
   extractNamedEntities,
   labeledPlacement,
   listedComponents,
+  isMessageExchange,
   listedProcessSteps,
   rolePaint,
   topicLabelFor,
@@ -642,12 +643,14 @@ export function resolveComposition(
   const flowchart = flowchartSpec(text);
   if (flowchart) return packComposition(flowchart, text, hints, null, true);
 
-  if (architectureOwns(text, labels) && !labeledPlacement(text)) return null;
+  // A hop, message-flow, or choreography is a sequence of the named actors.
+  // The architecture chain must not swallow the participant who starts it.
+  if (architectureOwns(text, labels) && !labeledPlacement(text) && !isMessageExchange(text)) return null;
 
   // Scraps of a longer description are not the named boxes. Sequences and
   // workflows below still draw. A template already returned above.
   // "Walk through …" never says draw, but it is still an unnamed idea.
-  if (!longUnlistedDescription(text) && grounded && !namedDropsChain(text, labels)) {
+  if (!longUnlistedDescription(text) && grounded && (isMessageExchange(text) || !namedDropsChain(text, labels))) {
     const composed = compositionFromNamed(text);
     if (composed) {
       if (hints?.colorName && !composed.colorName) composed.colorName = hints.colorName;
