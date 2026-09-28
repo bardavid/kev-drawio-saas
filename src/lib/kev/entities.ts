@@ -394,6 +394,13 @@ function titleLabel(words: string[]): string {
     .join(" ");
 }
 
+/** The token as the user wrote it. "RDB" stays RDB; a lowercased copy would become Rdb. */
+function sourceForm(hay: string, token: string): string {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = hay.match(new RegExp(`\\b${escaped}\\b`, "i"));
+  return match?.[0] ?? token;
+}
+
 const HARD_CUE = new Set([
   "sequence",
   "architecture",
@@ -968,7 +975,8 @@ export function chainEdgeLabel(fromLabel: string, toLabel: string): string {
 
 function inferRole(label: string): EntityRole {
   const text = label.toLowerCase();
-  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch|replica|archive|stores?)\b/.test(text)) return "data";
+  // "RDB" is a database. The suffix is the role, the same as the word "db".
+  if (/\b(?:database|postgres|mysql|mongo|cosmos|dynamo|sql|d1|elasticsearch|opensearch|replica|archive|stores?)\b|\b[a-z]*db\b/.test(text)) return "data";
   if (/\b(storage|bucket|blob|s3|r2)\b/.test(text)) return "storage";
   if (/\b(queue|queues|bus|kafka|sqs|sns|hub|pubsub)\b/.test(text)) return "bus";
   if (/\b(gateway|apim|balancer|cloudfront|cdn|waf)\b/.test(text)) return "edge";
@@ -2054,6 +2062,231 @@ function entitiesFromDrafts(drafts: Draft[]): NamedEntity[] {
   });
 }
 
+/**
+ * Picture-style words. A capitalized product may share one of these spellings
+ * ("Containers"); the style phrase ("topic containers") does not.
+ */
+const STYLE_ONLY = new Set([
+  "pastel",
+  "fill",
+  "fills",
+  "filled",
+  "filling",
+  "labeled",
+  "labelled",
+  "unlabeled",
+  "unlabelled",
+  "label",
+  "labels",
+  "topic",
+  "topics",
+  "color",
+  "colors",
+  "colour",
+  "colours",
+  "palette",
+  "style",
+  "styles",
+  "styled",
+  "styling",
+  "each",
+  "own",
+  "only",
+  "per",
+  "both",
+  "either",
+  "another",
+  "such",
+  "same",
+  "various",
+  "multiple",
+  "several",
+  "every",
+  "into",
+  "onto",
+  "within",
+  "without",
+  "across",
+  "between",
+  "among",
+  "around",
+  "inside",
+  "outside",
+  "near",
+  "over",
+  "under",
+  "intact",
+  "kept",
+  "keeping",
+  "clearly",
+  "dense",
+  "live",
+]);
+
+/**
+ * Generic tier words. They name the job ("run the API", "holds rows").
+ * They are not a second product beside the name that does the job.
+ */
+const GENERIC_ROLE_OBJECT = new Set([
+  "api",
+  "app",
+  "application",
+  "applications",
+  "database",
+  "db",
+  "storage",
+  "cache",
+  "queue",
+  "service",
+  "services",
+  "server",
+  "servers",
+  "web",
+  "process",
+  "tier",
+  "tiers",
+  "rows",
+  "row",
+  "blobs",
+  "blob",
+  "sessions",
+  "session",
+  "sql",
+  "data",
+  "objects",
+  "object",
+  "keys",
+  "key",
+]);
+
+const ROLE_LOCATIVE = new Set([
+  "underneath",
+  "under",
+  "above",
+  "below",
+  "beside",
+  "besides",
+  "for",
+  "as",
+  "in",
+  "on",
+  "with",
+  "of",
+  "to",
+  "into",
+  "onto",
+  "there",
+  "here",
+  "at",
+  "by",
+  "from",
+  "over",
+  "across",
+  "through",
+  "via",
+  "using",
+  "where",
+  "which",
+  "that",
+  "this",
+]);
+
+const ROLE_ASSIGNMENT =
+  /\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\s+(runs?|holds?|keeps?|stores?|hosts?|handles?)\s+(?:(?:the|a|an)\s+)?([A-Za-z][A-Za-z0-9]*)/g;
+
+interface RoleAssignment {
+  subject: string;
+  verb: string;
+  complement: string;
+  order: number;
+}
+
+function usableProductSubject(subject: string): boolean {
+  const words = subject.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  return words.some((word) => !STYLE_ONLY.has(word) && !CUE.has(word) && !HARD_CUE.has(word));
+}
+
+/** The verb is the tail of a catalog product ("Cloud Run"), not a role assignment. */
+function catalogCoversVerb(segment: string, subjectAt: number, verbEnd: number): boolean {
+  return catalogSpans(segment).some((span) => span.start <= subjectAt && span.end >= verbEnd);
+}
+
+/**
+ * "Containers run the API" names Containers. "RDB holds Postgres rows" names RDB.
+ * The words after the verb are the job, not a replacement node.
+ */
+function roleAssignments(segment: string, base: number): RoleAssignment[] {
+  const found: RoleAssignment[] = [];
+  for (const match of segment.matchAll(new RegExp(ROLE_ASSIGNMENT.source, "g"))) {
+    const subject = match[1] ?? "";
+    const verb = (match[2] ?? "").toLowerCase();
+    const objectHead = (match[3] ?? "").toLowerCase();
+    if (!subject || !verb || !objectHead || ROLE_LOCATIVE.has(objectHead)) continue;
+    const named = subject.replace(/^(?:A|An|The)\s+/i, "");
+    if (!named || !usableProductSubject(named)) continue;
+    const at = match.index ?? 0;
+    const verbAt = segment.indexOf(match[2] ?? verb, at + subject.length);
+    if (verbAt < 0) continue;
+    const verbEnd = verbAt + (match[2] ?? verb).length;
+    if (catalogCoversVerb(segment, at, verbEnd)) continue;
+    found.push({
+      subject: named.split(/\s+/).map((word) => displayToken(word)).join(" "),
+      verb,
+      complement: segment.slice(verbEnd).trim(),
+      order: base + at,
+    });
+  }
+  return found;
+}
+
+function assignmentRole(verb: string, complement: string): EntityRole {
+  const storage = /\b(?:blobs?|objects?|storage)\b/i.test(complement);
+  if (/^(?:keeps?|stores?|holds?)$/.test(verb)) return storage ? "storage" : "data";
+  return "compute";
+}
+
+function complementHasLabel(complement: string, label: string): boolean {
+  const words = label.toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = complement.toLowerCase().match(/[a-z0-9]+(?:[./+\-][a-z0-9]+)*/g) ?? [];
+  if (words.length === 0 || words.length > hay.length) return false;
+  for (let index = 0; index <= hay.length - words.length; index += 1) {
+    if (words.every((word, offset) => hay[index + offset] === word)) return true;
+  }
+  return false;
+}
+
+/**
+ * A style word the user capitalized as its own list item is a product.
+ * "topic containers" stays style. "Containers, RDB, and Object Storage" does not.
+ */
+function bareStyleProduct(segment: { start: number; text: string }): { label: string; order: number } | null {
+  const rawWords = segment.text.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? [];
+  const content = rawWords.filter((word) => !/^(?:a|an|the|and|or|on|with)$/i.test(word));
+  if (content.length !== 1) return null;
+  const raw = content[0] ?? "";
+  const token = raw.toLowerCase();
+  if (!FLUFF.has(token) || STYLE_ONLY.has(token) || !/^[A-Z]/.test(raw)) return null;
+  return { label: displayToken(raw), order: segment.start };
+}
+
+/**
+ * Drop a generic tier word that only restates the job of a named product.
+ * "Containers run the API" keeps Containers. API does not become the node.
+ */
+function dropRoleObjectDrafts(text: string, drafts: Draft[]): Draft[] {
+  const assignments = segmentsOf(text).flatMap((segment) => roleAssignments(segment.text, segment.start));
+  if (assignments.length === 0) return drafts;
+  return drafts.filter((draft) => {
+    const words = draft.label.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.every((word) => GENERIC_ROLE_OBJECT.has(word))) return true;
+    return !assignments.some((assignment) => {
+      if (assignment.subject.toLowerCase() === draft.label.toLowerCase()) return false;
+      return complementHasLabel(assignment.complement, draft.label);
+    });
+  });
+}
+
 /** Concrete services, steps, actors, and states named in the message. */
 export function extractNamedEntities(message: string): NamedEntity[] {
   const text = normalize(message);
@@ -2154,7 +2387,7 @@ export function extractNamedEntities(message: string): NamedEntity[] {
           const label = modifier
             ? `${displayToken(modifier)} ${span.entry.label}`
             : branded
-              ? titleLabel(brand)
+              ? brand.map((token) => displayToken(sourceForm(segment.text, token))).join(" ")
               : span.entry.label;
           const brandAt = brand[0] ? segment.text.toLowerCase().indexOf(brand[0]) : -1;
           pushDraft({
@@ -2245,7 +2478,45 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     }
   }
 
-  const stacked = applyStackTiers(text, dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts)));
+  for (const segment of segmentsOf(text)) {
+    const bare = bareStyleProduct(segment);
+    if (bare) {
+      const role = inferRole(bare.label);
+      pushDraft({
+        id: bare.label.toLowerCase(),
+        label: bare.label,
+        role,
+        shape: shapeFor({ role }, bare.label),
+        order: bare.order,
+        origin: "listed",
+      });
+    }
+    for (const assignment of roleAssignments(segment.text, segment.start)) {
+      const role = assignmentRole(assignment.verb, assignment.complement);
+      const existing = drafts.find((draft) => draft.label.toLowerCase() === assignment.subject.toLowerCase());
+      // "PlanetScale holds rows" is a database. The bare name was filed as compute.
+      if (existing) {
+        if (existing.origin !== "catalog" && existing.role === "compute" && role !== "compute") {
+          existing.role = role;
+          existing.shape = shapeFor({ role }, existing.label);
+        }
+        continue;
+      }
+      pushDraft({
+        id: assignment.subject.toLowerCase(),
+        label: assignment.subject,
+        role,
+        shape: shapeFor({ role }, assignment.subject),
+        order: assignment.order,
+        origin: "listed",
+      });
+    }
+  }
+
+  const stacked = applyStackTiers(
+    text,
+    dropCoveredTitleHead(text, dropCoveredRoleGloss(dropRoleObjectDrafts(text, drafts))),
+  );
   const kept = isMessageExchange(text) ? dropEmbeddedFragments(stacked) : stacked;
   return entitiesFromDrafts(kept);
 }

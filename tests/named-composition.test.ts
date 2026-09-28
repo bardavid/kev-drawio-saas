@@ -1057,6 +1057,61 @@ describe("named composition", () => {
     }
   });
 
+  it("keeps each named product when a role clause uses a generic tier word", () => {
+    const prompts = [
+      {
+        text: "On Scaleway: Containers run the API, RDB holds Postgres rows, and Object Storage keeps blobs",
+        labels: ["Scaleway", "Containers", "RDB", "Object storage"],
+        absent: ["API", "Api", "Rdb"],
+      },
+      {
+        text: "Scaleway layout with Containers, RDB, and Object Storage",
+        labels: ["Scaleway", "Containers", "RDB", "Object storage"],
+        absent: ["API", "Api"],
+      },
+      {
+        text: "On Render: Web Services run the API, PlanetScale holds rows, and Redis Cloud keeps sessions",
+        labels: ["Render", "Web Services", "PlanetScale", "Redis Cloud"],
+        absent: ["API", "Api"],
+      },
+      {
+        text: "On Railway: Services run the API, Neon holds Postgres rows, and Upstash keeps cache blobs",
+        labels: ["Railway", "Services", "Neon", "Upstash"],
+        absent: ["API", "Api"],
+      },
+      {
+        text: "On Fly: Machines run the API, Postgres holds rows, and Tigris keeps blobs",
+        labels: ["Fly", "Machines", "Postgres", "Tigris"],
+        absent: ["API", "Api"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      for (const label of prompt.labels) {
+        assert.ok(labels.includes(label), `${prompt.text} → ${labels.join(", ")} missing ${label}`);
+      }
+      for (const stolen of prompt.absent) {
+        assert.equal(labels.includes(stolen), false, `${prompt.text} replaced a product with ${stolen}`);
+      }
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/, prompt.text);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      for (const label of prompt.labels) {
+        assert.ok(drawnLabels.includes(label), `${prompt.text} drew ${drawnLabels.join(", ")}`);
+      }
+      for (const stolen of prompt.absent) {
+        assert.equal(drawnLabels.includes(stolen), false, `${prompt.text} drew ${stolen}`);
+      }
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), prompt.text);
+      assert.ok(report.edges.length >= 2, prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt.text);
+      assertPastel(content(report.nodes), prompt.text);
+      assertContainerParents(drawn.xml, prompt.text);
+    }
+  });
+
   it("drops a role gloss when a product of that role is already named", () => {
     const prompt = "Postgres stores SQL, and Spaces holds object storage";
     const labels = extractNamedEntities(prompt).map((entity) => entity.label);
