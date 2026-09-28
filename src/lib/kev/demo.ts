@@ -27,7 +27,7 @@ function cleanNoun(value: string): string {
   let previous = "";
   while (previous !== text) {
     previous = text;
-    text = text.replace(/\s+(?:box|shape|node|component|service|database|db|cache|queue)$/i, "").trim();
+    text = text.replace(/\s+(?:box|shape|node|component|service|database|db|cache|queue|stage)$/i, "").trim();
   }
   return text;
 }
@@ -395,7 +395,7 @@ function parseAdd(text: string): KevDecision {
   let place: DiagramSlots["place"] = null;
   let from: string | null = null;
   let target: string | null = null;
-  let to: string | null = null;
+  const to: string | null = null;
 
   const connectIt = rest.match(/^(.+?)\s+and\s+connect\s+(?:the\s+)?(.+?)\s+to\s+it\b(.*)$/i);
   const connected = rest.match(/^(.+?)\s+(?:connected|linked|wired)\s+to\s+(?:the\s+)?(.+)$/i);

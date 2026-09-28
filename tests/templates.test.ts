@@ -534,6 +534,64 @@ const FIXTURES: Fixture[] = [
     ],
     clusters: ["Clients", "Edge", "Compute", "Data"],
   },
+  {
+    prompt: "draw an OAuth login sequence with browser, authorization server, and resource server",
+    labels: ["User", "Browser", "Authorization Server", "Resource Server"],
+    edges: [
+      ["User", "Browser", "Click login"],
+      ["Browser", "Authorization Server", "Authorize"],
+      ["Authorization Server", "Browser", "Access token"],
+      ["Browser", "Resource Server", "GET /resource"],
+      ["Resource Server", "Browser", "Protected resource"],
+    ],
+    messages: [
+      "Click login",
+      "Authorize",
+      "Code",
+      "Exchange code",
+      "Access token",
+      "GET /resource",
+      "Protected resource",
+      "Logged in",
+    ],
+  },
+  {
+    prompt: "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel",
+    labels: ["GitHub Actions", "Build", "Deploy to Vercel"],
+    edges: [
+      ["GitHub Actions", "Build", "Build"],
+      ["Build", "Deploy to Vercel", "Deploy"],
+    ],
+    rows: [["GitHub Actions", "Build", "Deploy to Vercel"]],
+  },
+  {
+    prompt: "draw a state machine for a pizza order: browsing, cart, checkout, baking, delivered",
+    labels: ["Browsing", "Cart", "Checkout", "Baking", "Delivered"],
+    edges: [
+      ["Browsing", "Cart", "Next"],
+      ["Cart", "Checkout", "Next"],
+      ["Checkout", "Baking", "Next"],
+      ["Baking", "Delivered", "Next"],
+    ],
+    rows: [["Browsing", "Cart", "Checkout", "Baking", "Delivered"]],
+  },
+  {
+    prompt: "draw an Azure architecture with API Management, Azure Functions, Cosmos DB, and Event Hubs",
+    labels: ["Internet", "API Management", "Azure Functions", "Cosmos DB", "Event Hubs"],
+    edges: [
+      ["Internet", "API Management", "HTTPS"],
+      ["API Management", "Azure Functions", "HTTP"],
+      ["Azure Functions", "Cosmos DB", "SQL"],
+      ["Azure Functions", "Event Hubs", "Publish"],
+    ],
+    above: [
+      ["Internet", "API Management"],
+      ["API Management", "Azure Functions"],
+      ["Azure Functions", "Cosmos DB"],
+      ["Cosmos DB", "Event Hubs"],
+    ],
+    clusters: ["Clients", "Edge", "Compute", "Data"],
+  },
 ];
 
 describe("popular diagram templates", () => {
@@ -1071,6 +1129,160 @@ describe("popular diagram templates", () => {
     ).map((node) => node.label);
     assert.ok(web.includes("Pub/Sub"));
     assert.equal(web.includes("Memorystore"), false);
+  });
+
+  it("draws an OAuth sequence with a resource server instead of using App as a stand-in", () => {
+    const prompt = "draw an OAuth login sequence with browser, authorization server, and resource server";
+    assert.equal(matchTemplate(prompt)?.spec.title, "OAuth login");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.match(drawn.decision.reply, /Resource Server/);
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    const labels = content(assertClean(drawn.xml).nodes).map((node) => node.label);
+    for (const label of ["Browser", "Authorization Server", "Resource Server"]) {
+      assert.ok(labels.includes(label), label);
+    }
+    assert.equal(labels.includes("App"), false);
+    const generic = content(assertClean(previewDemo("draw an OAuth login sequence", STARTER_XML).xml).nodes).map(
+      (node) => node.label,
+    );
+    assert.ok(generic.includes("App"));
+    assert.ok(generic.includes("Auth server"));
+    assert.equal(generic.includes("Resource Server"), false);
+  });
+
+  it("keeps Build on a CI/CD pipeline and inserts Test between Build and Deploy", () => {
+    const prompt = "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel";
+    assert.equal(matchTemplate(prompt)?.spec.title, "CI/CD");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.deepEqual(labels, ["GitHub Actions", "Build", "Deploy to Vercel"]);
+    sameRow(report, ["GitHub Actions", "Build", "Deploy to Vercel"]);
+    const actions = box(report, "GitHub Actions");
+    const build = box(report, "Build");
+    const deploy = box(report, "Deploy to Vercel");
+
+    const restyled = previewDemo("make the arrows blue", drawn.xml);
+    assert.equal(restyled.decision.intent, "style");
+    const blue = assertClean(restyled.xml);
+    const blueActions = box(blue, "GitHub Actions");
+    const blueBuild = box(blue, "Build");
+    const blueDeploy = box(blue, "Deploy to Vercel");
+    assert.equal(blueActions.x, actions.x);
+    assert.equal(blueActions.y, actions.y);
+    assert.equal(blueBuild.x, build.x);
+    assert.equal(blueBuild.y, build.y);
+    assert.equal(blueDeploy.x, deploy.x);
+    assert.equal(blueDeploy.y, deploy.y);
+    assert.ok(blue.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+
+    const edited = previewDemo("add a Test stage between build and deploy", restyled.xml);
+    assert.equal(edited.decision.intent, "add_shape");
+    assert.equal(edited.decision.slots.label, "Test");
+    assert.equal(edited.decision.slots.from, "Build");
+    assert.equal(edited.decision.slots.to, "Deploy");
+    const after = assertClean(edited.xml);
+    const nextLabels = content(after.nodes).map((node) => node.label);
+    assert.ok(nextLabels.includes("Test"));
+    assert.ok(nextLabels.includes("GitHub Actions"));
+    assert.ok(nextLabels.includes("Build"));
+    assert.ok(nextLabels.includes("Deploy to Vercel"));
+    const nextActions = box(after, "GitHub Actions");
+    const nextBuild = box(after, "Build");
+    const nextDeploy = box(after, "Deploy to Vercel");
+    const test = box(after, "Test");
+    assert.equal(nextActions.x, actions.x);
+    assert.equal(nextActions.y, actions.y);
+    assert.equal(nextBuild.x, build.x);
+    assert.equal(nextBuild.y, build.y);
+    assert.ok(test.x > nextBuild.x);
+    assert.ok(test.x < nextDeploy.x);
+    linked(after, "GitHub Actions", "Build");
+    linked(after, "Build", "Test");
+    linked(after, "Test", "Deploy to Vercel");
+    assert.equal(
+      after.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
+      false,
+    );
+    assert.equal(matchTemplate("draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery")?.spec.title, "GCP data pipeline");
+  });
+
+  it("draws a pizza order as named states instead of a checkout sequence", () => {
+    const prompt = "draw a state machine for a pizza order: browsing, cart, checkout, baking, delivered";
+    assert.equal(matchTemplate(prompt)?.spec.kind, "workflow");
+    assert.notEqual(matchTemplate(prompt)?.spec.title, "Checkout");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.doesNotMatch(drawn.decision.reply, /Payment/);
+    const report = assertClean(drawn.xml);
+    assert.deepEqual(content(report.nodes).map((node) => node.label), [
+      "Browsing",
+      "Cart",
+      "Checkout",
+      "Baking",
+      "Delivered",
+    ]);
+    for (const stolen of ["User", "Browser", "Payment", "Orders", "Placed", "Paid", "Shipped"]) {
+      assert.equal(content(report.nodes).some((node) => node.label === stolen), false, stolen);
+    }
+    assert.equal(content(report.nodes).every((node) => node.style.includes("umlLifeline")), false);
+    const checkout = content(assertClean(previewDemo("draw a checkout sequence diagram", STARTER_XML).xml).nodes).map(
+      (node) => node.label,
+    );
+    assert.ok(checkout.includes("Payment"));
+    assert.ok(checkout.includes("Orders"));
+    const order = content(assertClean(previewDemo("draw an order state machine", STARTER_XML).xml).nodes).map(
+      (node) => node.label,
+    );
+    assert.ok(order.includes("Placed"));
+    assert.equal(order.includes("Browsing"), false);
+  });
+
+  it("draws Azure API Management, Functions, Cosmos DB, and Event Hubs", () => {
+    const prompt = "draw an Azure architecture with API Management, Azure Functions, Cosmos DB, and Event Hubs";
+    assert.equal(matchTemplate(prompt)?.spec.title, "Azure");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.match(drawn.decision.reply, /API Management/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["API Management", "Azure Functions", "Cosmos DB", "Event Hubs"]) {
+      assert.ok(labels.includes(label), label);
+    }
+    for (const stolen of [
+      "ALB",
+      "ECS",
+      "RDS",
+      "Lambda",
+      "DynamoDB",
+      "Cloud Run",
+      "Application Gateway",
+      "App Service",
+      "Azure SQL",
+      "Service Bus",
+    ]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    above(report, "API Management", "Azure Functions");
+    above(report, "Azure Functions", "Cosmos DB");
+    linked(report, "API Management", "Azure Functions", "HTTP");
+    linked(report, "Azure Functions", "Cosmos DB", "SQL");
+    linked(report, "Azure Functions", "Event Hubs", "Publish");
+    const appService = content(
+      assertClean(
+        previewDemo(
+          "draw an Azure architecture with Application Gateway, App Service, Azure SQL, and Service Bus",
+          STARTER_XML,
+        ).xml,
+      ).nodes,
+    ).map((node) => node.label);
+    assert.ok(appService.includes("Application Gateway"));
+    assert.equal(appService.includes("API Management"), false);
   });
 
   it("leaves a generic sequence and flowchart alone", () => {
