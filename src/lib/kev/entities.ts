@@ -221,7 +221,7 @@ const CUE = new Set([
   "azure", "aws", "amazon", "gcp", "google", "payment",
   "side", "also", "just", "me", "my", "our", "their", "shopper", "customer", "records", "record",
   "page", "call", "sits", "ahead", "behind", "hang", "off", "them", "tier", "web", "app",
-  "orange", "green", "blue", "purple", "yellow", "red", "teal", "cyan", "pink", "magenta", "gray", "grey", "black", "white",
+  "orange", "green", "blue", "purple", "yellow", "red", "teal", "cyan", "pink", "magenta", "fuchsia", "gray", "grey", "black", "white",
   "horizontal", "horizontally", "vertical", "vertically", "column", "columns", "row", "rows",
   "stacked", "stack", "left", "right", "top", "bottom", "down",
 ]);
@@ -1094,6 +1094,17 @@ function phraseEntry(phrase: string, text: string): CatalogEntry | null {
   return null;
 }
 
+/**
+ * "Postgres is the database" names the product, then its role.
+ * The words after the copula are the gloss. They are not a reason to drop the product.
+ */
+function copulaRoleGloss(text: string, end: number): boolean {
+  const after = text.slice(end);
+  return /^\s+(?:is|are)\s+(?:(?:the|a|an|our|its|their)\s+)?(?:[\w-]+\s+){0,3}?(?:databases?|db|caches?|datastores?|data(?:\s+layers?)?|tiers?|layers?|services?|servers?|queues?|stores?)\b/i.test(
+    after,
+  );
+}
+
 /** A brand prefixed onto two different products is the vendor, not the product. */
 function repeatedBrandHead(text: string, head: string): boolean {
   const tails = new Set<string>();
@@ -1123,12 +1134,16 @@ function compoundDraft(compound: Compound, span: Span | null, text: string): Dra
   const tailEntry = span && span.entry.phrases.some((item) => item.toLowerCase() === tail) ? span.entry : phraseEntry(tail, text);
   // "Upstash Redis" is the brand Upstash. "Managed Redis" keeps both words.
   // The same brand on two products keeps each full name. A listed stage is not a role word to strip.
+  // A single prefixed product keeps its tail when a copula gloss names the role
+  // ("Heroku Postgres is the database"). The tail is part of the name; the gloss is the role.
+  // Repeating the brand is not required for that shape.
   if (
     tailEntry &&
     !tailEntry.listed &&
     tailEntry.role !== "step" &&
     headIsUncommon(head) &&
-    !repeatedBrandHead(text, head)
+    !repeatedBrandHead(text, head) &&
+    !copulaRoleGloss(text, compound.end)
   ) {
     const label = displayToken(compound.rawWords[0] ?? head);
     return {
@@ -1192,6 +1207,9 @@ function salvageBigrams(
     const right = second[0].toLowerCase();
     if (blocked.has(left) || blocked.has(right)) continue;
     if (ORDINARY.has(left) || ORDINARY.has(right) || NAME_FILLER.has(right)) continue;
+    // "stores sessions" is what the product does. "store" is also a role noun, so the
+    // plural verb looks like a fragment and must not become a node.
+    if (/^(?:stores?|hosts?|holds?|keeps?|handles?|uses?|runs?|carries|carry|carrying)$/.test(left)) continue;
     // "app requests" is a verb, not a product. "app platform" still joins.
     if (/^(?:requests?|sends?|checks?|calls?|asks?|verifies?|validates?|talks?|speaks?|runs?|holds?|keeps?|stores?)$/.test(right)) {
       continue;
@@ -1481,6 +1499,25 @@ function draftsFromTierPhrase(
   return kept.map((item) => tierDraftFor(item.raw, item.token, segment.start));
 }
 
+/**
+ * "Heroku sketch" is the diagram title when "Heroku Postgres" is already a product.
+ * The bare head is not a second vertex. "TeamCity sketch" stays when TeamCity prefixes nothing else.
+ */
+function dropCoveredTitleHead(text: string, drafts: Draft[]): Draft[] {
+  return drafts.filter((draft) => {
+    if (/\s/.test(draft.label)) return true;
+    const head = draft.label.toLowerCase();
+    const prefixed = drafts.some((other) => {
+      if (other === draft) return false;
+      const parts = other.label.toLowerCase().split(/\s+/);
+      return parts.length >= 2 && parts[0] === head;
+    });
+    if (!prefixed) return true;
+    const escaped = head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return !new RegExp(`\\b${escaped}\\s+(?:sketch|diagram|architecture|stack|pipeline|system|layout)\\b`, "i").test(text);
+  });
+}
+
 /** "Sql" or "Object storage" beside a real product of that role is the role, not another vertex. */
 function dropCoveredRoleGloss(drafts: Draft[]): Draft[] {
   const generic = /^(?:sql|object storage|object store|data|data layer)$/i;
@@ -1637,7 +1674,7 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     });
   }
 
-  const kept = dropCoveredRoleGloss(drafts);
+  const kept = dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts));
   drafts.length = 0;
   drafts.push(...kept);
   drafts.sort((left, right) => left.order - right.order);

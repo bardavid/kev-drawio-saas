@@ -147,7 +147,7 @@ function edgeSubject(text: string, color: { index: number; length: number }): st
   return raw
     .replace(/^(?:please\s+)?(?:change|make|turn|paint|tint|color|colour|recolor|recolour|restyle|style|set)\s+/i, "")
     .replace(/\bplease\b/gi, " ")
-    .replace(/\b(?:to|color|colour)\s*$/i, "")
+    .replace(/\b(?:to|color|colour|in)\s*$/i, "")
     .replace(/[?.!,;:]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
