@@ -3,7 +3,13 @@ import { describe, it } from "node:test";
 import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 import { previewDemo } from "../src/lib/kev/demo";
-import { acceptArchitectureStep, acceptTemplateStep, buildOrchestratorStepRequest, buildSpecificityRequest } from "../src/lib/kev/orchestrate";
+import {
+  acceptArchitectureStep,
+  acceptTemplateStep,
+  buildCompositionRequest,
+  buildOrchestratorStepRequest,
+  buildSpecificityRequest,
+} from "../src/lib/kev/orchestrate";
 import { isArchitectureRequest, isBareDraw, parseArchitecture, planOperations } from "../src/lib/kev/plan";
 
 const PROMPTS = [
@@ -191,9 +197,18 @@ describe("orchestrator questions", () => {
       applied: [],
       currentXml: SEEDED_XML,
     });
+    assert.match(request.state, /STRATEGY/);
+    assert.match(request.state, /Do not invent a Stage from placement fluff/);
     assert.match(request.state, /Current diagram mxfile/);
     assert.match(request.state, /value="API"/);
     assert.match(request.state, /Proposed next edit/);
+    assert.match(request.questions.next?.instructions ?? "", /→ apply/);
+    assert.match(request.questions.next?.instructions ?? "", /→ clarify/);
+    assert.match(request.questions.next?.instructions ?? "", /→ noop/);
+    assert.match(request.questions.confirm?.instructions ?? "", /→ yes/);
+    assert.match(request.questions.confirm?.instructions ?? "", /→ no/);
+    assert.match(request.questions.color?.instructions ?? "", /If a color word is present → that color/);
+    assert.match(request.questions.color?.instructions ?? "", /Else → none/);
     assert.match(request.state, /App/);
     assert.equal(request.questions.next?.type, "choice");
     assert.equal(request.questions.confirm?.type, "noul");
@@ -210,7 +225,39 @@ describe("orchestrator questions", () => {
       userMessage: "draw",
       summary: summarizeDiagram(STARTER_XML),
     });
+    assert.match(request.state, /STRATEGY/);
     assert.equal(request.questions.specific?.type, "noul");
+    assert.match(request.questions.specific?.instructions ?? "", /→ yes/);
+    assert.match(request.questions.specific?.instructions ?? "", /no subject → no/);
     assert.equal(request.questions.next?.type, "choice");
+    assert.match(request.questions.next?.instructions ?? "", /→ clarify/);
+    assert.match(request.questions.next?.instructions ?? "", /→ noop/);
+  });
+
+  it("asks composition phases with a style color fork", () => {
+    const summary = summarizeDiagram(STARTER_XML);
+    const outline = buildCompositionRequest({
+      userMessage: "draw a login sequence",
+      summary,
+      plan: "Phase: outline\nConfirm these nodes",
+      phase: "outline",
+    });
+    assert.match(outline.state, /STRATEGY/);
+    assert.match(outline.state, /If it fits the request → use it/);
+    assert.match(outline.questions.next?.instructions ?? "", /→ apply/);
+    assert.match(outline.questions.next?.instructions ?? "", /→ clarify/);
+    assert.match(outline.questions.confirm?.instructions ?? "", /→ yes/);
+    assert.match(outline.questions.confirm?.instructions ?? "", /→ no/);
+    assert.equal(outline.questions.color, undefined);
+
+    const style = buildCompositionRequest({
+      userMessage: "draw a login sequence",
+      summary,
+      plan: "Phase: style\nConfirm the drawing",
+      phase: "style",
+    });
+    assert.match(style.questions.color?.instructions ?? "", /If a color word is present → that color/);
+    assert.match(style.questions.color?.instructions ?? "", /Else → none/);
+    assert.match(style.questions.next?.instructions ?? "", /Stage from placement fluff → clarify/);
   });
 });

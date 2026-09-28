@@ -76,6 +76,7 @@ describe("diagram diff", () => {
       previousXml: SEEDED_XML,
       currentXml: current,
     });
+    assert.match(state, /STRATEGY/);
     assert.match(state, /see the change I just did/);
     assert.match(state, /Diagram diff/);
     assert.match(state, /Previous diagram mxfile/);

@@ -43,6 +43,9 @@ describe("system one contract", () => {
       currentXml: SEEDED_XML,
     });
     assert.equal(request.model, "kev-latest");
+    assert.match(request.state, /STRATEGY/);
+    assert.match(request.state, /Do not invent coordinates/);
+    assert.match(request.state, /pastel fills, labeled edges, and topic containers/);
     assert.match(request.state, /Make the API box red/);
     assert.match(request.state, /API/);
     assert.match(request.state, /Current diagram mxfile/);
@@ -51,11 +54,17 @@ describe("system one contract", () => {
     assert.equal(request.questions.intent.type, "choice");
     assert.match(request.questions.intent.instructions, /What diagram edit does the user want/);
     assert.match(request.questions.intent.instructions, /change the boxes to red/);
+    assert.match(request.questions.intent.instructions, /→ style/);
+    assert.match(request.questions.intent.instructions, /→ add_shape/);
+    assert.match(request.questions.intent.instructions, /Never both/);
     assert.deepEqual(request.questions.intent.criteria, INTENT_CRITERIA);
-    assert.deepEqual(request.questions.needs_xml_edit, {
-      type: "noul",
-      instructions: "Should the diagram XML be modified?",
-    });
+    assert.equal(request.questions.needs_xml_edit.type, "noul");
+    assert.match(request.questions.needs_xml_edit.instructions, /Should the diagram XML be modified/);
+    assert.match(request.questions.needs_xml_edit.instructions, /bare draw with no subject → no/);
+    assert.match(request.questions.color.instructions, /If a color word is present → that color/);
+    assert.match(request.questions.color.instructions, /Else → none/);
+    assert.match(request.questions.anchor.instructions, /every or all boxes or arrows → none/);
+    assert.match(request.questions.anchor.instructions, /Never invent an anchor/);
     assert.equal(request.questions.disruption.type, "score");
     assert.ok(Array.isArray(request.questions.disruption.criteria));
     const anchor = request.questions.anchor.criteria as Record<string, string>;
