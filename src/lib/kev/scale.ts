@@ -1,5 +1,5 @@
 import { extractNamedEntities } from "@/lib/kev/entities";
-import { hasEnumeratedBoxes } from "@/lib/kev/plan";
+import { hasEnumeratedBoxes, isCanvasEdit } from "@/lib/kev/plan";
 
 /**
  * Depth of a drawing: a few boxes, or many components and their interactions.
@@ -39,9 +39,12 @@ export function contentWords(message: string): string[] {
  */
 export function longUnlistedDescription(message: string): boolean {
   const text = message.trim();
-  if (!text || !PICTURE.test(text)) return false;
+  if (!text || isCanvasEdit(text) || !PICTURE.test(text)) return false;
   if (hasEnumeratedBoxes(text)) return false;
-  const named = extractNamedEntities(text).filter((entity) => entity.origin !== "adhoc");
+  // A name the user actually wrote counts. A title-cased scrap of a lowercase phrase does not.
+  const named = extractNamedEntities(text).filter(
+    (entity) => entity.origin !== "adhoc" || text.includes(entity.label),
+  );
   if (named.length >= 2) return false;
   return contentWords(text).length >= 5;
 }
@@ -66,7 +69,7 @@ export function ideaSubject(message: string): string | null {
 }
 
 const INTERACTION =
-  /\b((?:replicates|persists?|writes|publishes?)\s+to|reads\s+from|calls?|reads?|writes?|sends?|publishes?|delivers|replicates|loads?|queries|forwards|stores|updates|notifies|returns|fetches|checks|invokes|persists?)\b/i;
+  /\b((?:replicates|persists?|writes|publish(?:es)?)\s+to|reads\s+from|calls?|reads?|writes?|sends?|publish(?:es)?|delivers|replicates|loads?|queries|forwards|stores|updates|notifies|returns|fetches|checks|invokes|persists?)\b/i;
 
 /**
  * Components and interactions named inside topic notes.

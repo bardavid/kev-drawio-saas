@@ -142,6 +142,12 @@ function isLedByEdit(text: string): boolean {
   );
 }
 
+/** An edit of the open canvas. It is not a request to invent a new diagram. */
+export function isCanvasEdit(text: string): boolean {
+  const trimmed = text.trim();
+  return isBetweenEdit(trimmed) || isRenameEdit(trimmed) || isLedByEdit(trimmed) || isColorRestyle(trimmed);
+}
+
 export function parseArchitecture(message: string): ArchitecturePlan | null {
   const text = message.trim();
   if (!text || isBareDraw(text) || isBetweenEdit(text) || isColorRestyle(text)) return null;
@@ -440,7 +446,16 @@ function labelsFromChain(text: string): string[] {
 
 function labelsFromList(text: string): string[] {
   if (!/,|\band\b/i.test(text)) return [];
-  const stripped = text.replace(/^(?:please\s+)?(?:draw|sketch|build|create|architect)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "");
+  let stripped = text.replace(/^(?:please\s+)?(?:draw|sketch|build|create|architect)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "");
+  const intro = stripped.match(/^([^:：]{0,80})[:：]\s+/);
+  if (intro?.[1] && /,|\band\b/i.test(stripped.slice(intro[0].length))) {
+    const headWords = intro[1]
+      .replace(/[^a-z0-9\s-]/gi, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    // “two boxes: A and B” keeps the count. A longer title introduces the list.
+    if (headWords.length >= 3) stripped = stripped.slice(intro[0].length);
+  }
   const parts = stripped
     .split(/\s*,\s*|\s+\band\b\s+/i)
     .map((part) => part.trim())
@@ -469,7 +484,9 @@ function endpointLabel(fragment: string): string | null {
   let text = fragment.trim();
   const colon = Math.max(text.lastIndexOf(":"), text.lastIndexOf("："));
   if (colon !== -1) text = text.slice(colon + 1);
-  text = text.replace(/^(?:please\s+)?(?:draw|sketch|build|create|make|architect)\s+(?:me\s+)?(?:a|an|the)?\s*/i, "");
+  text = text.replace(/^(?:please\s+)?(?:draw|sketch|build|create|make|architect)\s+(?:me\s+)?/i, "");
+  // An article is only an article when another word follows. “A” is a box name.
+  text = text.replace(/^(?:a|an|the)\s+(?=\S)/i, "");
   const words = text
     .replace(/[,.].*/g, " ")
     .split(/\s+/)
@@ -485,7 +502,7 @@ function endpointLabel(fragment: string): string | null {
   if (hits.length > 0) return hits[hits.length - 1] ?? null;
   for (let index = words.length - 1; index >= 0; index -= 1) {
     const word = words[index] ?? "";
-    if (/^(tier|tiers|layer|layers|complex|draw|please|a|an|the)$/i.test(word)) continue;
+    if (/^(tier|tiers|layer|layers|complex|draw|please|an|the)$/i.test(word)) continue;
     if (/^\d+$/.test(word)) continue;
     // “Two boxes: A and B” names the boxes. A one-letter label is still a box.
     if (word.length < 2 && !/^[A-Za-z]$/.test(word)) continue;
