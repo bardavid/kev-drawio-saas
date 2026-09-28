@@ -709,7 +709,13 @@ describe("configured pipeline", { concurrency: 1 }, () => {
   });
 
   it("draws a short N-tier ask on a blank canvas when the reading has no shape name", async () => {
-    const prompts = ["three tier web app", "just a simple three tier web app", "3-tier architecture"];
+    const prompts = [
+      "three tier web app",
+      "just a simple three tier web app",
+      "3-tier architecture",
+      "a basic three-layer web application",
+      "plain 3 tier system for a website",
+    ];
     for (const prompt of prompts) {
       blankEnv();
       process.env.KEV_BASE_URL = "http://kev.local";

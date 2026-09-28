@@ -1763,8 +1763,8 @@ function nestInContainers(nodes: Placed[]) {
     node.y = box.y - at.y;
   });
   // Same padding in every tier shares one local origin. A reader that ignores
-  // parent then reports the tiers as overlapping. Give each stacked tier its own
-  // local band, and park the container to the right of those local boxes.
+  // parent then reports the tiers as overlapping. Give each tier its own local
+  // band, and park the container to the right of those local boxes.
   separateNestedBands(nodes);
 }
 
@@ -1814,6 +1814,41 @@ function separateNestedBands(nodes: Placed[]) {
       localY = Math.max(...children.map((child) => child.y + child.height)) + 36;
     }
   }
+  // Side-by-side tiers are each their own column, so the loop above leaves them
+  // on one local origin. Drop each later tier into the next local band and lift
+  // its container by the same amount. The shapes stay on one row; a reader that
+  // ignores parent no longer stacks them.
+  const sideBySide = columns.filter((column) => column.length === 1).map((column) => column[0]!);
+  const rows: Array<Array<{ node: Placed; index: number }>> = [];
+  const across = [...sideBySide].sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x);
+  for (const cluster of across) {
+    const row = rows.find((group) =>
+      group.some(
+        (other) => cluster.node.y < other.node.y + other.node.height && other.node.y < cluster.node.y + cluster.node.height,
+      ),
+    );
+    if (row) row.push(cluster);
+    else rows.push([cluster]);
+  }
+  for (const row of rows) {
+    if (row.length < 2) continue;
+    row.sort((a, b) => a.node.x - b.node.x);
+    let localY = 0;
+    for (const cluster of row) {
+      const children = childrenOf.get(cluster.index) ?? [];
+      if (children.length === 0) continue;
+      const minY = Math.min(...children.map((child) => child.y));
+      const shiftY = Math.max(0, localY - minY);
+      if (shiftY > 0) {
+        for (const child of children) child.y += shiftY;
+        cluster.node.y -= shiftY;
+        cluster.node.height += shiftY;
+      }
+      const needed = Math.max(...children.map((child) => child.y + child.height)) + 16;
+      if (cluster.node.height < needed) cluster.node.height = needed;
+      localY = Math.max(...children.map((child) => child.y + child.height)) + 36;
+    }
+  }
   let maxLocalRight = 0;
   for (const children of childrenOf.values()) {
     for (const child of children) maxLocalRight = Math.max(maxLocalRight, child.x + child.width);
@@ -1822,6 +1857,14 @@ function separateNestedBands(nodes: Placed[]) {
   const dx = Math.max(0, maxLocalRight + 32 - minClusterX);
   if (dx > 0) {
     for (const cluster of clusters) cluster.node.x += dx;
+  }
+  const topLevel = nodes.filter((node) => node.parentIndex === undefined);
+  if (topLevel.length > 0) {
+    const minY = Math.min(...topLevel.map((node) => node.y));
+    const lift = Math.max(0, 40 - minY);
+    if (lift > 0) {
+      for (const node of topLevel) node.y += lift;
+    }
   }
   const byY = [...clusters].sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x);
   for (let pass = 0; pass < byY.length; pass += 1) {

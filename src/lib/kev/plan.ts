@@ -148,7 +148,8 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
   const hasVerb = DRAW_VERB.test(text);
   const hasArrow = /→|->|=>|—>|-->|–>/.test(text);
   const tiers = tierCount(text);
-  // "3-tier web app" names a stack even when it never says draw and has no arrow.
+  // "3-tier web app" and "three-layer web application" name a stack even when
+  // they never say draw and have no arrow.
   const tierAsk = tiers !== null && !isLedByEdit(text);
   if (!hasVerb && !hasArrow && !tierAsk) return null;
 
@@ -385,7 +386,7 @@ function layoutOf(text: string): "horizontal" | "vertical" | null {
 }
 
 function tierCount(text: string): number | null {
-  const match = text.match(/\b(\d+|two|three|four|five)[\s-]*tier\b/i);
+  const match = text.match(/\b(\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i);
   if (!match?.[1]) return null;
   const raw = match[1].toLowerCase();
   const count = WORD_NUM[raw] ?? Number(raw);
@@ -446,7 +447,7 @@ function endpointLabel(fragment: string): string | null {
   if (hits.length > 0) return hits[hits.length - 1] ?? null;
   for (let index = words.length - 1; index >= 0; index -= 1) {
     const word = words[index] ?? "";
-    if (word.length < 2 || /^(tier|complex|draw|please)$/i.test(word)) continue;
+    if (word.length < 2 || /^(tier|tiers|layer|layers|complex|draw|please)$/i.test(word)) continue;
     if (/^\d+$/.test(word)) continue;
     return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
   }
@@ -519,7 +520,7 @@ function extractTitle(message: string, nodes: string[]): string | null {
   if (colon !== -1) raw = withoutVerb.slice(0, colon);
   else {
     const tier = withoutVerb.match(
-      /((?:complex\s+)?(?:\d+|two|three|four|five)[\s-]*tier(?:\s+(?!to\b)[a-z0-9]+){0,3})/i,
+      /((?:complex\s+)?(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)(?:\s+(?!to\b)[a-z0-9]+){0,3})/i,
     );
     if (tier?.[1]) raw = tier[1];
   }

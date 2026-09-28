@@ -24,7 +24,7 @@ export interface TemplateMatch {
   context: string;
 }
 
-const TIER_RE = /\b(\d+|two|three|four|five)[\s-]*tier\b/i;
+const TIER_RE = /\b(\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i;
 
 export function matchTemplate(message: string): TemplateMatch | null {
   const text = message.trim();

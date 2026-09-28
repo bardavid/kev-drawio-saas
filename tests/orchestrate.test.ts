@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { assessDiagram } from "../src/lib/drawio/layout";
 import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
-import { summarizeDiagram } from "../src/lib/drawio/xml";
+import { cellLabel, geometryOf, listVertices, openDiagram, summarizeDiagram } from "../src/lib/drawio/xml";
 import { previewDemo } from "../src/lib/kev/demo";
 import {
   acceptArchitectureStep,
@@ -28,8 +29,41 @@ const EMPTY_XML = `<mxfile host="embed.diagrams.net" agent="draw.ai">
   </diagram>
 </mxfile>`;
 
-function labels(xml: string): string[] {
-  return summarizeDiagram(xml).vertices.map((vertex) => vertex.label);
+/** Parent-relative boxes read as page coordinates must not collide across containers. */
+function assertRawDisjoint(xml: string, prompt: string) {
+  const doc = openDiagram(xml);
+  const vertices = listVertices(doc).map((vertex) => ({
+    id: vertex.getAttribute("id") ?? "",
+    parent: vertex.getAttribute("parent") ?? "",
+    label: cellLabel(vertex),
+    box: geometryOf(vertex),
+  }));
+  for (let i = 0; i < vertices.length; i += 1) {
+    for (let j = i + 1; j < vertices.length; j += 1) {
+      const a = vertices[i];
+      const b = vertices[j];
+      if (!a || !b || a.parent === b.id || b.parent === a.id) continue;
+      const width = Math.max(0, Math.min(a.box.x + a.box.width, b.box.x + b.box.width) - Math.max(a.box.x, b.box.x));
+      const height = Math.max(0, Math.min(a.box.y + a.box.height, b.box.y + b.box.height) - Math.max(a.box.y, b.box.y));
+      assert.equal(width * height, 0, `${prompt} ${a.label} overlaps ${b.label}`);
+    }
+  }
+}
+
+function assertContained(xml: string, prompt: string) {
+  const doc = openDiagram(xml);
+  const vertices = listVertices(doc);
+  const byId = new Map(vertices.map((vertex) => [vertex.getAttribute("id") ?? "", vertex]));
+  for (const vertex of vertices) {
+    if (!(vertex.getAttribute("style") ?? "").includes("drawai=node")) continue;
+    const parent = byId.get(vertex.getAttribute("parent") ?? "");
+    assert.ok(parent, `${prompt} ${cellLabel(vertex)} has no container`);
+    const box = geometryOf(vertex);
+    const frame = geometryOf(parent!);
+    assert.ok(box.x >= -1 && box.y >= -1, `${prompt} ${cellLabel(vertex)} origin`);
+    assert.ok(box.x + box.width <= frame.width + 2, `${prompt} ${cellLabel(vertex)} width`);
+    assert.ok(box.y + box.height <= frame.height + 2, `${prompt} ${cellLabel(vertex)} height`);
+  }
 }
 
 describe("architecture plan", () => {
@@ -132,6 +166,69 @@ describe("architecture plan", () => {
     assert.deepEqual(parseArchitecture("four tier architecture")?.nodes, ["Client", "App", "Service 2", "Postgres"]);
     assert.equal(parseArchitecture("Add a cache to the 3-tier web app"), null);
     assert.equal(isArchitectureRequest("Add a cache to the 3-tier web app"), false);
+  });
+
+  it("draws a default stack for layer-count paraphrases and keeps tier rows from stacking", () => {
+    const prompts = [
+      "a basic three-layer web application",
+      "three-layer web application",
+      "3-layer web application",
+      "3 layer web app",
+      "three layers web application",
+      "plain 3 tier system for a website",
+    ];
+    for (const prompt of prompts) {
+      const plan = parseArchitecture(prompt);
+      assert.ok(plan, prompt);
+      assert.deepEqual(plan.nodes, ["Client", "App", "Postgres"], prompt);
+      assert.equal(plan.layout, "horizontal", prompt);
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/, prompt);
+      assert.match(drawn.decision.reply, /Client → App → Postgres/, prompt);
+      const report = assessDiagram(drawn.xml);
+      assert.deepEqual(report.overlaps, [], prompt);
+      assert.deepEqual(report.crossings, [], prompt);
+      const shapes = report.nodes.filter((node) => node.role !== "cluster");
+      const clusters = report.nodes.filter((node) => node.role === "cluster");
+      assert.deepEqual(
+        shapes.map((node) => node.label),
+        ["Client", "App", "Postgres"],
+        prompt,
+      );
+      assert.deepEqual(
+        report.edges.map((edge) => `${edge.from}->${edge.to}`),
+        ["Client->App", "App->Postgres"],
+        prompt,
+      );
+      assert.deepEqual(
+        report.edges.map((edge) => edge.label),
+        ["HTTPS", "Query"],
+        prompt,
+      );
+      assert.deepEqual(
+        clusters.map((node) => node.label),
+        ["Clients", "Services", "Data"],
+        prompt,
+      );
+      assert.ok(
+        shapes.every((node) => /fillColor=#[0-9a-f]{6}/i.test(node.style) && !node.style.includes("fillColor=#ffffff")),
+        prompt,
+      );
+      const client = shapes.find((node) => node.label === "Client");
+      const app = shapes.find((node) => node.label === "App");
+      const postgres = shapes.find((node) => node.label === "Postgres");
+      assert.ok(client && app && postgres);
+      assert.ok(client.x < app.x && app.x < postgres.x, prompt);
+      assert.equal(client.y, app.y, prompt);
+      assert.equal(app.y, postgres.y, prompt);
+      assertRawDisjoint(drawn.xml, prompt);
+      assertContained(drawn.xml, prompt);
+    }
+
+    assert.equal(parseArchitecture("Add a cache to the 3-layer web app"), null);
+    assert.equal(isArchitectureRequest("Add a cache to the 3-layer web app"), false);
+    assert.equal(parseArchitecture("Add a cache to the three-layer web application"), null);
   });
 
   it("keeps Redis on a 3-tier web app that asks for a Redis cache", () => {
