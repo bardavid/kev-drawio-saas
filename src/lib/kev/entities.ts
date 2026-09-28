@@ -1268,7 +1268,21 @@ function salvageBigrams(
 }
 
 /** A drawing verb at the start of the request is not a tier. "Outline a stack" is not a node named Outline. */
-const DRAWING_VERBS = new Set(["outline", "outlining", "outlined", "depict", "depicting", "chart", "trace", "render", "rendering"]);
+const DRAWING_VERBS = new Set([
+  "outline",
+  "outlining",
+  "outlined",
+  "describe",
+  "describing",
+  "depict",
+  "depicting",
+  "chart",
+  "trace",
+  "render",
+  "rendering",
+  "map",
+  "mapping",
+]);
 
 const DIAGRAM_KIND = new Set([
   "sequence",
@@ -1569,10 +1583,259 @@ function orderedStageHeads(text: string): Array<{ label: string; order: number }
   return found;
 }
 
+/**
+ * Vertical stack markers. "on top", "in the middle", and "underneath" name a
+ * position, not a different tier. "above" / "below" are the same kind of word.
+ */
+const STACK_POSITION =
+  /\b(?:on(?:\s+the)?\s+top|up top|at the top|in the middle|in the center|in the centre|in between|underneath|beneath|at the bottom|down below)\b|\b(?:above|below)\b/i;
+
+const STACK_HEADING =
+  /^(?:please\s+)?(?:outline|outlining|draw|sketch|describe|show|map|illustrate|diagram|build|create|architect|depict)\b/i;
+
+const STACK_SKIP = new Set([
+  "a",
+  "an",
+  "the",
+  "our",
+  "my",
+  "their",
+  "its",
+  "please",
+  "kindly",
+  "me",
+  "and",
+  "or",
+  "then",
+  "plus",
+  "also",
+  "just",
+]);
+
+/** A trailing role word that restates the product. "Postgres store" is Postgres. "Media API" keeps media. */
+const TRAILING_ROLE = new Set(["store", "stores", "database", "db", "datastore"]);
+
+const DATA_PURPOSE = /\b(?:writes?|reads?|persist\w*|stor(?:e|age|ing)|records?|queries|query|database|datastore)\b/i;
+
+interface StackTier {
+  label: string;
+  clause: string;
+  order: number;
+}
+
+function isStackHeading(clause: string): boolean {
+  if (STACK_POSITION.test(clause)) return false;
+  if (STACK_HEADING.test(clause)) return true;
+  return /\b(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i.test(clause);
+}
+
+function labelFromStackClause(clause: string): string | null {
+  let text = clause.replace(new RegExp(STACK_POSITION.source, "ig"), " ");
+  text = text.replace(/\s+\b(?:for|as)\b[\s\S]*$/i, " ");
+  text = text.replace(/\s+\b(?:handling|handles|handle)\b[\s\S]*$/i, " ");
+  text = text.replace(
+    /^(?:please\s+)?(?:outline|outlining|draw|sketch|describe|show|map|illustrate|diagram|build|create|architect|depict)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
+    "",
+  );
+  const words = text.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? [];
+  const kept: string[] = [];
+  for (const word of words) {
+    const token = word.toLowerCase();
+    if (STACK_SKIP.has(token) || TIER_GLUE.has(token) || /^\d+$/.test(token)) continue;
+    if (DRAWING_VERBS.has(token) || HARD_CUE.has(token) || FLUFF.has(token)) continue;
+    kept.push(word);
+  }
+  while (kept.length > 1) {
+    const tail = kept[kept.length - 1]?.toLowerCase() ?? "";
+    if (!TIER_GLUE.has(tail) && !TRAILING_ROLE.has(tail)) break;
+    kept.pop();
+  }
+  if (kept.length === 0 || kept.length > 6) return null;
+  if (kept.every((word) => FLUFF.has(word.toLowerCase()) || DIAGRAM_KIND.has(word.toLowerCase()))) return null;
+  return kept.map((word) => displayToken(word)).join(" ");
+}
+
+/**
+ * A vertical list of named tiers. One position word is enough: sibling clauses
+ * in the same list are tiers too. Generic role words ("browser clients") stay.
+ */
+function stackTiers(text: string): StackTier[] | null {
+  const segments = segmentsOf(text);
+  if (!segments.some((segment) => STACK_POSITION.test(segment.text))) return null;
+  const tiers: StackTier[] = [];
+  for (const segment of segments) {
+    if (isStackHeading(segment.text)) continue;
+    const label = labelFromStackClause(segment.text);
+    if (!label) continue;
+    tiers.push({ label, clause: segment.text, order: segment.start });
+  }
+  if (tiers.length < 2) return null;
+  if (!tiers.some((tier) => STACK_POSITION.test(tier.clause))) return null;
+  return tiers;
+}
+
+function roleForStack(label: string, clause: string): EntityRole {
+  const tokens = label.toLowerCase().split(/\s+/);
+  for (const token of tokens) {
+    const listed = tierRole(token);
+    if (listed) return listed;
+    const stem = token.length >= 4 && token.endsWith("s") ? token.slice(0, -1) : token;
+    const inferred = inferRole(stem);
+    if (inferred !== "compute") return inferred;
+  }
+  const whole = inferRole(label);
+  if (whole !== "compute") return whole;
+  if (DATA_PURPOSE.test(clause)) return "data";
+  return "compute";
+}
+
+function draftCoversTier(drafts: Draft[], label: string, text: string): Draft | null {
+  const key = label.toLowerCase();
+  const exact = drafts.find((draft) => draft.label.toLowerCase() === key);
+  if (exact) return exact;
+  const entry = phraseEntry(key, text);
+  if (!entry) return null;
+  return drafts.find((draft) => draft.id === entry.id || draft.label.toLowerCase() === entry.label.toLowerCase()) ?? null;
+}
+
+function narrowerDraft(drafts: Draft[], label: string): Draft | null {
+  const words = label.toLowerCase().split(/\s+/);
+  if (words.length < 2) return null;
+  const tail = words[words.length - 1] ?? "";
+  const hits = drafts.filter((draft) => !draft.label.includes(" ") && draft.label.toLowerCase() === tail);
+  return hits.length === 1 ? (hits[0] ?? null) : null;
+}
+
+function paintTier(draft: Draft, tier: StackTier, replaceLabel: boolean): Draft {
+  const label = replaceLabel ? tier.label : draft.label;
+  const role = draft.origin === "catalog" ? draft.role : roleForStack(replaceLabel ? tier.label : draft.label, tier.clause);
+  return {
+    ...draft,
+    id: label.toLowerCase(),
+    label,
+    role,
+    shape: shapeFor({ role }, label),
+    order: tier.order,
+    origin: draft.origin === "catalog" ? "catalog" : "listed",
+  };
+}
+
+/**
+ * Keep every tier in a positional stack. A generic client phrase is still a
+ * vertex. A qualifier in front of a role noun ("media API") stays on the label.
+ * A purpose such as "for writes" marks a data tier without renaming it.
+ */
+function applyStackTiers(text: string, drafts: Draft[]): Draft[] {
+  const tiers = stackTiers(text);
+  if (!tiers) return drafts;
+  // The stack is the whole diagram. A heading verb is not an extra vertex.
+  const next: Draft[] = [];
+  const used = new Set<Draft>();
+  for (const tier of tiers) {
+    const covered = draftCoversTier(
+      drafts.filter((draft) => !used.has(draft)),
+      tier.label,
+      text,
+    );
+    if (covered) {
+      used.add(covered);
+      const same = covered.label.toLowerCase() === tier.label.toLowerCase();
+      next.push(covered.origin !== "catalog" && same ? paintTier(covered, tier, false) : { ...covered, order: tier.order });
+      continue;
+    }
+    const narrow = narrowerDraft(
+      drafts.filter((draft) => !used.has(draft)),
+      tier.label,
+    );
+    if (narrow) {
+      used.add(narrow);
+      next.push(paintTier(narrow, tier, true));
+      continue;
+    }
+    const role = roleForStack(tier.label, tier.clause);
+    next.push({
+      id: tier.label.toLowerCase(),
+      label: tier.label,
+      role,
+      shape: shapeFor({ role }, tier.label),
+      order: tier.order,
+      origin: "listed",
+    });
+  }
+  return next;
+}
+
+const BOX_LABEL_CUE =
+  /\b(?:boxes|shapes|nodes|rectangles|vertices)\s+(?:labeled|labelled|called|named)\s+(.+)$/i;
+
+/**
+ * "Place three boxes labeled Edge, Broker, and Sink".
+ * Every listed name is a vertex, including words that usually name the diagram
+ * ("edge", "path", "flow") rather than a product.
+ */
+function explicitLabeledBoxes(text: string): string[] | null {
+  const match = text.match(BOX_LABEL_CUE);
+  if (!match?.[1]) return null;
+  if (!/\b(?:place|put|add|draw|sketch|create|insert|drop|show)\b/i.test(text)) return null;
+  const sentence = match[1].split(/(?<=[.!?])\s+/)[0] ?? match[1];
+  const body = sentence.replace(/[?.!]+$/g, "").trim();
+  if (!body) return null;
+  const parts = body
+    .replace(/\s+\band\b\s+/gi, ", ")
+    .split(/\s*[,;|/]\s*/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const labels: string[] = [];
+  for (const part of parts) {
+    const words = (part.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter(
+      (word) => !/^(?:box|boxes|shape|shapes|node|nodes|rectangle|rectangles)$/i.test(word),
+    );
+    if (words.length === 0 || words.length > 6) return null;
+    labels.push(words.map((word) => displayToken(word)).join(" "));
+  }
+  return labels.length >= 2 ? labels : null;
+}
+
+function entitiesFromDrafts(drafts: Draft[]): NamedEntity[] {
+  const sorted = [...drafts].sort((left, right) => left.order - right.order);
+  const used = new Set<string>();
+  const perRole = new Map<EntityRole, number>();
+  return sorted.map((draft) => {
+    const index = perRole.get(draft.role) ?? 0;
+    perRole.set(draft.role, index + 1);
+    const paint = pastel(draft.role, index);
+    return {
+      id: slug(draft.id, used),
+      label: draft.label,
+      role: draft.role,
+      shape: draft.shape,
+      fill: paint.fill,
+      stroke: paint.stroke,
+      origin: draft.origin,
+    };
+  });
+}
+
 /** Concrete services, steps, actors, and states named in the message. */
 export function extractNamedEntities(message: string): NamedEntity[] {
   const text = normalize(message);
   if (!text) return [];
+  const boxed = explicitLabeledBoxes(text);
+  if (boxed) {
+    return entitiesFromDrafts(
+      boxed.map((label, index) => {
+        const role = inferRole(label);
+        return {
+          id: label.toLowerCase(),
+          label,
+          role,
+          shape: shapeFor({ role }, label),
+          order: index,
+          origin: "listed" as const,
+        };
+      }),
+    );
+  }
   const spans = catalogSpans(text);
   const drafts: Draft[] = [];
   const seen = new Set<string>();
@@ -1729,26 +1992,8 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     }
   }
 
-  const kept = dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts));
-  drafts.length = 0;
-  drafts.push(...kept);
-  drafts.sort((left, right) => left.order - right.order);
-  const used = new Set<string>();
-  const perRole = new Map<EntityRole, number>();
-  return drafts.map((draft) => {
-    const index = perRole.get(draft.role) ?? 0;
-    perRole.set(draft.role, index + 1);
-    const paint = pastel(draft.role, index);
-    return {
-      id: slug(draft.id, used),
-      label: draft.label,
-      role: draft.role,
-      shape: draft.shape,
-      fill: paint.fill,
-      stroke: paint.stroke,
-      origin: draft.origin,
-    };
-  });
+  const kept = applyStackTiers(text, dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts)));
+  return entitiesFromDrafts(kept);
 }
 
 function linkLabel(from: NamedEntity, to: NamedEntity): string {
@@ -1970,6 +2215,16 @@ function exchangeMessages(text: string, nodes: NamedEntity[]): Array<{ from: str
   return messages;
 }
 
+function stackNeighborEdges(nodes: NamedEntity[]): DiagramEdge[] {
+  const edges: DiagramEdge[] = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    const from = nodes[index - 1];
+    const to = nodes[index];
+    if (from && to) pushEdge(edges, from, to);
+  }
+  return edges;
+}
+
 function chainInOrder(nodes: NamedEntity[]): DiagramEdge[] {
   const edges: DiagramEdge[] = [];
   for (let index = 1; index < nodes.length; index += 1) {
@@ -1987,25 +2242,40 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
   const nodes = entities ?? extractNamedEntities(text);
   if (nodes.length < 2) return null;
   const sequence = /\bsequence\b/i.test(text) || isExchange(text);
-  const labels = nodes.map((node) => node.label);
+  const stackLabels = sequence ? null : stackTiers(text)?.map((tier) => tier.label) ?? null;
+  const stacked =
+    stackLabels !== null &&
+    stackLabels.length === nodes.length &&
+    stackLabels.every((label) => nodes.some((node) => node.label.toLowerCase() === label.toLowerCase()));
+  const ordered = stacked
+    ? stackLabels.map((label) => nodes.find((node) => node.label.toLowerCase() === label.toLowerCase())!).filter(Boolean)
+    : nodes;
+  const labels = ordered.map((node) => node.label);
   const title = topicTitle(text) ?? (sequence ? "Sequence" : "Architecture");
   const reply = sequence ? `Drew a sequence with ${labels.join(", ")}.` : `Drew ${title} with ${labels.join(", ")}.`;
   const byRole = new Map<EntityRole, NamedEntity[]>();
-  for (const node of nodes) {
+  for (const node of ordered) {
     const list = byRole.get(node.role) ?? [];
     list.push(node);
     byRole.set(node.role, list);
   }
-  const groups = ROLE_ORDER.filter((role) => byRole.has(role)).map((role) => {
-    const groupNodes = byRole.get(role) ?? [];
-    return {
-      id: `group-${role}`,
-      label: GROUP_LABEL[role],
-      flow: groupNodes.length > 1 ? ("row" as const) : ("column" as const),
-      nodes: groupNodes,
-    };
-  });
-  let edges = layerEdges(nodes);
+  const groups = stacked
+    ? ordered.map((node) => ({
+        id: `group-${node.id}`,
+        label: GROUP_LABEL[node.role],
+        flow: "column" as const,
+        nodes: [node],
+      }))
+    : ROLE_ORDER.filter((role) => byRole.has(role)).map((role) => {
+        const groupNodes = byRole.get(role) ?? [];
+        return {
+          id: `group-${role}`,
+          label: GROUP_LABEL[role],
+          flow: groupNodes.length > 1 ? ("row" as const) : ("column" as const),
+          nodes: groupNodes,
+        };
+      });
+  let edges = stacked ? stackNeighborEdges(ordered) : layerEdges(ordered);
   // A same-role row has no tier boundary. Ordered stages still need a connector between neighbors.
   if (!sequence && edges.length === 0 && nodes.length >= 2 && /\b(?:first|then|followed by)\b/i.test(text)) {
     edges = chainInOrder(nodes);
@@ -2028,7 +2298,7 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
     kind: sequence ? "sequence" : "layers",
     groups,
     edges,
-    participants: nodes,
+    participants: ordered,
     messages,
   };
 }

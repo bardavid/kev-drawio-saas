@@ -162,13 +162,34 @@ const COLOR_MODIFIERS = new Set([
 ]);
 
 /**
- * Pink, magenta, fuchsia, and hot-pink share one edge stroke.
- * The band is hue 300±40. Palette magenta (~294) is inside it.
- * Palette pink (~343) is outside, so an edge ask for pink uses the family stroke.
- * Cyan and teal are not in this set and keep their own strokes.
+ * Edge colors resolve by hue family, not by one synonym at a time.
+ * A spoken sample joins the nearest family whose center is within radius.
+ * Amber, gold, orange, and goldenrod sit near hue 40 (±25).
+ * Pink, magenta, fuchsia, and hot-pink sit near hue 300 (±40).
+ * Palette pink’s own stroke is outside that band, so the spoken sample is a
+ * pink inside it and the edge uses the family stroke.
+ * Cyan, teal, and any palette stroke already inside its own family stay put.
  */
-const MAGENTA_ROOTS = new Set(["pink", "magenta", "fuchsia", "hotpink", "rose", "cerise"]);
-const MAGENTA_HUE = { min: 260, max: 340 };
+const HUE_FAMILIES: Array<{ colorName: string; center: number; radius: number }> = [
+  { colorName: "magenta", center: 300, radius: 40 },
+  { colorName: "orange", center: 40, radius: 25 },
+];
+
+/** Representative sRGB for spoken names. Hue is computed from the sample. */
+const SPOKEN_COLOR_HEX: Record<string, string> = {
+  amber: "#ffbf00",
+  gold: "#ffd700",
+  golden: "#ffd700",
+  goldenrod: "#daa520",
+  darkorange: "#ff8c00",
+  coral: "#ff7f50",
+  pink: "#ff69b4",
+  hotpink: "#ff69b4",
+  magenta: "#c026d3",
+  fuchsia: "#ff00ff",
+  rose: "#ff007f",
+  cerise: "#ff1493",
+};
 
 function hexHue(hex: string): number {
   const raw = hex.replace("#", "");
@@ -188,9 +209,30 @@ function hexHue(hex: string): number {
   return hue;
 }
 
-function inMagentaBand(stroke: string): boolean {
-  const hue = hexHue(stroke);
-  return hue >= MAGENTA_HUE.min && hue <= MAGENTA_HUE.max;
+function hueDistance(left: number, right: number): number {
+  const delta = Math.abs(left - right) % 360;
+  return Math.min(delta, 360 - delta);
+}
+
+function familyForHue(hue: number): { colorName: string; center: number; radius: number } | null {
+  let best: { colorName: string; center: number; radius: number } | null = null;
+  let bestDist = Infinity;
+  for (const family of HUE_FAMILIES) {
+    const dist = hueDistance(hue, family.center);
+    if (dist <= family.radius && dist < bestDist) {
+      best = family;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+function spokenHue(word: string): number | null {
+  const sample = SPOKEN_COLOR_HEX[word];
+  if (sample) return hexHue(sample);
+  const palette = PALETTE[canonicalColor(word)];
+  if (!palette) return null;
+  return hexHue(palette.stroke);
 }
 
 interface ColorSpan {
@@ -201,25 +243,38 @@ interface ColorSpan {
   phrase: string | null;
 }
 
+function resolveColorWord(word: string, phrase: string): { colorName: string; phrase: string } | null {
+  const hue = spokenHue(word);
+  const paletteKey = PALETTE[canonicalColor(word)] ? canonicalColor(word) : null;
+  const family = hue === null ? null : familyForHue(hue);
+  if (paletteKey && family) {
+    const stroke = PALETTE[paletteKey]!.stroke;
+    const canonical = PALETTE[family.colorName]!.stroke;
+    const strokeInFamily = hueDistance(hexHue(stroke), family.center) <= family.radius;
+    if (strokeInFamily && (paletteKey === family.colorName || stroke.toLowerCase() !== canonical.toLowerCase())) {
+      return { colorName: paletteKey, phrase: phrase === word ? paletteKey : phrase };
+    }
+    return { colorName: family.colorName, phrase };
+  }
+  if (family) return { colorName: family.colorName, phrase };
+  if (paletteKey) return { colorName: paletteKey, phrase: phrase === word ? paletteKey : phrase };
+  return null;
+}
+
 function resolveSpokenColor(rawParts: string[]): { colorName: string; phrase: string } | null {
   const parts = rawParts.flatMap((part) => part.toLowerCase().split("-")).filter(Boolean);
   if (parts.length === 0 || parts.length > 4) return null;
-  if (parts.length === 1) {
-    const word = parts[0] ?? "";
-    const name = canonicalColor(word);
-    const named = PALETTE[name];
-    if (named && !(MAGENTA_ROOTS.has(word) && !inMagentaBand(named.stroke))) {
-      return { colorName: name, phrase: name };
-    }
-    if (MAGENTA_ROOTS.has(word)) return { colorName: "magenta", phrase: word };
-    return null;
-  }
+  const phrase = rawParts.join(" ").toLowerCase();
+  if (parts.length === 1) return resolveColorWord(parts[0] ?? "", parts[0] ?? "");
   const compact = parts.join("");
+  if (SPOKEN_COLOR_HEX[compact] || PALETTE[canonicalColor(compact)]) {
+    const hit = resolveColorWord(compact, phrase);
+    if (hit) return hit;
+  }
   const root = parts[parts.length - 1] ?? "";
   const heads = parts.slice(0, -1);
-  const inFamily = MAGENTA_ROOTS.has(compact) || (MAGENTA_ROOTS.has(root) && heads.every((word) => COLOR_MODIFIERS.has(word)));
-  if (!inFamily) return null;
-  return { colorName: "magenta", phrase: rawParts.join(" ").toLowerCase() };
+  if (!heads.every((word) => COLOR_MODIFIERS.has(word))) return null;
+  return resolveColorWord(root, phrase);
 }
 
 function findRestyleColor(text: string): ColorSpan | null {
