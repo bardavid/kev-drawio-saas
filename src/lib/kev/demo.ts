@@ -27,7 +27,7 @@ function cleanNoun(value: string): string {
   let previous = "";
   while (previous !== text) {
     previous = text;
-    text = text.replace(/\s+(?:box|shape|node|component|service|database|db|cache|queue|stage)$/i, "").trim();
+    text = text.replace(/\s+(?:box|shape|node|component|service|database|db|cache|queue|stage|sitting)$/i, "").trim();
   }
   return text;
 }
@@ -120,7 +120,7 @@ function findRestyleColor(text: string): { token: string; index: number; length:
 function edgeSubject(text: string, color: { index: number; length: number }): string {
   const raw = `${text.slice(0, color.index)} ${text.slice(color.index + color.length)}`;
   return raw
-    .replace(/^(?:please\s+)?(?:change|make|turn|paint|color|colour|recolor|recolour|style|set)\s+/i, "")
+    .replace(/^(?:please\s+)?(?:change|make|turn|paint|color|colour|recolor|recolour|restyle|style|set)\s+/i, "")
     .replace(/\bplease\b/gi, " ")
     .replace(/\b(?:to|color|colour)\s*$/i, "")
     .replace(/[?.!,;:]+/g, " ")
@@ -259,7 +259,7 @@ export function shapeRestyleDecision(message: string): KevDecision | null {
   if (!text) return null;
   const colorCommand = text.match(
     new RegExp(
-      `\\b(?:change|make|turn|paint|color|colour|recolor|recolour|style|set)\\s+(?:the\\s+)?(.+?)\\s+(?:(?:to|(?:color|colour))\\s+)?(${COLOR_NAMES}|#[0-9a-fA-F]{6})\\b`,
+      `\\b(?:change|make|turn|paint|color|colour|recolor|recolour|restyle|style|set)\\s+(?:the\\s+)?(.+?)\\s+(?:(?:to|(?:color|colour))\\s+)?(${COLOR_NAMES}|#[0-9a-fA-F]{6})\\b`,
       "i",
     ),
   );
@@ -323,6 +323,12 @@ export function decideDemo(message: string): KevDecision {
   if (utteredEdges) return utteredEdges;
 
   if (isNamedAddition(text)) return parseAdd(text);
+  if (
+    /^(?:please\s+)?(?:put|drop)\b/i.test(text) &&
+    /\b(?:between|in front of|ahead of|before|behind|after)\b/i.test(text)
+  ) {
+    return parseAdd(text);
+  }
 
   if (
     /\b(reflow|relayout|re-layout|arrange|organize|organise)\b/.test(lower) ||
@@ -335,10 +341,10 @@ export function decideDemo(message: string): KevDecision {
     return decision("layout", `Reflowed the diagram into ${direction}.`, slots, [{ intent: "layout", slots }]);
   }
 
-  const rename = text.match(/\brename\s+(?:the\s+)?(.+?)\s+to\s+(.+)$/i);
-  if (rename?.[1] && rename[2]) {
-    const target = titleLabel(rename[1]);
-    const newLabel = titleLabel(rename[2]);
+  const rename = parseRename(text);
+  if (rename) {
+    const target = titleLabel(rename.target);
+    const newLabel = titleLabel(rename.next);
     if (isVagueTarget(target)) return decision("clarify", "Which shape should be renamed?");
     const slots: DiagramSlots = { target, newLabel };
     return decision("edit_shape", `Renamed ${target} to ${newLabel}.`, slots, [{ intent: "edit_shape", slots }]);
@@ -375,6 +381,18 @@ export function decideDemo(message: string): KevDecision {
   return decision("clarify", HELP);
 }
 
+function parseRename(text: string): { target: string; next: string } | null {
+  const patterns = [
+    /\b(?:rename|relabel)\s+(?:the\s+)?(?:label\s+(?:of\s+)?)?(.+?)\s+(?:to|as|so\s+it\s+reads)\s+(.+)$/i,
+    /\bchange\s+(?:the\s+)?label\s+(?:of\s+|on\s+)?(.+?)\s+(?:so\s+it\s+reads|to)\s+(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1] && match[2]) return { target: match[1], next: match[2] };
+  }
+  return null;
+}
+
 function firstClause(value: string): string {
   const cut = value.search(/\.\s+/);
   const sentence = cut === -1 ? value : value.slice(0, cut);
@@ -382,7 +400,7 @@ function firstClause(value: string): string {
 }
 
 function parseAdd(text: string): KevDecision {
-  let rest = text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place)\s+/i, "");
+  let rest = text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place|put|drop)\s+/i, "");
   rest = rest.replace(/^(?:a|an|the)\s+/i, "");
   rest = firstClause(rest);
 

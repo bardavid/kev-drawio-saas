@@ -145,6 +145,84 @@ describe("named composition", () => {
     assertPastel(content(report.nodes), prompt);
   });
 
+  it("keeps a named message bus on a gateway and two services", () => {
+    const prompt = "A microservices sketch with a gateway, Auth service, Orders service, and a message bus.";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /Which nodes should I draw/);
+    assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["API Gateway", "Auth Service", "Orders Service", "Message bus"]) {
+      assert.ok(labels.includes(label), `${label} in ${labels.join(", ")}`);
+    }
+    assert.equal(labels.includes("Event broker"), false);
+    assert.ok(report.edges.some((edge) => edge.label === "Publish"));
+
+    const cached = previewDemo("Put a cache ahead of Orders", drawn.xml);
+    assert.equal(cached.decision.intent, "add_shape");
+    assert.match(cached.decision.reply, /cache/i);
+    const withCache = assessDiagram(cached.xml);
+    assert.ok(content(withCache.nodes).some((node) => node.label === "Cache"));
+    assert.ok(withCache.edges.some((edge) => edge.from === "Cache" && /Orders/.test(edge.to)));
+
+    const before = boxes(cached.xml);
+    const teal = previewDemo("Restyle the connectors teal", cached.xml);
+    assert.equal(teal.decision.intent, "style");
+    assert.equal(teal.decision.slots.colorName, "teal");
+    assert.deepEqual(boxes(teal.xml), before);
+    assert.ok(assessDiagram(teal.xml).edges.every((edge) => edge.style.includes("strokeColor=#0e8088")));
+  });
+
+  it("draws boxed client, API, and Postgres labels, then relabels the API", async () => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    const prompt = "Client box, API box, and a Postgres box";
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: prompt }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(drawn.intent, "add_shape");
+    assert.doesNotMatch(drawn.reply, /What should the new shape be called/);
+    const report = assertClean(drawn.updatedXml);
+    assert.deepEqual(content(report.nodes).map((node) => node.label), ["Client", "API", "Postgres"]);
+
+    const renamed = await runKevTurn({
+      messages: [
+        { role: "user", content: prompt },
+        { role: "assistant", content: drawn.reply },
+        { role: "user", content: "Relabel the API so it reads Backend" },
+      ],
+      currentXml: drawn.updatedXml,
+    });
+    assert.equal(renamed.intent, "edit_shape");
+    assert.deepEqual(content(assertClean(renamed.updatedXml).nodes).map((node) => node.label), [
+      "Client",
+      "Backend",
+      "Postgres",
+    ]);
+
+    const nonsense = await runKevTurn({
+      messages: [{ role: "user", content: "zzzzzyx nonsense blobble wibble not a real request" }],
+      currentXml: renamed.updatedXml,
+    });
+    assert.equal(nonsense.intent, "clarify");
+    assert.equal(nonsense.updatedXml, renamed.updatedXml);
+  });
+
+  it("draws one flowchart node per ordered step", () => {
+    const prompt = "Flowchart of boarding a train: show ticket, pass the gate, find the seat, then depart";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.deepEqual(labels, ["Show Ticket", "Pass The Gate", "Find The Seat", "Depart"]);
+    assert.deepEqual(
+      report.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Show Ticket->Pass The Gate", "Pass The Gate->Find The Seat", "Find The Seat->Depart"],
+    );
+    assert.ok(report.edges.every((edge) => edge.label === "Next"));
+  });
+
   it("renames a paraphrased client chain and restyles every box without moving it", async () => {
     for (const key of ENV_KEYS) delete process.env[key];
     const prompt = "Client / API / Postgres";

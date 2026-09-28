@@ -193,6 +193,7 @@ const CUE = new Set([
 const MODIFIERS = new Set([
   "shopper", "customer", "end", "our", "their", "my", "incoming", "existing", "primary", "main",
   "internal", "external", "simple", "basic", "new", "the", "a", "an", "user", "page", "service",
+  "box", "boxes",
 ]);
 
 interface PhraseHit {
@@ -342,6 +343,7 @@ const HARD_CUE = new Set([
   "please",
   "draw",
   "sketch",
+  "layout",
 ]);
 
 function adHoc(segment: string): { label: string; role: EntityRole } | null {
@@ -565,6 +567,14 @@ function layerEdges(nodes: NamedEntity[]): DiagramEdge[] {
       for (const source of previous) {
         sinkNodes.forEach((sink, index) => pushEdge(edges, source, sink, index > 0));
       }
+    }
+  }
+  if (edges.length === 0) {
+    const ordered = present.flatMap((role) => byRole.get(role) ?? []);
+    for (let index = 1; index < ordered.length; index += 1) {
+      const from = ordered[index - 1];
+      const to = ordered[index];
+      if (from && to) pushEdge(edges, from, to);
     }
   }
   return edges;

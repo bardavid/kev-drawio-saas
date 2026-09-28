@@ -1341,7 +1341,13 @@ function eventDriven(text: string): TemplateMatch {
   };
 }
 
-function namedMicroservices(services: string[], kafka: boolean): TemplateMatch {
+function namedBus(text: string): string | null {
+  if (/\bkafka\b/i.test(text)) return "Kafka";
+  if (/\b(?:message|event)\s+bus\b/i.test(text)) return "Message bus";
+  return null;
+}
+
+function namedMicroservices(services: string[], bus: string | null): TemplateMatch {
   const serviceNodes = services.map((label, index) => node(`svc${index}`, label, "rectangle"));
   const groups: LayerGroup[] = [
     col("clients", "Clients", [node("client", "Client", "rectangle")]),
@@ -1354,19 +1360,19 @@ function namedMicroservices(services: string[], kafka: boolean): TemplateMatch {
     edge("client", "gateway", "HTTPS"),
     ...serviceNodes.map((service) => edge("gateway", service.id, "Route")),
   ];
-  if (kafka) {
-    groups.push(col("bus", "Bus", [node("kafka", "Kafka", "queue")]));
-    for (const service of serviceNodes) edges.push(edge(service.id, "kafka", "Publish"));
+  if (bus) {
+    groups.push(col("bus", "Bus", [node("bus", bus, "queue")]));
+    serviceNodes.forEach((service, index) => edges.push(edge(service.id, "bus", "Publish", index > 0)));
   }
   const listed = services.join(" and ");
   return {
-    context: kafka
-      ? `The API gateway routes to ${listed}, and those services publish to Kafka.`
+    context: bus
+      ? `The API gateway routes to ${listed}, and those services publish to ${bus}.`
       : `The API gateway routes to ${listed}. Each named service stays on the diagram.`,
     spec: layers(
       "Microservices",
-      kafka
-        ? `Drew microservices: API Gateway in front of ${listed}, with Kafka.`
+      bus
+        ? `Drew microservices: API Gateway in front of ${listed}, with ${bus}.`
         : `Drew microservices: API Gateway in front of ${listed}.`,
       groups,
       edges,
@@ -1376,7 +1382,7 @@ function namedMicroservices(services: string[], kafka: boolean): TemplateMatch {
 
 function microservices(text: string): TemplateMatch {
   const services = namedServiceLabels(text);
-  if (services.length > 0) return namedMicroservices(services, /\bkafka\b/i.test(text));
+  if (services.length > 0) return namedMicroservices(services, namedBus(text));
   return {
     context: "A gateway routes to independent services. Each service owns its database.",
     spec: layers(

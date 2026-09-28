@@ -194,10 +194,23 @@ function isWorkflow(text: string): boolean {
 
 const PASTEL_NAMES = ["orange", "green", "blue", "purple", "yellow", "teal", "pink"] as const;
 
+function isSingleInsert(text: string): boolean {
+  if (/\bbetween\b/i.test(text) || /\bconnect(?:ed|s)?\b/i.test(text)) return true;
+  const relation = text.match(/\b(?:in front of|ahead of|before|behind|after)\b/i);
+  if (!relation || relation.index === undefined) return false;
+  const tail = text.slice(relation.index + relation[0].length);
+  return extractNamedEntities(tail).length < 2;
+}
+
 function isIncrementalEdit(text: string): boolean {
   const trimmed = text.trim();
-  if (/^(?:please\s+)?(?:add|insert|place|rename|delete|remove|drop|connect)\b/i.test(trimmed)) return true;
-  if (/^(?:please\s+)?(?:paint|recolor|recolour)\b/i.test(trimmed)) return true;
+  if (/^(?:please\s+)?(?:rename|relabel|delete|remove|connect)\b/i.test(trimmed)) return true;
+  if (/^(?:please\s+)?(?:add|insert|place|put|drop)\b/i.test(trimmed)) {
+    // "Put Client, API, and Postgres" names a new diagram. "Add X in front of Y" edits one.
+    if (isSingleInsert(trimmed)) return true;
+    return extractNamedEntities(trimmed).length < 2;
+  }
+  if (/^(?:please\s+)?(?:paint|recolor|recolour|restyle)\b/i.test(trimmed)) return true;
   if (/^(?:please\s+)?(?:change|make|turn|set|style|color|colour)\b/i.test(trimmed) && COLOR_RE.test(trimmed)) {
     return true;
   }
@@ -406,6 +419,9 @@ export function resolveComposition(
     }
   }
 
+  const flowchart = flowchartSpec(text);
+  if (flowchart) return packComposition(flowchart, text, hints, null, true);
+
   if (architectureOwns(text, labels)) return null;
 
   if (grounded) {
@@ -610,6 +626,48 @@ function taxWorkflow(): WorkflowSpec {
       { from: "due", to: "pay", label: "Yes", exit: "top" },
       { from: "due", to: "refund", label: "No", exit: "bottom" },
     ],
+  };
+}
+
+function stepLabel(raw: string): string {
+  return raw
+    .replace(/^(?:and|then|of)\s+/i, "")
+    .replace(/[?.!]+$/g, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => (/^[A-Z0-9]{2,}$/.test(word) ? word : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
+    .join(" ");
+}
+
+/** Ordered clauses in a flowchart become one node each. A title before the colon is not a step. */
+function flowchartSpec(text: string): WorkflowSpec | null {
+  if (!/\bflowchart\b/i.test(text)) return null;
+  const colon = text.indexOf(":");
+  const body = colon === -1 ? text.replace(/^.*?\bflowchart\b(?:\s+of)?/i, "") : text.slice(colon + 1);
+  const steps = body
+    .split(/\s*(?:,|;)\s*|\s+\bthen\b\s+/i)
+    .map(stepLabel)
+    .filter((step) => step.length > 1);
+  if (steps.length < 2) return null;
+  const heading = (colon === -1 ? "" : text.slice(0, colon)).replace(/\bflowchart\b/i, " ").replace(/\bof\b/i, " ");
+  const title = stepLabel(heading) || "Flowchart";
+  return {
+    kind: "workflow",
+    title,
+    reply: `Drew a flowchart: ${steps.join(" → ")}.`,
+    nodes: steps.map((label, index) => ({
+      id: `step-${index + 1}`,
+      label,
+      shape: "rectangle" as const,
+      column: index,
+      row: 0,
+    })),
+    edges: steps.slice(1).map((_, index) => ({
+      from: `step-${index + 1}`,
+      to: `step-${index + 2}`,
+      label: "Next",
+    })),
   };
 }
 
