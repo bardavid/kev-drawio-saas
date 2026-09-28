@@ -38,6 +38,36 @@ function geometrySignature(xml: string) {
   }));
 }
 
+function rawOverlapArea(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+) {
+  const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+  const height = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+  return width * height;
+}
+
+/** Parent-relative boxes read as page coordinates must not collide across containers. */
+function assertRawDisjoint(xml: string, prompt: string) {
+  const doc = openDiagram(xml);
+  const vertices = listVertices(doc).map((vertex) => ({
+    id: vertex.getAttribute("id") ?? "",
+    parent: vertex.getAttribute("parent") ?? "",
+    label: cellLabel(vertex),
+    box: geometryOf(vertex),
+  }));
+  for (let i = 0; i < vertices.length; i += 1) {
+    for (let j = i + 1; j < vertices.length; j += 1) {
+      const a = vertices[i];
+      const b = vertices[j];
+      if (!a || !b) continue;
+      if (a.parent === b.id || b.parent === a.id) continue;
+      const area = rawOverlapArea(a.box, b.box);
+      assert.equal(area, 0, `${prompt} ${a.label} overlaps ${b.label} by ${area}`);
+    }
+  }
+}
+
 function assertContainerParents(xml: string, prompt: string) {
   const doc = openDiagram(xml);
   const vertices = listVertices(doc);
@@ -1050,6 +1080,58 @@ describe("named composition", () => {
     for (const label of ["UI", "Business logic", "Database"]) assert.ok(tierNodes.includes(label), tierNodes.join(", "));
     assert.equal(tierNodes.includes("Sketch"), false);
     assert.ok(tierReport.edges.length >= 2);
+  });
+
+  it("keeps a named database when a data-layer gloss describes it", () => {
+    const prompt =
+      "Show a product backend in three tiers: a single-page app up top, app servers handling business rules, and MySQL as the data layer";
+    const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+    assert.deepEqual(labels, ["SPA", "Application servers", "MySQL"]);
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+    const report = assertClean(drawn.xml);
+    assert.deepEqual(content(report.nodes).map((node) => node.label), ["SPA", "Application servers", "MySQL"]);
+    const groups = report.nodes.filter((node) => node.role === "cluster").map((node) => node.label);
+    for (const group of ["Clients", "Services", "Data"]) assert.ok(groups.includes(group), group);
+    assert.ok(report.edges.length >= 2);
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assertPastel(content(report.nodes), prompt);
+    assertContainerParents(drawn.xml, prompt);
+    assertRawDisjoint(drawn.xml, prompt);
+    const stacked = content(report.nodes);
+    const ys = stacked.map((node) => node.y);
+    assert.deepEqual(ys, [...ys].sort((left, right) => left - right));
+
+    const bare = "Sketch three layers: UI, business logic, and a data layer.";
+    const bareLabels = extractNamedEntities(bare).map((entity) => entity.label);
+    assert.deepEqual(bareLabels, ["UI", "Business logic", "Data"]);
+
+    const rules = "Sketch three layers: UI, business rules, and a data layer.";
+    assert.deepEqual(extractNamedEntities(rules).map((entity) => entity.label), ["UI", "Business Rules", "Data"]);
+
+    const named = "Postgres for the data layer beside the API";
+    assert.deepEqual(extractNamedEntities(named).map((entity) => entity.label), ["Postgres", "Api"]);
+  });
+
+  it("recolors arrows cyan on the stroke and leaves fills and geometry alone", () => {
+    const prompt = "Woodpecker sketch: Bundle the artifact first, then Ship onto Render";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    const report = assertClean(drawn.xml);
+    assert.ok(report.edges.length >= 2, report.edges.map((edge) => `${edge.from}->${edge.to}`).join(", "));
+    const before = boxes(drawn.xml);
+    const fills = content(report.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const painted = previewDemo("Recolor all arrows cyan", drawn.xml);
+    assert.equal(painted.decision.intent, "style");
+    assert.equal(painted.decision.slots.colorName, "cyan");
+    assert.equal(painted.decision.slots.target, "arrows");
+    assert.deepEqual(boxes(painted.xml), before);
+    const after = assessDiagram(painted.xml);
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#0c8599")));
+    assert.deepEqual(
+      content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+      fills,
+    );
   });
 
   it("draws a sign-in choreography as a sequence with message edges", () => {

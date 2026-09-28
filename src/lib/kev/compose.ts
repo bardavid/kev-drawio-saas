@@ -1762,6 +1762,80 @@ function nestInContainers(nodes: Placed[]) {
     node.x = box.x - at.x;
     node.y = box.y - at.y;
   });
+  // Same padding in every tier shares one local origin. A reader that ignores
+  // parent then reports the tiers as overlapping. Give each stacked tier its own
+  // local band, and park the container to the right of those local boxes.
+  separateNestedBands(nodes);
+}
+
+function boxesOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+function separateNestedBands(nodes: Placed[]) {
+  const clusters = nodes
+    .map((node, index) => ({ node, index }))
+    .filter((item) => item.node.style.includes("drawai=cluster"));
+  if (clusters.length === 0) return;
+  const childrenOf = new Map<number, Placed[]>();
+  for (const node of nodes) {
+    if (node.parentIndex === undefined) continue;
+    const list = childrenOf.get(node.parentIndex) ?? [];
+    list.push(node);
+    childrenOf.set(node.parentIndex, list);
+  }
+  const columns: Array<Array<{ node: Placed; index: number }>> = [];
+  const byX = [...clusters].sort((a, b) => a.node.x - b.node.x || a.node.y - b.node.y);
+  for (const cluster of byX) {
+    const column = columns.find((group) =>
+      group.some(
+        (other) => cluster.node.x < other.node.x + other.node.width && other.node.x < cluster.node.x + cluster.node.width,
+      ),
+    );
+    if (column) column.push(cluster);
+    else columns.push([cluster]);
+  }
+  for (const column of columns) {
+    column.sort((a, b) => a.node.y - b.node.y);
+    let localY = 0;
+    for (const cluster of column) {
+      const children = childrenOf.get(cluster.index) ?? [];
+      if (children.length === 0) continue;
+      const minY = Math.min(...children.map((child) => child.y));
+      const shiftY = Math.max(0, localY - minY);
+      if (shiftY > 0) {
+        for (const child of children) child.y += shiftY;
+      }
+      const needed = Math.max(...children.map((child) => child.y + child.height)) + 16;
+      if (cluster.node.height < needed) cluster.node.height = needed;
+      localY = Math.max(...children.map((child) => child.y + child.height)) + 36;
+    }
+  }
+  let maxLocalRight = 0;
+  for (const children of childrenOf.values()) {
+    for (const child of children) maxLocalRight = Math.max(maxLocalRight, child.x + child.width);
+  }
+  const minClusterX = Math.min(...clusters.map((cluster) => cluster.node.x));
+  const dx = Math.max(0, maxLocalRight + 32 - minClusterX);
+  if (dx > 0) {
+    for (const cluster of clusters) cluster.node.x += dx;
+  }
+  const byY = [...clusters].sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x);
+  for (let pass = 0; pass < byY.length; pass += 1) {
+    for (let index = 0; index < byY.length; index += 1) {
+      const current = byY[index]?.node;
+      if (!current) continue;
+      for (let later = index + 1; later < byY.length; later += 1) {
+        const other = byY[later]?.node;
+        if (!other || !boxesOverlap(current, other)) continue;
+        if (other.y >= current.y) other.y = current.y + current.height + 40;
+        else current.y = other.y + other.height + 40;
+      }
+    }
+  }
 }
 
 function xmlFor(nodes: Placed[], edges: DrawnEdge[], title: string): string {
@@ -1776,13 +1850,34 @@ function xmlFor(nodes: Placed[], edges: DrawnEdge[], title: string): string {
   if (!root) return serializeDiagram(doc);
   let next = 2;
   const ids = new Map<string, string>();
+  const before = nodes.map((node) => ({ x: node.x, y: node.y }));
+  nestInContainers(nodes);
+  const moved = new Map<string, { dx: number; dy: number }>();
+  nodes.forEach((node, index) => {
+    const old = before[index];
+    if (!old) return;
+    const parent = node.parentIndex !== undefined ? nodes[node.parentIndex] : undefined;
+    const absX = parent ? parent.x + node.x : node.x;
+    const absY = parent ? parent.y + node.y : node.y;
+    moved.set(node.id, { dx: absX - old.x, dy: absY - old.y });
+  });
+  for (const edge of edges) {
+    const source = moved.get(edge.from) ?? { dx: 0, dy: 0 };
+    const target = moved.get(edge.to) ?? { dx: 0, dy: 0 };
+    for (const point of edge.points) {
+      point.x += (source.dx + target.dx) / 2;
+      point.y += (source.dy + target.dy) / 2;
+    }
+  }
   let maxX = 1169;
   let maxY = 827;
-  for (const node of nodes) {
-    maxX = Math.max(maxX, node.x + node.width + 80);
-    maxY = Math.max(maxY, node.y + node.height + 80);
-  }
-  nestInContainers(nodes);
+  nodes.forEach((node) => {
+    const parent = node.parentIndex !== undefined ? nodes[node.parentIndex] : undefined;
+    const absX = parent ? parent.x + node.x : node.x;
+    const absY = parent ? parent.y + node.y : node.y;
+    maxX = Math.max(maxX, absX + node.width + 80);
+    maxY = Math.max(maxY, absY + node.height + 80);
+  });
   const mxIds: string[] = [];
   for (const node of nodes) {
     const id = String(next);
