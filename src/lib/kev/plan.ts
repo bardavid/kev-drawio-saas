@@ -67,15 +67,27 @@ export function isArchitectureRequest(message: string): boolean {
   return parseArchitecture(message) !== null;
 }
 
-const INSERT_VERB = /\b(?:add|insert|place|put|drop|splice|wedge)\b/i;
+const INSERT_VERB = /\b(?:add|insert|place|put|drop|splice|wedge|park|stick|tuck|slot|nest)\b/i;
 
 /**
- * splice / wedge / insert / put / add / place + "between X and Y" edits the open canvas.
+ * An insert onto an existing edge.
+ * "between A and B", or "after A, before B" (midway and the same family).
  * It is not a new architecture chain, even when a stage name such as Build looks like a draw verb.
  */
 export function isBetweenEdit(text: string): boolean {
   const trimmed = text.trim();
-  return INSERT_VERB.test(trimmed) && /\bbetween\s+(?:the\s+)?.+\s+and\s+/i.test(trimmed);
+  const between = /\bbetween\s+(?:the\s+)?.+\s+and\s+\S+/i.test(trimmed);
+  const afterBefore = /\bafter\s+(?:the\s+)?\S+/i.test(trimmed) && /\bbefore\s+(?:the\s+)?\S+/i.test(trimmed);
+  if (between && INSERT_VERB.test(trimmed)) return true;
+  return afterBefore && (INSERT_VERB.test(trimmed) || /\b(?:midway|halfway)\b/i.test(trimmed));
+}
+
+/** "Rename X to Y" and "Change X's name to Y" edit a label. They are not a new diagram. */
+export function isRenameEdit(text: string): boolean {
+  const trimmed = text.trim();
+  if (/^(?:please\s+)?(?:rename|relabel)\b/i.test(trimmed)) return true;
+  if (/\b(?:change|set|update)\s+(?:the\s+)?name\s+of\b/i.test(trimmed) && /\bto\b/i.test(trimmed)) return true;
+  return /\b(?:change|set|update)\b/i.test(trimmed) && /\bname\s+to\b/i.test(trimmed);
 }
 
 /** "Make the boxes orange" restyles. "Build" inside it is not a draw verb. */

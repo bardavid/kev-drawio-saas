@@ -17,7 +17,7 @@ import { DiagramXmlError, applyOperations, edgeQuery, groundDecision } from "@/l
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
-import { architectureDecision, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { architectureDecision, isRenameEdit, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
 import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
@@ -147,6 +147,14 @@ function mergeSlots(primary: DiagramSlots, fallback: DiagramSlots): DiagramSlots
     place: filled(primary.place, fallback.place),
     sequence: primary.sequence ?? fallback.sequence ?? null,
   };
+}
+
+/** "Change API's name to Backend" / "Rename API to Backend" updates the label without another confirm round. */
+function hostRenameDecision(message: string): KevDecision | null {
+  if (!isRenameEdit(message)) return null;
+  const demo = decideDemo(message);
+  if (demo.intent !== "edit_shape" || !demo.slots.target || !demo.slots.newLabel) return null;
+  return demo;
 }
 
 /** "Add Test between Build and Deploy" names both ends. Place after/before must not append it. */
@@ -460,6 +468,10 @@ export async function runKevTurn(input: {
   const betweenAdd = betweenAddDecision(userMessage);
   if (betweenAdd) {
     return finish(betweenAdd, described.mode, described.model, input.currentXml, currentXml, { userMessage });
+  }
+  const renamed = hostRenameDecision(userMessage);
+  if (renamed) {
+    return finish(renamed, described.mode, described.model, input.currentXml, currentXml, { userMessage });
   }
   const context = editContext(currentXml, input.previousXml);
   const request = {

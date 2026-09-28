@@ -587,4 +587,267 @@ describe("named composition", () => {
     assert.equal(altNodes.includes("Compute There"), false);
     assert.ok(altNodes.includes("Tigris"));
   });
+
+  it("draws one sequence lifeline per distinctly named actor", () => {
+    const prompts = [
+      "Login sequence: Client Browser talks to the Authorization Server; afterward the Resource Server checks the access token",
+      "Sign-in sequence. The client browser talks with the authorization server. Later the resource server checks the token.",
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+      for (const label of ["Client Browser", "Authorization Server", "Resource Server"]) {
+        assert.ok(labels.includes(label), `${prompt} → ${labels.join(", ")}`);
+      }
+      for (const stolen of ["User", "Auth Service", "Browser", "Talks", "Checks", "Sign-in", "Token"]) {
+        assert.equal(labels.includes(stolen), false, `${prompt} stole ${stolen}`);
+      }
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+      const report = assertClean(drawn.xml);
+      assert.deepEqual(content(report.nodes).map((node) => node.label), [
+        "Client Browser",
+        "Authorization Server",
+        "Resource Server",
+      ]);
+      assert.ok(content(report.nodes).every((node) => node.style.includes("umlLifeline")), prompt);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
+      assertPastel(content(report.nodes), prompt);
+    }
+  });
+
+  it("inserts only the stage name from midway, after, and before phrasing", () => {
+    const drawn = previewDemo(
+      "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel",
+      STARTER_XML,
+    );
+    const restyled = previewDemo("make the arrows blue", drawn.xml);
+    const placed = (xml: string) =>
+      content(assessDiagram(xml).nodes).map((node) => ({
+        label: node.label,
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
+      }));
+    const before = placed(restyled.xml);
+    const phrases = [
+      { text: "Park Test midway — after Build, before Deploy", label: "Test" },
+      { text: "Insert the stage named Test so it sits between Build and Deploy", label: "Test" },
+      { text: "Tuck Lint halfway after Build and before Deploy", label: "Lint" },
+      { text: "Slot Review after the Build stage and before Deploy", label: "Review" },
+    ];
+    for (const phrase of phrases) {
+      const edited = previewDemo(phrase.text, restyled.xml);
+      assert.equal(edited.decision.intent, "add_shape", phrase.text);
+      assert.equal(edited.decision.slots.label, phrase.label, phrase.text);
+      assert.equal(edited.decision.reply, `Added ${phrase.label} between Build and Deploy.`, phrase.text);
+      const report = assertClean(edited.xml);
+      const labels = content(report.nodes).map((node) => node.label);
+      for (const fluff of ["Named Test So It Sits", "Test So", "So It Sits", "Midway", "Stages"]) {
+        assert.equal(labels.includes(fluff), false, `${phrase.text} → ${fluff}`);
+      }
+      assert.deepEqual(
+        [...content(report.nodes)].sort((a, b) => a.x - b.x).map((node) => node.label),
+        ["GitHub Actions", "Build", phrase.label, "Deploy to Vercel"],
+        phrase.text,
+      );
+      assert.ok(report.edges.some((edge) => edge.from === "Build" && edge.to === phrase.label), phrase.text);
+      assert.ok(
+        report.edges.some((edge) => edge.from === phrase.label && edge.to === "Deploy to Vercel"),
+        phrase.text,
+      );
+      assert.equal(
+        report.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
+        false,
+        phrase.text,
+      );
+      assert.ok(report.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")), phrase.text);
+      const kept = placed(edited.xml);
+      assert.deepEqual(
+        kept.find((node) => node.label === "GitHub Actions"),
+        before.find((node) => node.label === "GitHub Actions"),
+        phrase.text,
+      );
+      assert.deepEqual(
+        kept.find((node) => node.label === "Build"),
+        before.find((node) => node.label === "Build"),
+        phrase.text,
+      );
+    }
+  });
+
+  it("draws every named process step and does not ask for a name", async () => {
+    const prompts = [
+      {
+        text: "Library book checkout process: search catalog, reserve copy, pick up at desk, scan barcode, return by due date",
+        title: "Library Book Checkout",
+        steps: ["Search Catalog", "Reserve Copy", "Pick Up At Desk", "Scan Barcode", "Return By Due Date"],
+      },
+      {
+        text: "Hiring process: screen resume, phone interview, onsite, extend offer",
+        title: "Hiring",
+        steps: ["Screen Resume", "Phone Interview", "Onsite", "Extend Offer"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+      assert.match(drawn.decision.reply, new RegExp(prompt.title));
+      const report = assertClean(drawn.xml);
+      assert.deepEqual(content(report.nodes).map((node) => node.label), prompt.steps, prompt.text);
+      assert.ok(report.nodes.some((node) => node.role === "cluster" && node.label === "Steps"), prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label === "Next"), prompt.text);
+      assertPastel(content(report.nodes), prompt.text);
+      for (const stolen of ["User", "Payment", "Orders", "Checkout"]) {
+        assert.equal(content(report.nodes).some((node) => node.label === stolen), false, `${prompt.text} ${stolen}`);
+      }
+    }
+
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions?: Record<string, { type: string }> };
+      if (body.questions?.intent) {
+        return Response.json({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "clarify", confidence: 0.2 },
+            needs_xml_edit: { type: "noul", noul: 0.1 },
+            color: { type: "choice", choice: "none" },
+            shape: { type: "choice", choice: "none" },
+            layout: { type: "choice", choice: "none" },
+            anchor: { type: "choice", choice: "none" },
+          },
+        });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          next: { type: "choice", choice: "clarify", confidence: 0.2 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+
+    const prompted = prompts[0]!;
+    const kev = await runKevTurn({
+      messages: [{ role: "user", content: prompted.text }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(kev.intent, "add_shape");
+    assert.doesNotMatch(kev.reply, /What should the new shape be called/);
+    assert.doesNotMatch(kev.reply, /Which nodes should I draw/);
+    assert.deepEqual(content(assertClean(kev.updatedXml).nodes).map((node) => node.label), prompted.steps);
+  });
+
+  it("renames from synonym phrasing without a confirm round", async () => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "Client / API / Postgres" }],
+      currentXml: STARTER_XML,
+    });
+    assert.deepEqual(content(assertClean(drawn.updatedXml).nodes).map((node) => node.label), [
+      "Client",
+      "API",
+      "Postgres",
+    ]);
+
+    const phrases = [
+      "Change API's name to Backend",
+      "Change the name of API to Backend",
+      "Update the API's name to Backend",
+    ];
+    for (const phrase of phrases) {
+      process.env.KEV_BASE_URL = "http://kev.local";
+      let called = 0;
+      globalThis.fetch = (async () => {
+        called += 1;
+        throw new Error("rename must not ask Kev");
+      }) as typeof fetch;
+      const renamed = await runKevTurn({
+        messages: [
+          { role: "user", content: "Client / API / Postgres" },
+          { role: "assistant", content: drawn.reply },
+          { role: "user", content: phrase },
+        ],
+        currentXml: drawn.updatedXml,
+      });
+      assert.equal(called, 0, phrase);
+      assert.equal(renamed.intent, "edit_shape", phrase);
+      assert.match(renamed.reply, /Renamed API to Backend/);
+      assert.deepEqual(content(assertClean(renamed.updatedXml).nodes).map((node) => node.label), [
+        "Client",
+        "Backend",
+        "Postgres",
+      ]);
+    }
+
+    const boxes = previewDemo("Change the boxes to red", drawn.updatedXml);
+    assert.equal(boxes.decision.intent, "style");
+    assert.deepEqual(content(assessDiagram(boxes.xml).nodes).map((node) => node.label), ["Client", "API", "Postgres"]);
+  });
+
+  it("keeps multi-word product tokens intact", () => {
+    const prompts = [
+      "DigitalOcean stack: App Platform hosts the app, Spaces holds objects, Managed Redis for cache",
+      "Neon stack: App Platform hosts the app, Spaces holds objects, Managed Redis for cache",
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+      for (const label of ["App Platform", "Spaces", "Managed Redis"]) {
+        assert.ok(labels.includes(label), `${prompt} → ${labels.join(", ")}`);
+      }
+      for (const stolen of ["Platform", "Managed", "Redis", "App", "Object storage", "Cache"]) {
+        assert.equal(labels.includes(stolen), false, `${prompt} stole ${stolen}`);
+      }
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = report.nodes.map((node) => node.label);
+      for (const label of ["App Platform", "Spaces", "Managed Redis"]) {
+        assert.ok(drawnLabels.includes(label), prompt);
+      }
+      assert.equal(drawnLabels.includes("Platform"), false, prompt);
+      assert.equal(drawnLabels.includes("Managed"), false, prompt);
+      const redis = content(report.nodes).find((node) => node.label === "Managed Redis");
+      const spaces = content(report.nodes).find((node) => node.label === "Spaces");
+      assert.ok(redis?.style.includes("shape=cylinder3"), prompt);
+      assert.ok(spaces?.style.includes("shape=cloud"), prompt);
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), prompt);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
+      assertPastel(content(report.nodes), prompt);
+    }
+  });
+
+  it("paints arrows violet and leaves node fills alone", () => {
+    const drawn = previewDemo("Client / API / Postgres", STARTER_XML);
+    const before = assessDiagram(drawn.xml);
+    const fills = content(before.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const painted = previewDemo("Paint the arrows violet", drawn.xml);
+    assert.equal(painted.decision.intent, "style");
+    assert.equal(painted.decision.slots.colorName, "purple");
+    assert.equal(painted.decision.slots.strokeColor, "#9673a6");
+    const after = assertClean(painted.xml);
+    assert.deepEqual(content(after.nodes).map((node) => node.label), ["Client", "API", "Postgres"]);
+    assert.deepEqual(
+      content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+      fills,
+    );
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#9673a6")));
+    assert.ok(after.edges.every((edge) => !edge.style.includes("fillColor=#dae8fc")));
+  });
+
+  it("drops a role gloss when a product of that role is already named", () => {
+    const prompt = "Postgres stores SQL, and Spaces holds object storage";
+    const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+    assert.deepEqual(labels, ["Postgres", "Spaces"]);
+    const drawn = previewDemo(prompt, STARTER_XML);
+    const drawnLabels = content(assertClean(drawn.xml).nodes).map((node) => node.label);
+    assert.ok(drawnLabels.includes("Postgres"));
+    assert.ok(drawnLabels.includes("Spaces"));
+    assert.equal(drawnLabels.includes("Sql"), false);
+    assert.equal(drawnLabels.includes("SQL"), false);
+    assert.equal(drawnLabels.includes("Object storage"), false);
+  });
 });
