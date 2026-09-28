@@ -962,7 +962,7 @@ export function chainEdgeLabel(fromLabel: string, toLabel: string): string {
 
 function inferRole(label: string): EntityRole {
   const text = label.toLowerCase();
-  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch|stores?)\b/.test(text)) return "data";
+  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch|replica|archive|stores?)\b/.test(text)) return "data";
   if (/\b(storage|bucket|blob|s3|r2)\b/.test(text)) return "storage";
   if (/\b(queue|queues|bus|kafka|sqs|sns|hub|pubsub)\b/.test(text)) return "bus";
   if (/\b(gateway|apim|balancer|cloudfront|cdn|waf)\b/.test(text)) return "edge";

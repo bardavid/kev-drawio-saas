@@ -22,6 +22,7 @@ Midpoint and manner words (midstream, midway, halfway, and the same family) are 
 If the edit is only color or stroke → it is a restyle. Geometry stays. Do not move, reroute, or delete cells.
 Research runs only when a reading is unsure. The host already gates it.
 Depth. Judge the idea before the boxes. A short high-level idea is few boxes. A detailed idea that lists components is many components, and those names are the components. Leftover noun fragments of the sentence are not those components. When the user did not name the components and the idea is detailed, that list is unsure until topic notes supply it. Do not call the list empty when the user message already names the parts.
+Scale. A request to grow the open diagram — more nodes, more of a role, more detail, or a complaint that the drawing is too small — edits that diagram. Add nodes. Do not clarify and do not replace the file. A plural role with no proper name (databases, caches, workers, services) is several nodes of that role, not one unnamed shape.
 
 Forks. Pick one branch. Do not blend them.
 Intent: if the user only changes color or stroke of existing boxes or arrows → style. If they name a new node to add → add_shape. Never both.
@@ -34,7 +35,7 @@ export const STYLE_VS_ADD =
   "If the user only changes color or stroke of existing boxes or arrows → style. If they name a new node to add → add_shape. Never both.";
 
 export const NEEDS_XML_FORK =
-  "If a concrete diagram change was requested → yes. If the message is a bare draw with no subject → no. If it is only a greeting → no.";
+  "If a concrete diagram change was requested → yes. If they ask to grow the open diagram or add more of a role → yes. If the message is a bare draw with no subject → no. If it is only a greeting → no.";
 
 export const ANCHOR_FORK =
   "If the user said every or all boxes or arrows → none. If they named one shape → that shape. Never invent an anchor.";
@@ -46,18 +47,18 @@ export const BETWEEN_FORK =
 
 /** Closed-set intent labels. Keys stay stable; the text is the fork. */
 export const INTENT_CRITERIA = {
-  add_shape: "If they name a new node to add → this, and not style.",
+  add_shape: "If they name a new node to add, or ask for more nodes or more of a role → this, and not style.",
   edit_shape: "If they rename an existing shape or change its kind → this. A color-only change is style.",
   delete_shape: "If they name a shape to remove → this.",
   connect: "If they add an edge between existing shapes and name no new node → this.",
   layout: "If they only rearrange positions → this. A restyle is not a layout.",
   style:
     "If they only change color or stroke of existing boxes or arrows → this, and not add_shape. Arrows, edges, connectors, and lines are edges.",
-  clarify: "If the message is a bare draw with no subject, or the subject is missing → this.",
+  clarify: "If the message is a bare draw with no subject, or the subject is missing → this. A request to add more nodes is not this.",
   noop: "If nothing in the diagram should change → this.",
 } as const;
 
-export const INTENT_INSTRUCTIONS = `What diagram edit does the user want? ${STYLE_VS_ADD} If they only rename a label or change a shape kind → edit_shape. If they only remove a named shape → delete_shape. If they only add an edge and name no new node → connect. If they only rearrange → layout. If the message is a bare draw with no subject → clarify. If nothing should change → noop. Pick one. “change the boxes to red” → style. Recoloring arrows, edges, connectors, or lines → style.`;
+export const INTENT_INSTRUCTIONS = `What diagram edit does the user want? ${STYLE_VS_ADD} If they ask for more nodes or more of a role → add_shape. If they only rename a label or change a shape kind → edit_shape. If they only remove a named shape → delete_shape. If they only add an edge and name no new node → connect. If they only rearrange → layout. If the message is a bare draw with no subject → clarify. If nothing should change → noop. Pick one. “change the boxes to red” → style. Recoloring arrows, edges, connectors, or lines → style.`;
 
 export const NEEDS_XML_EDIT_INSTRUCTIONS = `Should the diagram XML be modified? ${NEEDS_XML_FORK}`;
 
@@ -81,11 +82,11 @@ export const TARGET_INSTRUCTIONS =
 
 export const DISRUPTION_INSTRUCTIONS = `How much of the current diagram should change? If nothing was requested → leave the diagram alone. If only color, stroke, or a label changes → a small local edit. If a few edges are rewired → rewire a few shapes. If they asked to rebuild positions → rebuild the layout. ${BETWEEN_FORK} Do not score placement fluff as a rebuild.`;
 
-export const DEPTH_INSTRUCTIONS = `Is this a high-level diagram or a low-level, detailed one? Judge the idea. If the user named the boxes, counted them, or drew a short chain → few. If the idea needs many components and the interactions between them → many. Leftover noun fragments of the sentence are not those components. “Two boxes: A and B” is few. A vague description of a rich system is many. Pick one.`;
+export const DEPTH_INSTRUCTIONS = `Is this a high-level diagram or a low-level, detailed one? Judge the idea. If the user named the boxes, counted them, or drew a short chain → few. If the idea needs many components and the interactions between them → many. If they ask for many nodes, more detail, or a more complex drawing → many. Leftover noun fragments of the sentence are not those components. “Two boxes: A and B” is few. A vague description of a rich system is many. Pick one.`;
 
 export const DEPTH_CRITERIA = {
   few: "If a few boxes express the idea, or the user already named them → this.",
-  many: "If the idea needs many components and interactions → this.",
+  many: "If the idea needs many components and interactions, or they ask for many nodes, more detail, or a more complex drawing → this.",
 } as const;
 
 export const ANCHOR_NONE = "If they said every or all boxes or arrows, or named no single shape → this.";
