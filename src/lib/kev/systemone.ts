@@ -3,21 +3,36 @@ import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
 import { env } from "@/lib/env";
 import { KevError } from "@/lib/kev/client";
 import { payloadMessage } from "@/lib/kev/parse";
+import {
+  ANCHOR_INSTRUCTIONS,
+  ANCHOR_NONE,
+  COLOR_INSTRUCTIONS,
+  COLOR_NONE,
+  DISRUPTION_INSTRUCTIONS,
+  INTENT_CRITERIA,
+  INTENT_INSTRUCTIONS,
+  LAYOUT_CRITERIA,
+  LAYOUT_INSTRUCTIONS,
+  NEEDS_XML_EDIT_INSTRUCTIONS,
+  PLACE_CRITERIA,
+  PLACE_INSTRUCTIONS,
+  SHAPE_INSTRUCTIONS,
+  SHAPE_NONE,
+  SOURCE_INSTRUCTIONS,
+  SOURCE_NONE,
+  STRATEGY_BLOCK,
+  TARGET_INSTRUCTIONS,
+  TARGET_NONE,
+  colorCriterion,
+  namedShapeCriterion,
+  shapeKindCriterion,
+} from "@/lib/kev/prompt-guide";
 import { isIntent, type DiagramSlots, type Intent, type KevReading } from "@/lib/kev/types";
 
 /** Jared Palmer's Kev. Local `python -m kev.serve` defaults to this name. */
 export const KEV_DEFAULT_MODEL = "kev-latest";
 
-export const INTENT_CRITERIA = {
-  add_shape: "Add a new vertex/shape",
-  edit_shape: "Change an existing shape’s label or style",
-  delete_shape: "Remove a shape",
-  connect: "Add an edge between shapes",
-  layout: "Rearrange positions",
-  style: "Restyle fills or edge strokes without changing topology. Arrows, edges, connectors, and lines are edges.",
-  clarify: "Need more info from the user",
-  noop: "No diagram change",
-} as const;
+export { INTENT_CRITERIA };
 
 const DISRUPTION_CRITERIA = [
   "leave the diagram alone",
@@ -27,7 +42,10 @@ const DISRUPTION_CRITERIA = [
 ] as const;
 
 const NONE = "none";
-/** Noul at or above this means “yes”. Shared with the diagram loop. */
+/**
+ * Noul at or above this means “yes”. Shared with the diagram loop.
+ * The questions are dichotomous; this cutoff stays 0.5 so a yes is still a yes.
+ */
 export const NOUL_YES = 0.5;
 
 export class KevUnreachableError extends KevError {
@@ -83,9 +101,7 @@ export function diagramState(
   const topic = notes?.topicContext?.trim();
   const reference = notes?.templateReference?.trim();
   const parts = [
-    "The host places shapes and routes edges. Answer the questions. Do not invent coordinates or XML.",
-    "Edit the open canvas. Do not discard shapes the user did not ask to remove.",
-    "A reference template is optional. Use it, adapt it, or set it aside.",
+    STRATEGY_BLOCK,
     `User message:\n${userMessage.trim()}`,
     reference ? `Reference:\n${reference}` : "",
     topic ? `Topic context:\n${topic}` : "",
@@ -118,9 +134,9 @@ function choiceQuestion(instructions: string, criteria: Record<string, string>):
   return { type: "choice", instructions, criteria };
 }
 
-function vertexCriteria(labels: string[]): Record<string, string> {
-  const criteria: Record<string, string> = { [NONE]: "None of the current shapes" };
-  for (const label of labels) criteria[label] = `The shape labeled ${label}`;
+function vertexCriteria(labels: string[], none: string): Record<string, string> {
+  const criteria: Record<string, string> = { [NONE]: none };
+  for (const label of labels) criteria[label] = namedShapeCriterion(label);
   return criteria;
 }
 
@@ -140,14 +156,13 @@ export function buildSystemOneRequest(input: {
   templateReference?: string | null;
 }): SystemOneRequest {
   const labels = vertexLabels(input.summary);
-  const shapes: Record<string, string> = { [NONE]: "Do not choose a shape kind" };
-  for (const kind of SHAPE_KINDS) shapes[kind] = `Draw the vertex as a ${kind}`;
-  const colors: Record<string, string> = { [NONE]: "Do not change color" };
+  const shapes: Record<string, string> = { [NONE]: SHAPE_NONE };
+  for (const kind of SHAPE_KINDS) shapes[kind] = shapeKindCriterion(kind);
+  const colors: Record<string, string> = { [NONE]: COLOR_NONE };
   for (const name of Object.keys(PALETTE)) {
     if (name === "grey") continue;
-    colors[name] = `Use the ${name} palette`;
+    colors[name] = colorCriterion(name);
   }
-  const vertices = vertexCriteria(labels);
   return {
     state: diagramState(input.userMessage, input.summary, {
       diffText: input.diagramDiff,
@@ -160,44 +175,23 @@ export function buildSystemOneRequest(input: {
     questions: {
       intent: {
         type: "choice",
-        instructions:
-          "What diagram edit does the user want? Recoloring every box, including “change the boxes to red”, is style. Recoloring arrows, edges, connectors, or lines is style, not a missing shape. A bare draw with no subject is clarify.",
+        instructions: INTENT_INSTRUCTIONS,
         criteria: { ...INTENT_CRITERIA },
       },
       needs_xml_edit: {
         type: "noul",
-        instructions: "Should the diagram XML be modified?",
+        instructions: NEEDS_XML_EDIT_INSTRUCTIONS,
       },
-      shape: choiceQuestion("Which shape kind should be used, if any?", shapes),
-      color: choiceQuestion(
-        "Which named color should be applied? Choose none when the user did not name a color. “Change the boxes to red” is red. “Make the arrows blue” is blue.",
-        colors,
-      ),
-      layout: choiceQuestion("How should shapes be arranged, if the user asked for a layout? Choose none when the host should place shapes.", {
-        horizontal: "Lay shapes in a horizontal row",
-        vertical: "Lay shapes in a vertical column",
-        none: "Do not rearrange",
-      }),
-      place: choiceQuestion("Where should a new shape sit relative to an existing one?", {
-        before: "In front of the anchor, on the incoming side",
-        after: "Behind the anchor, on the outgoing side",
-        none: "No relative placement",
-      }),
-      anchor: choiceQuestion(
-        "Which existing shape is the subject of this edit? Choose none when every box should change. Choose none for arrows, edges, connectors, or lines unless the user named a shape, such as arrows from Browser or arrows into Redis.",
-        vertices,
-      ),
-      source: choiceQuestion(
-        "Which existing shape is the edge source, if any? Choose none when the user did not name a source. “Make the arrows blue” names no shape.",
-        vertices,
-      ),
-      target: choiceQuestion(
-        "Which existing shape is the edge target, if any? Choose none when the user did not name a destination. “Make the arrows blue” names no shape.",
-        vertices,
-      ),
+      shape: choiceQuestion(SHAPE_INSTRUCTIONS, shapes),
+      color: choiceQuestion(COLOR_INSTRUCTIONS, colors),
+      layout: choiceQuestion(LAYOUT_INSTRUCTIONS, LAYOUT_CRITERIA),
+      place: choiceQuestion(PLACE_INSTRUCTIONS, PLACE_CRITERIA),
+      anchor: choiceQuestion(ANCHOR_INSTRUCTIONS, vertexCriteria(labels, ANCHOR_NONE)),
+      source: choiceQuestion(SOURCE_INSTRUCTIONS, vertexCriteria(labels, SOURCE_NONE)),
+      target: choiceQuestion(TARGET_INSTRUCTIONS, vertexCriteria(labels, TARGET_NONE)),
       disruption: {
         type: "score",
-        instructions: "How much of the current diagram should change?",
+        instructions: DISRUPTION_INSTRUCTIONS,
         criteria: DISRUPTION_CRITERIA,
       },
     },

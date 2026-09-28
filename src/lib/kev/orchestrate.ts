@@ -27,6 +27,32 @@ import {
   type ArchitecturePlan,
 } from "@/lib/kev/plan";
 import {
+  COLOR_KEEP,
+  COLOR_NONE,
+  COMPOSITION_CLARIFY,
+  COMPOSITION_COLOR_INSTRUCTIONS,
+  COMPOSITION_NOOP,
+  COMPOSITION_REFERENCE_LEAD,
+  SHAPE_KEEP,
+  SPECIFICITY_NEXT_CRITERIA,
+  SPECIFICITY_NEXT_INSTRUCTIONS,
+  SPECIFIC_INSTRUCTIONS,
+  STEP_CLARIFY,
+  STEP_COLOR_INSTRUCTIONS,
+  STEP_LAYOUT_CRITERIA,
+  STEP_LAYOUT_INSTRUCTIONS,
+  STEP_NEXT_INSTRUCTIONS,
+  STEP_NOOP,
+  STEP_SHAPE_INSTRUCTIONS,
+  colorCriterion,
+  compositionApplyCriterion,
+  compositionConfirmInstructions,
+  compositionNextInstructions,
+  shapeKindCriterion,
+  stepApplyCriterion,
+  stepConfirmInstructions,
+} from "@/lib/kev/prompt-guide";
+import {
   KEV_DEFAULT_MODEL,
   KevUnreachableError,
   NOUL_YES,
@@ -98,15 +124,12 @@ export function buildSpecificityRequest(input: {
     questions: {
       specific: {
         type: "noul",
-        instructions: "Does the user name concrete shapes, connections, or a diagram to create?",
+        instructions: SPECIFIC_INSTRUCTIONS,
       },
       next: {
         type: "choice",
-        instructions: "The request does not name a diagram change. What should the assistant do?",
-        criteria: {
-          clarify: "Ask what to draw",
-          noop: "No diagram change",
-        },
+        instructions: SPECIFICITY_NEXT_INSTRUCTIONS,
+        criteria: { ...SPECIFICITY_NEXT_CRITERIA },
       },
     },
   };
@@ -137,48 +160,44 @@ export function buildOrchestratorStepRequest(input: {
   const questions: Record<string, SystemOneQuestion> = {
     next: {
       type: "choice",
-      instructions: "The host proposed one diagram edit. What should happen next?",
+      instructions: STEP_NEXT_INSTRUCTIONS,
       criteria: {
-        apply: detail,
-        clarify: "Ask the user a clarifying question before editing",
-        noop: "Do not change the diagram",
+        apply: stepApplyCriterion(detail),
+        clarify: STEP_CLARIFY,
+        noop: STEP_NOOP,
       },
     },
     confirm: {
       type: "noul",
-      instructions: `Should this edit be written into the diagram XML now? ${detail}`,
+      instructions: stepConfirmInstructions(detail),
     },
   };
   if (input.proposal.intent === "add_shape") {
-    const shapes: Record<string, string> = { none: "Keep the proposed shape kind" };
-    for (const kind of SHAPE_KINDS) shapes[kind] = `Draw the vertex as a ${kind}`;
+    const shapes: Record<string, string> = { none: SHAPE_KEEP };
+    for (const kind of SHAPE_KINDS) shapes[kind] = shapeKindCriterion(kind);
     questions.shape = {
       type: "choice",
-      instructions: "Which shape kind should the new vertex use? Choose none to keep the proposal.",
+      instructions: STEP_SHAPE_INSTRUCTIONS,
       criteria: shapes,
     };
   }
   if (input.proposal.intent === "add_shape" || input.proposal.intent === "style") {
-    const colors: Record<string, string> = { none: "Do not change the proposed color" };
+    const colors: Record<string, string> = { none: COLOR_KEEP };
     for (const name of Object.keys(PALETTE)) {
       if (name === "grey") continue;
-      colors[name] = `Use the ${name} palette`;
+      colors[name] = colorCriterion(name);
     }
     questions.color = {
       type: "choice",
-      instructions: "Which named color should be applied, if any?",
+      instructions: STEP_COLOR_INSTRUCTIONS,
       criteria: colors,
     };
   }
   if (input.proposal.intent === "layout") {
     questions.layout = {
       type: "choice",
-      instructions: "How should the shapes be arranged?",
-      criteria: {
-        horizontal: "Lay shapes in a horizontal row",
-        vertical: "Lay shapes in a vertical column",
-        none: "Keep the proposed direction",
-      },
+      instructions: STEP_LAYOUT_INSTRUCTIONS,
+      criteria: { ...STEP_LAYOUT_CRITERIA },
     };
   }
   return {
@@ -462,51 +481,32 @@ export function buildCompositionRequest(input: {
     currentXml: input.currentXml,
     topicContext: input.topicContext,
   });
-  const state = `${base}\n\nReference template. Use it if it fits, adapt it if the user asked for a change, or set it aside. Geometry is applied by the host, not by you.\n${input.plan}`.slice(
-    0,
-    12_000,
-  );
+  const state = `${base}\n\n${COMPOSITION_REFERENCE_LEAD}\n${input.plan}`.slice(0, 12_000);
   const phase = input.phase ?? "style";
-  const colors: Record<string, string> = { none: "The user did not name a color" };
+  const colors: Record<string, string> = { none: COLOR_NONE };
   for (const name of Object.keys(PALETTE)) {
     if (name === "grey") continue;
-    colors[name] = `The user asked for ${name}`;
+    colors[name] = colorCriterion(name);
   }
-  const apply =
-    phase === "outline"
-      ? "Use the proposed nodes"
-      : phase === "structure"
-        ? "Use the proposed edges"
-        : "Draw the planned diagram";
   const questions: Record<string, SystemOneQuestion> = {
     next: {
       type: "choice",
-      instructions:
-        phase === "outline"
-          ? "The host proposed the nodes for this diagram. What should happen next?"
-          : phase === "structure"
-            ? "The host proposed the edges for this diagram. What should happen next?"
-            : "The host will draw this planned diagram and lay it out. What should happen next?",
+      instructions: compositionNextInstructions(phase),
       criteria: {
-        apply,
-        clarify: "Ask the user a clarifying question before drawing",
-        noop: "Do not change the diagram",
+        apply: compositionApplyCriterion(phase),
+        clarify: COMPOSITION_CLARIFY,
+        noop: COMPOSITION_NOOP,
       },
     },
     confirm: {
       type: "noul",
-      instructions:
-        phase === "outline"
-          ? "Are these the right nodes for the diagram?"
-          : phase === "structure"
-            ? "Are these the right edges for the diagram?"
-            : "Should this planned diagram be written into the diagram XML now?",
+      instructions: compositionConfirmInstructions(phase),
     },
   };
   if (phase === "style") {
     questions.color = {
       type: "choice",
-      instructions: "Which named color did the user ask for? Choose none when they did not name one.",
+      instructions: COMPOSITION_COLOR_INSTRUCTIONS,
       criteria: colors,
     };
   }
