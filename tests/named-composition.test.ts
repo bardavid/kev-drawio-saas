@@ -3,6 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import { assessDiagram, type QualityNode } from "../src/lib/drawio/layout";
 import { PALETTE } from "../src/lib/drawio/styles";
 import { STARTER_XML } from "../src/lib/drawio/starter";
+import { cellLabel, geometryOf, listVertices, openDiagram } from "../src/lib/drawio/xml";
 import { previewDemo } from "../src/lib/kev/demo";
 import { extractNamedEntities } from "../src/lib/kev/entities";
 import { runKevTurn } from "../src/lib/kev/run";
@@ -35,6 +36,25 @@ function geometrySignature(xml: string) {
     width: node.width,
     height: node.height,
   }));
+}
+
+function assertContainerParents(xml: string, prompt: string) {
+  const doc = openDiagram(xml);
+  const vertices = listVertices(doc);
+  const byId = new Map(vertices.map((vertex) => [vertex.getAttribute("id") ?? "", vertex]));
+  const contentCells = vertices.filter((vertex) => (vertex.getAttribute("style") ?? "").includes("drawai=node"));
+  assert.ok(contentCells.length >= 2, prompt);
+  for (const vertex of contentCells) {
+    const parentId = vertex.getAttribute("parent") ?? "";
+    const parent = byId.get(parentId);
+    assert.ok(parent, `${prompt} ${cellLabel(vertex)} has no container parent`);
+    assert.match(parent?.getAttribute("style") ?? "", /drawai=cluster/, `${prompt} ${cellLabel(vertex)}`);
+    const box = geometryOf(vertex);
+    const frame = geometryOf(parent!);
+    assert.ok(box.x >= -1 && box.y >= -1, `${prompt} ${cellLabel(vertex)} relative origin`);
+    assert.ok(box.x + box.width <= frame.width + 2, `${prompt} ${cellLabel(vertex)} width`);
+    assert.ok(box.y + box.height <= frame.height + 2, `${prompt} ${cellLabel(vertex)} height`);
+  }
 }
 
 function assertPastel(nodes: QualityNode[], prompt: string) {
@@ -951,6 +971,41 @@ describe("named composition", () => {
     });
     assert.equal(nonsense.intent, "clarify");
     assert.equal(nonsense.updatedXml, renamed.updatedXml);
+  });
+
+  it("draws one vertex per named tier, including the client tier, inside its container", () => {
+    const prompts = [
+      {
+        text: "Sketch a multi-tier web architecture: browser clients, an application tier, and a relational database",
+        labels: ["Browser Clients", "Application", "Relational Database"],
+        groups: ["Clients", "Services", "Data"],
+      },
+      {
+        text: "Draw the tiers for a web system — clients, an app tier, and a database",
+        labels: ["Client", "App", "Database"],
+        groups: ["Clients", "Services", "Data"],
+      },
+      {
+        text: "Map a tiered service: frontend, backend, and a relational database",
+        labels: ["Frontend", "Backend", "Relational Database"],
+        groups: ["Clients", "Services", "Data"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      assert.deepEqual(labels, prompt.labels, prompt.text);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+      const report = assertClean(drawn.xml);
+      assert.deepEqual(content(report.nodes).map((node) => node.label), prompt.labels, prompt.text);
+      const groups = report.nodes.filter((node) => node.role === "cluster").map((node) => node.label);
+      for (const group of prompt.groups) assert.ok(groups.includes(group), `${prompt.text} ${group}`);
+      assert.ok(report.edges.length >= prompt.labels.length - 1, prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt.text);
+      assertPastel(content(report.nodes), prompt.text);
+      assertContainerParents(drawn.xml, prompt.text);
+    }
   });
 
   it("drops a role gloss when a product of that role is already named", () => {

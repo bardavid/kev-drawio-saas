@@ -1,5 +1,6 @@
 import { parseStyle, stringifyStyle } from "@/lib/drawio/styles";
 import {
+  absoluteGeometry,
   firstChildTag,
   geometryOf,
   listEdges,
@@ -375,8 +376,8 @@ export function routeEdges(doc: XmlDocument) {
         const role = cellRole(vertex.getAttribute("style") ?? "");
         return role !== "cluster" && role !== "lifeline" && role !== "anchor";
       })
-      .map((vertex) => geometryOf(vertex));
-    writeRoute(doc, edge, routeBetween(geometryOf(source), geometryOf(target), obstacles));
+        .map((vertex) => absoluteGeometry(vertex));
+    writeRoute(doc, edge, routeBetween(absoluteGeometry(source), absoluteGeometry(target), obstacles));
   }
 }
 
@@ -430,7 +431,7 @@ function labelOf(cell: XmlElement): string {
 export function assessDiagram(xml: string, pad = NODE_GAP): QualityReport {
   const doc = openDiagram(xml);
   const nodes: QualityNode[] = listVertices(doc).map((vertex) => {
-    const geometry = geometryOf(vertex);
+    const geometry = absoluteGeometry(vertex);
     const style = vertex.getAttribute("style") ?? "";
     return {
       id: vertex.getAttribute("id") ?? "",

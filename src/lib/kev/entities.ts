@@ -1212,6 +1212,137 @@ export function listedProcessSteps(message: string): string[] | null {
   return steps.length >= found.minimum ? steps : null;
 }
 
+/**
+ * Role nouns a tier list can name without being a product catalog hit.
+ * Plurals ("clients", "browsers") count as the same role. A counted tier
+ * ("3 tier", "three-tier") is a title, not one of these nouns.
+ */
+const TIER_ROLE: Record<string, EntityRole> = {
+  browser: "client",
+  client: "client",
+  frontend: "client",
+  "front-end": "client",
+  presentation: "client",
+  ui: "client",
+  web: "client",
+  app: "compute",
+  application: "compute",
+  backend: "compute",
+  "back-end": "compute",
+  service: "compute",
+  server: "compute",
+  api: "compute",
+  database: "data",
+  db: "data",
+  sql: "data",
+  datastore: "data",
+  "data-store": "data",
+  data: "data",
+};
+
+const TIER_GLUE = new Set(["tier", "tiers", "layer", "layers", "level", "levels"]);
+
+function tierRole(token: string): EntityRole | null {
+  const direct = TIER_ROLE[token];
+  if (direct) return direct;
+  if (token.length >= 4 && token.endsWith("s")) {
+    const stem = TIER_ROLE[token.slice(0, -1)];
+    if (stem) return stem;
+  }
+  if (token.length >= 5 && token.endsWith("es")) {
+    const stem = TIER_ROLE[token.slice(0, -2)];
+    if (stem) return stem;
+  }
+  return null;
+}
+
+function listedTierEntry(token: string): CatalogEntry | null {
+  const candidates = [token];
+  if (token.length >= 4 && token.endsWith("s")) candidates.push(token.slice(0, -1));
+  if (token.length >= 5 && token.endsWith("es")) candidates.push(token.slice(0, -2));
+  for (const candidate of candidates) {
+    for (const entry of CATALOG) {
+      if (!entry.listed) continue;
+      if (entry.when) continue;
+      if (entry.phrases.some((phrase) => phrase.toLowerCase() === candidate)) return entry;
+    }
+  }
+  return null;
+}
+
+function tierDraftFor(raw: string, token: string, order: number): Draft {
+  const entry = listedTierEntry(token);
+  const role = entry?.role ?? tierRole(token) ?? "compute";
+  if (entry) {
+    return {
+      id: entry.id,
+      label: entry.label,
+      role: entry.role,
+      shape: shapeFor(entry, entry.label),
+      order,
+      origin: "listed",
+    };
+  }
+  const label = displayToken(raw);
+  return {
+    id: label.toLowerCase(),
+    label,
+    role,
+    shape: shapeFor({ role }, label),
+    order,
+    origin: "adhoc",
+  };
+}
+
+/**
+ * A short list item that only names roles.
+ * "browser clients" is one client tier. "web app" is two roles and stays split.
+ * "clients" is the same vertex as "client". A title ("3 tier web app") is not a tier.
+ */
+function draftsFromTierPhrase(
+  segment: { start: number; text: string },
+  blocked: Set<string>,
+): Draft[] | null {
+  const stripped = segment.text.replace(
+    /^(?:please\s+)?(?:draw|sketch|diagram|illustrate|map|build|create|architect|show)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
+    "",
+  );
+  if (/\b(?:\d+|two|three|four|five)[\s-]*tier\b/i.test(stripped)) return null;
+  const rawWords = stripped.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? [];
+  if (rawWords.length === 0 || rawWords.length > 4) return null;
+  const kept: Array<{ raw: string; token: string; role: EntityRole }> = [];
+  for (const raw of rawWords) {
+    const token = raw.toLowerCase();
+    if (/^(?:a|an|the)$/.test(token) || TIER_GLUE.has(token)) continue;
+    const role = tierRole(token);
+    if (!role) return null;
+    if (blocked.has(token)) return null;
+    kept.push({ raw, token, role });
+  }
+  if (kept.length === 0) return null;
+  const roles = new Set(kept.map((item) => item.role));
+  if (roles.size === 1) {
+    const only = kept[0];
+    if (kept.length === 1 && only) return [tierDraftFor(only.raw, only.token, segment.start)];
+    const label = kept.map((item) => displayToken(item.raw)).join(" ");
+    const role = kept[0]?.role ?? "compute";
+    const shaped = kept
+      .map((item) => listedTierEntry(item.token))
+      .find((entry) => entry?.shape || entry?.role === "data");
+    return [
+      {
+        id: label.toLowerCase(),
+        label,
+        role,
+        shape: shaped ? shapeFor(shaped, label) : shapeFor({ role }, label),
+        order: segment.start,
+        origin: "adhoc",
+      },
+    ];
+  }
+  return kept.map((item) => tierDraftFor(item.raw, item.token, segment.start));
+}
+
 /** "Sql" or "Object storage" beside a real product of that role is the role, not another vertex. */
 function dropCoveredRoleGloss(drafts: Draft[]): Draft[] {
   const generic = /^(?:sql|object storage|object store)$/i;
@@ -1333,6 +1464,11 @@ export function extractNamedEntities(message: string): NamedEntity[] {
         order: segment.start,
         origin: "listed",
       });
+      continue;
+    }
+    const tierDrafts = draftsFromTierPhrase(segment, blocked);
+    if (tierDrafts) {
+      for (const draft of tierDrafts) pushDraft(draft);
       continue;
     }
     for (const extra of nodesFromSegment(segment)) {

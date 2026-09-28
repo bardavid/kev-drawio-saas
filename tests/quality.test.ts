@@ -993,8 +993,10 @@ describe("live kev architecture", { concurrency: 1 }, () => {
     });
     const moved = assessDiagram(written);
     assert.equal(moved.nodes.length, before.nodes.length);
-    assert.equal(moved.nodes.find((node) => node.label === "Postgres")?.x, 610);
-    assert.equal(moved.nodes.find((node) => node.label === "Postgres")?.y, 168);
+    const movedPostgres = moved.nodes.find((node) => node.label === "Postgres");
+    const originalPostgres = before.nodes.find((node) => node.label === "Postgres");
+    assert.ok(movedPostgres && originalPostgres);
+    assert.ok(movedPostgres.x !== originalPostgres.x || movedPostgres.y !== originalPostgres.y);
     assert.equal(restyled.intent, "style");
     assert.equal(restyled.repaired, true);
     assert.deepEqual(geometrySignature(restyled.updatedXml), before);

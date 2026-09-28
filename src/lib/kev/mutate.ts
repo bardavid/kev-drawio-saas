@@ -11,10 +11,10 @@ import {
 } from "@/lib/drawio/styles";
 import {
   DiagramXmlError,
+  absoluteGeometry,
   cellLabel,
   findCellById,
   firstChildTag,
-  geometryOf,
   getRoot,
   listEdges,
   listVertices,
@@ -254,25 +254,38 @@ function clearEdgeWaypoints(doc: XmlDocument) {
 
 function shiftRightOf(doc: XmlDocument, minX: number, dx: number) {
   if (dx <= 0) return;
-  let moved = false;
-  for (const vertex of listVertices(doc)) {
+  const vertices = listVertices(doc);
+  const abs = new Map(vertices.map((vertex) => [vertex, absoluteGeometry(vertex)]));
+  const moving = new Set<XmlElement>();
+  const growing = new Set<XmlElement>();
+  for (const vertex of vertices) {
+    const box = abs.get(vertex);
+    if (!box) continue;
+    const style = vertex.getAttribute("style") ?? "";
+    // A topic container that starts left of the insert has to grow, or the shifted shape leaves it.
+    if (style.includes("drawai=cluster") && box.x < minX - 0.5 && box.x + box.width >= minX - 0.5) {
+      growing.add(vertex);
+      continue;
+    }
+    if (box.x >= minX - 0.5) moving.add(vertex);
+  }
+  if (moving.size === 0 && growing.size === 0) return;
+  for (const vertex of growing) {
+    const geometry = firstChildTag(vertex, "mxGeometry");
+    if (!geometry) continue;
+    const width = numberAttr(geometry, "width", 0);
+    geometry.setAttribute("width", String(Math.round(width + dx)));
+  }
+  for (const vertex of moving) {
+    const parentId = vertex.getAttribute("parent");
+    const parent = parentId ? findCellById(doc, parentId) : null;
+    if (parent && moving.has(parent)) continue;
     const geometry = firstChildTag(vertex, "mxGeometry");
     if (!geometry) continue;
     const x = numberAttr(geometry, "x", 0);
-    const width = numberAttr(geometry, "width", 0);
-    const style = vertex.getAttribute("style") ?? "";
-    // A topic container that starts left of the insert has to grow, or the shifted shape leaves it.
-    if (style.includes("drawai=cluster") && x < minX - 0.5 && x + width >= minX - 0.5) {
-      geometry.setAttribute("width", String(Math.round(width + dx)));
-      moved = true;
-      continue;
-    }
-    if (x >= minX - 0.5) {
-      geometry.setAttribute("x", String(Math.round(x + dx)));
-      moved = true;
-    }
+    geometry.setAttribute("x", String(Math.round(x + dx)));
   }
-  if (moved) clearEdgeWaypoints(doc);
+  clearEdgeWaypoints(doc);
 }
 
 function connectCells(doc: XmlDocument, source: XmlElement, target: XmlElement, label: string, style = EDGE_STYLE) {
@@ -303,17 +316,22 @@ function connectCells(doc: XmlDocument, source: XmlElement, target: XmlElement, 
 
 function shiftDownOf(doc: XmlDocument, minY: number, dy: number) {
   if (dy <= 0) return;
-  let moved = false;
-  for (const vertex of listVertices(doc)) {
+  const vertices = listVertices(doc);
+  const moving = new Set<XmlElement>();
+  for (const vertex of vertices) {
+    if (absoluteGeometry(vertex).y >= minY - 0.5) moving.add(vertex);
+  }
+  if (moving.size === 0) return;
+  for (const vertex of moving) {
+    const parentId = vertex.getAttribute("parent");
+    const parent = parentId ? findCellById(doc, parentId) : null;
+    if (parent && moving.has(parent)) continue;
     const geometry = firstChildTag(vertex, "mxGeometry");
     if (!geometry) continue;
     const y = numberAttr(geometry, "y", 0);
-    if (y >= minY - 0.5) {
-      geometry.setAttribute("y", String(Math.round(y + dy)));
-      moved = true;
-    }
+    geometry.setAttribute("y", String(Math.round(y + dy)));
   }
-  if (moved) clearEdgeWaypoints(doc);
+  clearEdgeWaypoints(doc);
 }
 
 /** Keep a restyle (blue arrows) when the edge between two stages is replaced. */
@@ -356,8 +374,8 @@ function insertBetween(
   if (fromNode === toNode) {
     throw new DiagramXmlError(`“${fromQuery}” and “${toQuery}” name the same shape.`);
   }
-  const fromBox = geometryOf(fromNode);
-  const toBox = geometryOf(toNode);
+  const fromBox = absoluteGeometry(fromNode);
+  const toBox = absoluteGeometry(toNode);
   const gap = 80;
   let x = fromBox.x;
   let y = fromBox.y;
@@ -372,7 +390,10 @@ function insertBetween(
     if (toBox.y < need) shiftDownOf(doc, toBox.y, need - toBox.y);
   }
   const carried = carriedEdgeStyle(findEdgeBetween(doc, fromNode, toNode));
-  const cell = createVertex(doc, label, style, x, y, size.width, size.height);
+  const fromParent = fromNode.getAttribute("parent");
+  const sharedParent =
+    fromParent && fromParent === toNode.getAttribute("parent") ? findCellById(doc, fromParent) : null;
+  const cell = createVertex(doc, label, style, x, y, size.width, size.height, sharedParent);
   removeEdgesBetween(doc, fromNode, toNode);
   connectCells(doc, fromNode, cell, slots.edgeLabel ?? "", carried);
   connectCells(doc, cell, toNode, "", carried);
@@ -412,16 +433,26 @@ function createVertex(
   y: number,
   width: number,
   height: number,
+  parent: XmlElement | null = null,
 ): XmlElement {
+  const parentId = parent?.getAttribute("id");
+  const nested = Boolean(parentId && parentId !== "1" && parentId !== "0");
+  let left = x;
+  let top = y;
+  if (nested && parent) {
+    const origin = absoluteGeometry(parent);
+    left = x - origin.x;
+    top = y - origin.y;
+  }
   const cell = doc.createElement("mxCell");
   cell.setAttribute("id", nextCellId(doc));
   cell.setAttribute("value", label);
   cell.setAttribute("style", style);
   cell.setAttribute("vertex", "1");
-  cell.setAttribute("parent", "1");
+  cell.setAttribute("parent", nested && parentId ? parentId : "1");
   const geometry = doc.createElement("mxGeometry");
-  geometry.setAttribute("x", String(Math.round(x)));
-  geometry.setAttribute("y", String(Math.round(Math.max(40, y))));
+  geometry.setAttribute("x", String(Math.round(left)));
+  geometry.setAttribute("y", String(Math.round(nested ? top : Math.max(40, top))));
   geometry.setAttribute("width", String(width));
   geometry.setAttribute("height", String(height));
   geometry.setAttribute("as", "geometry");
@@ -456,7 +487,7 @@ function addShape(doc: XmlDocument, slots: DiagramSlots) {
     const query = slots.target || slots.to;
     if (!query) throw new DiagramXmlError("Say which shape to insert in front of.");
     beforeAnchor = requireVertex(doc, query);
-    const anchor = geometryOf(beforeAnchor);
+    const anchor = absoluteGeometry(beforeAnchor);
     x = anchor.x;
     y = anchor.y + Math.round((anchor.height - size.height) / 2);
     shiftRightOf(doc, anchor.x, size.width + 80);
@@ -464,25 +495,30 @@ function addShape(doc: XmlDocument, slots: DiagramSlots) {
     const query = slots.from || slots.target;
     if (!query) throw new DiagramXmlError("Say which shape to connect from.");
     fromAnchor = requireVertex(doc, query);
-    const anchor = geometryOf(fromAnchor);
+    const anchor = absoluteGeometry(fromAnchor);
     x = anchor.x + anchor.width + 80;
     y = anchor.y + Math.round((anchor.height - size.height) / 2);
     shiftRightOf(doc, x, size.width + 40);
   } else if (slots.to) {
     toAnchor = requireVertex(doc, slots.to);
-    const anchor = geometryOf(toAnchor);
+    const anchor = absoluteGeometry(toAnchor);
     x = Math.max(80, anchor.x - size.width - 80);
     y = anchor.y + Math.round((anchor.height - size.height) / 2);
   } else {
     let maxRight = 80;
     for (const vertex of listVertices(doc)) {
-      const anchor = geometryOf(vertex);
+      const anchor = absoluteGeometry(vertex);
       maxRight = Math.max(maxRight, anchor.x + anchor.width + 80);
     }
     x = maxRight;
   }
 
-  const cell = createVertex(doc, label, style, x, y, size.width, size.height);
+  const nestedUnder = beforeAnchor ?? fromAnchor ?? toAnchor;
+  const parent =
+    nestedUnder && nestedUnder.getAttribute("parent")
+      ? findCellById(doc, nestedUnder.getAttribute("parent") ?? "")
+      : null;
+  const cell = createVertex(doc, label, style, x, y, size.width, size.height, parent);
 
   if (beforeAnchor) {
     for (const source of incomingSources(doc, beforeAnchor)) {
@@ -629,8 +665,8 @@ function layoutDiagram(doc: XmlDocument, slots: DiagramSlots) {
       if (rightRank === undefined) return -1;
       if (leftRank !== rightRank) return leftRank - rightRank;
     }
-    const left = geometryOf(a);
-    const right = geometryOf(b);
+    const left = absoluteGeometry(a);
+    const right = absoluteGeometry(b);
     if (vertical) return left.y - right.y || left.x - right.x;
     return left.x - right.x || left.y - right.y;
   });
@@ -640,6 +676,7 @@ function layoutDiagram(doc: XmlDocument, slots: DiagramSlots) {
     if (!geometry) continue;
     const width = numberAttr(geometry, "width", 140);
     const height = numberAttr(geometry, "height", 64);
+    vertex.setAttribute("parent", "1");
     if (vertical) {
       geometry.setAttribute("x", "200");
       geometry.setAttribute("y", String(cursor));
