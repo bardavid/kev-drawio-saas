@@ -41,7 +41,7 @@ const LEXICON: Record<string, string> = {
 const GENERIC = new Set(["database", "db", "service", "server", "app", "web", "cache", "queue", "box", "node", "tier"]);
 /** Scraps of a scale phrase. They are not boxes the user named. */
 const FILLER_LABEL =
-  /^(?:nodes?|boxes?|shapes?|components?|architecture|architectures|diagram|diagrams|system|systems|lots|many|several|multiple|detailed|complex|web|application|apps?|tier|tiers|layer|layers)$/i;
+  /^(?:nodes?|boxes?|shapes?|components?|architecture|architectures|diagram|diagrams|system|systems|lots|many|several|multiple|detailed|complex|web|application|apps?|tier|tiers|layer|layers|platforms?|internals?|parts?|moving|machinery|pieces?|rich(?:ly)?|dense(?:ly)?|intricate|depth|deeper|n|all)$/i;
 const WORD_NUM: Record<string, number> = { two: 2, three: 3, four: 4, five: 5, six: 6 };
 const COLOR_RE = new RegExp(`\\b(${Object.keys(PALETTE).join("|")})\\b`, "i");
 const DRAW_VERB = /\b(draw|sketch|build|create|architect)\b/i;
@@ -197,13 +197,15 @@ export function parseArchitecture(message: string, hints?: PlanHints): Architect
   if (!text || isBareDraw(text) || isBetweenEdit(text) || isColorRestyle(text)) return null;
   const hasVerb = DRAW_VERB.test(text);
   const hasArrow = /→|->|=>|—>|-->|–>/.test(text);
-  const tiers = tierCount(text);
-  // "3-tier web app" and "three-layer web application" name a stack even when
-  // they never say draw and have no arrow.
-  const tierAsk = tiers !== null && !isLedByEdit(text);
+  const counted = tierCount(text);
+  const richHint = wantsRicherDiagram(text, hints?.depth);
+  // Scale language on an architecture subject is a stack even without a digit.
+  // "3-tier" still counts on its own. An edit ("add …") is not a new stack.
+  const denseAsk = richHint && !isLedByEdit(text) && denseArchitectureLanguage(text);
+  const tierAsk = counted !== null && !isLedByEdit(text);
   // "two boxes: A and B" names a small diagram even when it never says draw.
   const countedAsk = boxCount(text) !== null && !isLedByEdit(text);
-  if (!hasVerb && !hasArrow && !tierAsk && !countedAsk) return null;
+  if (!hasVerb && !hasArrow && !tierAsk && !countedAsk && !denseAsk) return null;
 
   // "with Redis cache" names a cache vertex. It is not part of the tier chain,
   // and the default Client → App → Postgres stack used to drop it.
@@ -213,8 +215,9 @@ export function parseArchitecture(message: string, hints?: PlanHints): Architect
   const chain = labelsFromChain(cleaned);
   let nodes = chain.length >= 2 ? chain : labelsFromList(cleaned);
   // "lots of nodes" is a scale phrase, not a pair of boxes. A named chain still wins.
-  const named = nodes.filter((node) => !FILLER_LABEL.test(node));
-  const rich = named.length === 0 && wantsRicherDiagram(text, hints?.depth);
+  const named = nodes.filter((node) => !subjectScrap(node));
+  const rich = named.length === 0 && richHint;
+  const tiers = counted ?? (rich && denseAsk ? 6 : null);
   nodes = expandTiers(rich ? [] : nodes, tiers, rich);
   if (aside) nodes = insertRedis(nodes);
   nodes = uniqueLabels(nodes).slice(0, 8);
@@ -438,6 +441,24 @@ function layoutOf(text: string): "horizontal" | "vertical" | null {
   if (/\b(vertical\w*|column|stack|top to bottom)\b/.test(lower)) return "vertical";
   if (/\b(horizontal\w*|left to right|row)\b/.test(lower)) return "horizontal";
   return null;
+}
+
+/**
+ * The drawing is about an architecture and asks for depth, without naming the boxes.
+ * An open research idea ("subsystem of … and its interactions") stays on the depth reading.
+ */
+function denseArchitectureLanguage(text: string): boolean {
+  if (/\b(?:and\s+its\s+interactions|subsystem of)\b/i.test(text)) return false;
+  return /\b(?:tiers?|layers?|layered|platforms?|architectures?|topolog(?:y|ies)|(?:web|service|app|application)\s+stack|full[-\s]?stack)\b/i.test(
+    text,
+  );
+}
+
+/** Every word is a scale scrap or a generic subject ("Web Platform", "Internals"). */
+function subjectScrap(label: string): boolean {
+  const words = label.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  return words.every((word) => FILLER_LABEL.test(word));
 }
 
 function tierCount(text: string): number | null {

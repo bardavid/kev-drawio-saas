@@ -229,6 +229,13 @@ const SCALE_TOKENS = new Set([
   "complex",
 ]);
 
+/** Inflections of the same scale words. "Richly" and "dense" are not separate ideas. */
+function scaleWord(word: string): boolean {
+  const token = word.toLowerCase();
+  if (SCALE_TOKENS.has(token)) return true;
+  return /^(?:rich(?:ly|er|est|ness)?|dense(?:ly|r|st)?|intricate(?:ly)?|depth|deep(?:er|ly|est)?)$/.test(token);
+}
+
 const SCALE_PHRASE =
   /\b(?:more\s+(?:complex|detailed|nodes?|boxes?|shapes?|services?|databases?|caches?|workers?|components?)|in\s+detail)\b/i;
 
@@ -246,7 +253,7 @@ export function wantsRicherDiagram(message: string, depth?: DepthReading): boole
   const text = message.trim();
   if (!text || REPLACE_CANVAS.test(text)) return false;
   const tokens = new Set(contentWords(text).map((word) => word.toLowerCase()));
-  const tokenHit = [...tokens].some((word) => SCALE_TOKENS.has(word));
+  const tokenHit = [...tokens].some((word) => scaleWord(word));
   const phrase = SCALE_PHRASE.test(text);
   if (QUIET_SCALE.test(text) && !tokenHit && !phrase) return false;
   return tokenHit || phrase;
@@ -284,29 +291,54 @@ export function isExpandFollowUp(text: string): boolean {
 export type PluralRole = "database" | "cache" | "worker" | "service" | "queue" | "storage";
 
 const PLURAL_ROLES: Array<{ role: PluralRole; pattern: RegExp }> = [
-  { role: "database", pattern: /\b(?:databases|dbs)\b/i },
-  { role: "cache", pattern: /\bcaches\b/i },
-  { role: "worker", pattern: /\bworkers\b/i },
-  { role: "service", pattern: /\bservices\b/i },
-  { role: "queue", pattern: /\bqueues\b/i },
+  // A specific role beside a collective ("database stores") wins over the collective itself.
+  {
+    role: "database",
+    pattern: /\b(?:databases|dbs)\b|\b(?:database|db|data)\s+(?:stores?|nodes|boxes|instances)\b/i,
+  },
+  { role: "cache", pattern: /\bcaches\b|\bcache\s+(?:stores?|nodes|boxes|instances)\b/i },
+  { role: "worker", pattern: /\bworkers\b|\bworker\s+(?:nodes|boxes|instances|pool)\b/i },
+  { role: "service", pattern: /\bservices\b|\bservice\s+(?:nodes|boxes|instances)\b/i },
+  { role: "queue", pattern: /\bqueues\b|\bqueue\s+(?:stores?|nodes|boxes|instances)\b/i },
   { role: "storage", pattern: /\bstores\b/i },
 ];
 
 const GENERIC_LABEL =
-  /^(?:databases?|dbs?|caches?|workers?|services?|queues?|stores?|nodes?|boxes?|shapes?|components?|tiers?|layers?|systems?|apps?|applications?|many|more|extra|additional|several|multiple|lots|some|new|other|another|please|add|ok|okay|but|asked|just|too|few|complex|detailed|dense|rich|richer)$/i;
+  /^(?:databases?|dbs?|caches?|workers?|services?|queues?|stores?|nodes?|boxes?|shapes?|components?|tiers?|layers?|systems?|apps?|applications?|instances?|pools?|many|more|extra|additional|several|multiple|lots|some|new|other|another|please|add|ok|okay|but|asked|just|too|few|complex|detailed|dense|rich|richer)$/i;
+
+/**
+ * Scaffolding around a role: the request verb, a modal, a quantifier, or where to put it.
+ * "Add" was already generic. "Drop" and "Could" were minted as boxes and hid the role.
+ */
+const REQUEST_SCRAP =
+  /^(?:add|insert|place|put|drop|splice|wedge|park|stick|tuck|slot|nest|draw|sketch|build|create|architect|could|would|should|can|may|might|please|just|kindly|onto|into|upon|on|board|canvas|diagram|page|sheet|here|there|handful|couple|various|assorted|pair|bunch|number)$/i;
+
+function serviceWord(word: string): boolean {
+  return !GENERIC_LABEL.test(word) && !REQUEST_SCRAP.test(word);
+}
+
+/** A catalog or coined product. A leading verb or a locative is not one. */
+function hasProperService(message: string): boolean {
+  return extractNamedEntities(message).some((entity) => entity.label.split(/\s+/).some((word) => serviceWord(word)));
+}
+
+/** The sentence is asking to place a role, not mentioning one inside a longer idea. */
+const ROLE_PLACEMENT =
+  /^(?:please\s+)?(?:(?:could|would|can|will)\s+you\s+)?(?:please\s+|also\s+|just\s+)?(?:add|insert|place|put|drop|splice|wedge|park|stick|tuck|slot|nest|include|attach)\b/i;
 
 /**
  * A plural role with no proper name ("databases", "caches", "workers").
  * A named product beside the role is the user's label, not this.
+ * A collective takes the more specific role in front of it ("database stores").
  */
 export function pluralRoleOf(message: string): PluralRole | null {
   const text = message.trim();
   if (!text || REPLACE_CANVAS.test(text) || isBetweenEdit(text)) return null;
   // A long idea may mention workers or services in passing. That is not "add workers".
-  if (longUnlistedDescription(text)) return null;
+  // A placement sentence that says "diagram" is still this request.
+  if (longUnlistedDescription(text) && !ROLE_PLACEMENT.test(text)) return null;
   const hit = PLURAL_ROLES.find((item) => item.pattern.test(text));
   if (!hit) return null;
-  const proper = extractNamedEntities(text).some((entity) => !GENERIC_LABEL.test(entity.label));
-  if (proper) return null;
+  if (hasProperService(text)) return null;
   return hit.role;
 }

@@ -146,6 +146,94 @@ describe("expand and enrich", () => {
     assert.equal(pluralRoleOf("add Postgres and MySQL databases"), null);
   });
 
+  it("composes a dense architecture from scale cues without a named box list", () => {
+    const prompts = [
+      "Sketch a richly detailed multi-tier web platform with lots of moving parts — N layers, complex internals",
+      "Outline a denser layered service platform with intricate internals",
+      "Map a complex multi-layer system that has plenty of machinery inside",
+      "Build a richer n-tier web platform, depth and all",
+    ];
+    for (const prompt of prompts) {
+      assert.equal(wantsRicherDiagram(prompt), true, prompt);
+      const plan = parseArchitecture(prompt);
+      assert.ok(plan, prompt);
+      assert.ok((plan?.nodes.length ?? 0) >= 5, `${prompt} → ${plan?.nodes.join(", ")}`);
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      assert.doesNotMatch(
+        drawn.decision.reply,
+        /Name the boxes|high-level sketch|What should the new shape be called|What should I draw/,
+        prompt,
+      );
+      const report = assessDiagram(drawn.xml);
+      const boxes = content(report.nodes);
+      const labels = boxes.map((node) => node.label);
+      assert.ok(labels.length >= 5, `${prompt} → ${labels.join(", ")}`);
+      const families = new Set<string>();
+      for (const label of labels) {
+        const text = label.toLowerCase();
+        if (/client|browser/.test(text)) families.add("client");
+        if (/cdn|edge|gateway/.test(text)) families.add("edge");
+        if (/^app$|service|api|worker/.test(text)) families.add(text === "worker" ? "worker" : "app");
+        if (/cache/.test(text)) families.add("cache");
+        if (/worker/.test(text)) families.add("worker");
+        if (/postgres|replica|mysql|database|archive/.test(text)) families.add("db");
+      }
+      assert.ok(families.size >= 3, `${prompt} families ${[...families].join(", ")} from ${labels.join(", ")}`);
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), prompt);
+      assert.ok(report.edges.length >= 4, prompt);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
+      assert.ok(
+        boxes.every((node) => /fillColor=#[0-9a-f]{6}/i.test(node.style) && !node.style.includes("fillColor=#ffffff")),
+        prompt,
+      );
+      assert.deepEqual(report.overlaps, [], prompt);
+    }
+    assert.deepEqual(parseArchitecture("three tier web app")?.nodes, ["Client", "App", "Postgres"]);
+    assert.deepEqual(parseArchitecture("just a simple three tier web app")?.nodes, ["Client", "App", "Postgres"]);
+  });
+
+  it("soft-composes a plural role even when the verb is not add", () => {
+    const prompts = [
+      "Drop a few databases onto the board",
+      "Place a handful of databases on the canvas",
+      "Put some database stores on the page",
+      "Stick several db instances onto the sheet",
+    ];
+    for (const prompt of prompts) {
+      assert.equal(pluralRoleOf(prompt), "database", prompt);
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", `${prompt} → ${drawn.decision.reply}`);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called|Which shape should I delete/, prompt);
+      const boxes = content(assessDiagram(drawn.xml).nodes);
+      assert.ok(boxes.length >= 2, `${prompt} → ${boxes.map((node) => node.label).join(", ")}`);
+      assert.ok(boxes.every((node) => /cylinder3/.test(node.style)), prompt);
+      assert.ok(
+        boxes.every((node) => /fillColor=#[0-9a-f]{6}/i.test(node.style) && !node.style.includes("fillColor=#ffffff")),
+        prompt,
+      );
+    }
+
+    const base = previewDemo("Draw a plain three-tier web app", STARTER_XML);
+    const before = content(assessDiagram(base.xml).nodes);
+    const followUps = [
+      "Could you splice in several additional database stores for me?",
+      "Splice a few extra database stores into the diagram",
+    ];
+    for (const phrase of followUps) {
+      assert.equal(pluralRoleOf(phrase), "database", phrase);
+      const edited = previewDemo(phrase, base.xml);
+      assert.equal(edited.decision.intent, "add_shape", phrase);
+      const boxes = content(assessDiagram(edited.xml).nodes);
+      for (const kept of before) assert.ok(boxes.some((node) => node.label === kept.label), `${phrase} dropped ${kept.label}`);
+      const added = boxes.filter((node) => !before.some((kept) => kept.label === node.label));
+      assert.ok(added.length >= 2, `${phrase} added ${added.map((node) => node.label).join(", ")}`);
+      assert.ok(added.every((node) => /cylinder3/.test(node.style)), phrase);
+      assert.equal(added.some((node) => node.label === "CDN"), false, phrase);
+      assert.equal(added.some((node) => node.label === "Worker"), false, phrase);
+    }
+  });
+
   it("still clarifies a bare draw and does not wipe the canvas on a replace phrase", () => {
     const bare = previewDemo("draw", STARTER_XML);
     assert.equal(bare.decision.intent, "clarify");
