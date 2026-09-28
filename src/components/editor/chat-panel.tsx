@@ -2,7 +2,6 @@
 
 import { ArrowUp } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { DiagramSlots, Intent } from "@/lib/kev/types";
@@ -18,21 +17,6 @@ export interface ChatItem {
   beforeXml?: string;
   /** Browser history index to rewind to. */
   historyIndex?: number;
-}
-
-function slotLine(slots: DiagramSlots | undefined): string {
-  if (!slots) return "";
-  const parts: string[] = [];
-  if (slots.shape) parts.push(slots.shape);
-  if (slots.label) parts.push(slots.label);
-  if (slots.newLabel) parts.push(`→ ${slots.newLabel}`);
-  if (slots.target && slots.target !== slots.label) parts.push(slots.target);
-  if (slots.from || slots.to) parts.push([slots.from, slots.to].filter(Boolean).join(" → "));
-  if (slots.place) parts.push(slots.place);
-  if (slots.colorName) parts.push(slots.colorName);
-  if (slots.fillColor && !slots.colorName) parts.push(slots.fillColor);
-  if (slots.layout) parts.push(slots.layout);
-  return parts.join(" · ");
 }
 
 interface ChatPanelProps {
@@ -81,16 +65,6 @@ export function ChatPanel({ messages, draft, pending, onDraft, onSend, onUndo }:
               </div>
             ) : (
               <article key={message.id} className="mr-4 flex min-w-0 flex-col gap-1.5 sm:mr-6">
-                {message.intent ? (
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <Badge variant="outline" className="font-mono text-[10px] font-normal text-muted-foreground">
-                      {message.intent}
-                    </Badge>
-                    {slotLine(message.slots) ? (
-                      <span className="min-w-0 font-mono text-[11px] break-words text-muted-foreground">{slotLine(message.slots)}</span>
-                    ) : null}
-                  </div>
-                ) : null}
                 <p className="text-sm leading-6 break-words">{message.content}</p>
               </article>
             ),

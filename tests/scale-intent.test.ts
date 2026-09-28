@@ -11,9 +11,9 @@ import { runKevTurn } from "../src/lib/kev/run";
 import { extractNamedEntities } from "../src/lib/kev/entities";
 import { isLimitInstruction, stripTrailingLimits } from "../src/lib/kev/plan";
 import { topicLookupCandidates } from "../src/lib/kev/research";
+import { architectureFromIdea, isScrapLabel } from "../src/lib/kev/invent";
 import {
   componentsFromBrief,
-  componentsFromOpenIdea,
   depthFromOpenAnswer,
   ideaSubject,
   longUnlistedDescription,
@@ -514,6 +514,11 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     assert.equal(depthFromOpenAnswer("three tier web app"), null);
     assert.equal(depthFromOpenAnswer("redraw this from scratch and make it more complex"), null);
     assert.equal(depthFromOpenAnswer("give the boxes a color"), null);
+    assert.equal(depthFromOpenAnswer("You figure out names"), "many");
+    assert.equal(depthFromOpenAnswer("figure out the names"), "many");
+    assert.equal(depthFromOpenAnswer("you figure it out"), "many");
+    assert.equal(depthFromOpenAnswer("you pick"), "many");
+    assert.equal(depthFromOpenAnswer("you figure out the color"), null);
 
     const transcript = [
       { role: "user", content: STORAGE_IDEA },
@@ -538,19 +543,47 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
       "many",
     );
 
-    const clauses = componentsFromOpenIdea(STORAGE_IDEA);
-    assert.deepEqual(clauses?.nodes, [
+    const roles = architectureFromIdea(STORAGE_IDEA);
+    const roleLabels = roles?.nodes.map((node) => node.label) ?? [];
+    assert.ok(roleLabels.length >= 4, roleLabels.join(", "));
+    for (const scrap of [
       "Distributed Storage System",
       "Ibverbs",
       "Io Uring",
       "Zero Syscall",
       "Zero Copy",
       "Data Transfer",
-    ]);
-    const beacon = componentsFromOpenIdea(
-      "Draw a coastal beacon network that uses lanterns and tide bells for night harbor signals",
-    );
-    assert.deepEqual(beacon?.nodes, ["Coastal Beacon Network", "Lanterns", "Tide Bells", "Night Harbor Signals"]);
+      "RDMA Transport",
+      "io_uring Path",
+      "Registered Buffers",
+      "Metadata Service",
+      "Submission Path",
+      "Completion Path",
+    ]) {
+      assert.equal(roleLabels.includes(scrap), false, scrap);
+    }
+    for (const label of roleLabels) assert.equal(isScrapLabel(label), false, label);
+    assert.ok(roleLabels.includes("Clients"), roleLabels.join(", "));
+    assert.ok(roleLabels.some((label) => /Storage/.test(label)), roleLabels.join(", "));
+    assert.ok((roles?.edges.length ?? 0) >= 3);
+    assert.ok(roles?.edges.every((edge) => edge.label.length > 0));
+
+    assert.equal(isScrapLabel("From the kiln"), true);
+    assert.equal(isScrapLabel("slow-while-drying"), true);
+    assert.equal(isScrapLabel("Retries"), true);
+    assert.equal(isScrapLabel("Baffles"), false);
+    assert.equal(isScrapLabel("Flue"), false);
+
+    const kiln = architectureFromIdea("Draw a hillside kiln that uses baffles and a flue for slow even drying");
+    const kilnLabels = kiln?.nodes.map((node) => node.label) ?? [];
+    assert.ok(kilnLabels.length >= 4, kilnLabels.join(", "));
+    assert.equal(kilnLabels.includes("Hillside Kiln"), false);
+    assert.equal(kilnLabels.includes("Slow Even Drying"), false);
+    assert.ok(kilnLabels.includes("Clients"), kilnLabels.join(", "));
+    assert.ok(kilnLabels.some((label) => /Kiln/.test(label)), kilnLabels.join(", "));
+    assert.ok(kilnLabels.some((label) => /Baffle/.test(label)), kilnLabels.join(", "));
+    assert.ok(kilnLabels.some((label) => /Flue/.test(label)), kilnLabels.join(", "));
+    assert.ok(kiln?.edges.some((edge) => /Slow|Drying|Even/.test(edge.label)), kiln?.edges.map((edge) => edge.label).join(", "));
   });
 
   it("composes a detailed diagram when the user answers the open-idea question", async () => {
@@ -692,9 +725,21 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
       const report = assertClean(result.updatedXml);
       const labels = content(report.nodes).map((node) => node.label);
       assert.ok(labels.length >= 4, `${answer}: ${labels.join(", ")}`);
-      assert.match(labels.join(" "), /Storage/, answer);
-      assert.match(labels.join(" "), /Ibverbs/, answer);
-      assert.match(labels.join(" "), /Uring/, answer);
+      for (const scrap of [
+        "Distributed Storage System",
+        "Ibverbs",
+        "Io Uring",
+        "Zero Syscall",
+        "Zero Copy",
+        "Data Transfer",
+        "RDMA Transport",
+        "Registered Buffers",
+        "Metadata Service",
+      ]) {
+        assert.equal(labels.includes(scrap), false, `${answer}: ${scrap}`);
+      }
+      assert.ok(labels.includes("Clients"), `${answer}: ${labels.join(", ")}`);
+      assert.ok(labels.some((label) => /Storage/.test(label)), answer);
       assert.ok(report.nodes.some((node) => node.role === "cluster"), answer);
       assert.ok(report.edges.length >= 3, answer);
       assert.ok(report.edges.every((edge) => edge.label.length > 0), answer);
@@ -729,6 +774,64 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     const labels = content(assertClean(result.updatedXml).nodes).map((node) => node.label);
     assert.equal(labels.length, 1);
     assert.match(labels[0] ?? "", /Storage/);
+  });
+
+  it("invents roles after “you figure out names” and does not re-ask or scrap the sentence", async () => {
+    globalThis.fetch = (async () => Response.json({ extract: UNUSABLE_NOTES })) as typeof fetch;
+    const cases = [
+      {
+        idea: STORAGE_IDEA,
+        answer: "You figure out names",
+        forbid: ["Distributed Storage System", "Ibverbs", "Io Uring", "Zero Syscall", "Zero Copy", "Data Transfer", "RDMA Transport", "Registered Buffers", "Metadata Service"],
+        want: [/Clients/, /Storage/],
+      },
+      {
+        idea: "Draw a multi-pop edge cache that serves from origin with stale-while-revalidate",
+        answer: "you pick",
+        forbid: ["Multi-pop Edge Cache", "From Origin", "Stale-while-revalidate", "Origins", "Placement"],
+        want: [/Clients/, /Cache/, /Origin/],
+        edge: /stale-while-revalidate/i,
+      },
+      {
+        idea: "Draw a notification mesh that fans alerts across regions with retries",
+        answer: "figure out the names",
+        forbid: ["Notification Mesh", "Alerts", "Retries", "Regions"],
+        want: [/Clients/, /Notification/],
+        edge: /Retries/,
+      },
+      {
+        idea: "Draw a hillside kiln that uses baffles and a flue for slow even drying",
+        answer: "you figure it out",
+        forbid: ["Hillside Kiln", "Slow Even Drying", "Even Drying"],
+        want: [/Clients/, /Kiln/, /Baffle/, /Flue/],
+        edge: /Slow|Drying|Even/,
+      },
+    ];
+    for (const item of cases) {
+      const result = await runKevTurn({
+        messages: [
+          { role: "user", content: item.idea },
+          { role: "assistant", content: OPEN_IDEA_REPLY },
+          { role: "user", content: item.answer },
+        ],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(result.intent, "add_shape", item.answer);
+      assert.notEqual(result.reply, OPEN_IDEA_REPLY, item.answer);
+      const report = assertClean(result.updatedXml);
+      const labels = content(report.nodes).map((node) => node.label);
+      assert.ok(labels.length >= 4, `${item.answer}: ${labels.join(", ")}`);
+      assert.equal(labels.length === 1, false, labels.join(", "));
+      for (const scrap of item.forbid) assert.equal(labels.includes(scrap), false, `${item.answer}: ${scrap} in ${labels.join(", ")}`);
+      for (const pattern of item.want) assert.match(labels.join(" | "), pattern, labels.join(", "));
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), item.answer);
+      assert.ok(report.edges.length >= 3 && report.edges.every((edge) => edge.label.length > 0), item.answer);
+      if ("edge" in item && item.edge) {
+        assert.match(report.edges.map((edge) => edge.label).join(" | "), item.edge, item.answer);
+      }
+      const groups = new Set(report.nodes.filter((node) => node.role === "cluster").map((node) => node.label));
+      assert.ok(groups.size >= 3, `${item.answer}: ${[...groups].join(", ")}`);
+    }
   });
 });
 

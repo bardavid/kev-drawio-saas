@@ -94,14 +94,22 @@ function leadingScore(label: string, query: string): number {
   return 70 + Math.min(q.length, 9);
 }
 
+function isContentVertex(vertex: XmlElement): boolean {
+  if (vertex.getAttribute("vertex") !== "1") return false;
+  if ((vertex.getAttribute("style") ?? "").includes("drawai=cluster")) return false;
+  return cellLabel(vertex).trim().length > 0;
+}
+
 function bestVertex(
   doc: XmlDocument,
   query: string,
   score: (label: string, query: string) => number,
+  include: (vertex: XmlElement) => boolean = () => true,
 ): XmlElement | null {
   let best: XmlElement | null = null;
   let bestScore = 0;
   for (const vertex of listVertices(doc)) {
+    if (!include(vertex)) continue;
     const value = score(cellLabel(vertex), query);
     if (value > bestScore) {
       best = vertex;
@@ -723,4 +731,257 @@ export function applyOperations(xml: string, operations: DiagramOperation[]): st
   const structural = operations.some((operation) => operation.intent !== "style");
   if (structural) polishDiagram(doc);
   return serializeDiagram(doc);
+}
+
+const PRONOUN_NODE = /^(?:it|this|that|this node|that node|this shape|that shape|this box|that box|the node|the shape|the box)$/i;
+const EDGE_ONLY = /^(?:edges?|arrows?|connectors?|lines?)$/i;
+
+function cleanNodeQuery(raw: string): string {
+  return raw
+    .replace(/^(?:the|a|an)\s+/i, "")
+    .replace(/\s+(?:node|shape|box|vertex)$/i, "")
+    .replace(/[?.!]+$/g, "")
+    .trim();
+}
+
+/**
+ * “Make X a label”, “turn this node into a label”, “labels instead of nodes”.
+ * Null when the message is not that edit.
+ */
+export function parseNodeToEdgeLabel(message: string): { query: string | null } | null {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text || !/\blabels?\b/i.test(text)) return null;
+
+  const instead = text.match(
+    /^(?:please\s+)?(?:(?:make|turn|use)\s+(?:the\s+)?)?(?:(.+?)\s+)?labels?\s+instead\s+of\s+nodes?(?:\s+(?:for|on)\s+(?:the\s+)?(.+))?\s*$/i,
+  );
+  if (instead) {
+    const named = cleanNodeQuery(instead[2] || instead[1] || "");
+    if (EDGE_ONLY.test(named)) return null;
+    return { query: named && !PRONOUN_NODE.test(named) ? named : null };
+  }
+
+  const asLabel = text.match(/\buse\s+(?:the\s+)?(.+?)\s+as\s+(?:an?\s+)?(?:edge\s+)?labels?\s*$/i);
+  if (asLabel?.[1]) {
+    const named = cleanNodeQuery(asLabel[1]);
+    if (!named || EDGE_ONLY.test(named)) return null;
+    return { query: PRONOUN_NODE.test(named) ? null : named };
+  }
+
+  const into = text.match(
+    /\b(?:make|turn|convert|change)\s+(?:the\s+)?(.+?)\s+(?:(?:into|to)\s+)?(?:an?\s+)?(?:edge\s+)?labels?\s*$/i,
+  );
+  if (!into?.[1]) return null;
+  const named = cleanNodeQuery(into[1]);
+  if (!named || EDGE_ONLY.test(named)) return null;
+  return { query: PRONOUN_NODE.test(named) ? null : named };
+}
+
+function contentVertices(doc: XmlDocument): XmlElement[] {
+  return listVertices(doc).filter(isContentVertex);
+}
+
+function findContentVertex(doc: XmlDocument, query: string): XmlElement | null {
+  const direct = bestVertex(doc, query, scoreVertex, isContentVertex);
+  if (direct) return direct;
+  const tokens = mentionTokens(query);
+  const stripped = tokens.join(" ");
+  if (stripped && stripped !== normalizeName(query)) {
+    const colored = bestVertex(doc, stripped, scoreVertex, isContentVertex);
+    if (colored) return colored;
+  }
+  for (let count = tokens.length - 1; count >= 1; count -= 1) {
+    const prefix = tokens.slice(0, count).join(" ");
+    const hit = bestVertex(doc, prefix, leadingScore, isContentVertex);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function recency(cell: XmlElement): number {
+  const id = cell.getAttribute("id") ?? "";
+  const numeric = Number(id);
+  if (Number.isFinite(numeric)) return numeric;
+  const digits = id.match(/(\d+)/);
+  if (digits?.[1]) return Number(digits[1]);
+  return absoluteGeometry(cell).x;
+}
+
+function mentioned(label: string, text: string): boolean {
+  const needle = normalizeName(label);
+  const hay = normalizeName(text);
+  if (!needle || !hay) return false;
+  return ` ${hay} `.includes(` ${needle} `);
+}
+
+function resolveLabelVertex(doc: XmlDocument, query: string | null, earlier: string): XmlElement | null {
+  if (query) {
+    const found = findContentVertex(doc, query);
+    if (found) return found;
+  }
+  const content = contentVertices(doc);
+  const named = earlier.trim() ? content.filter((vertex) => mentioned(cellLabel(vertex), earlier)) : [];
+  const pool = named.length > 0 ? named : content;
+  if (pool.length === 0) return null;
+  return pool.reduce((best, vertex) => (recency(vertex) > recency(best) ? vertex : best));
+}
+
+interface Side {
+  edge: XmlElement;
+  other: XmlElement;
+}
+
+function contentEnd(doc: XmlDocument, id: string | null, skip: XmlElement): XmlElement | null {
+  if (!id) return null;
+  const cell = findCellById(doc, id);
+  if (!cell || cell === skip || !isContentVertex(cell)) return null;
+  return cell;
+}
+
+function sidesOf(doc: XmlDocument, vertex: XmlElement): { incoming: Side[]; outgoing: Side[] } {
+  const id = vertex.getAttribute("id");
+  const incoming: Side[] = [];
+  const outgoing: Side[] = [];
+  for (const edge of listEdges(doc)) {
+    if (edge.getAttribute("target") === id) {
+      const other = contentEnd(doc, edge.getAttribute("source"), vertex);
+      if (other) incoming.push({ edge, other });
+    } else if (edge.getAttribute("source") === id) {
+      const other = contentEnd(doc, edge.getAttribute("target"), vertex);
+      if (other) outgoing.push({ edge, other });
+    }
+  }
+  return { incoming, outgoing };
+}
+
+function removeVertex(doc: XmlDocument, target: XmlElement) {
+  const id = target.getAttribute("id");
+  const cells = doc.getElementsByTagName("mxCell");
+  const attached: XmlElement[] = [];
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index];
+    if (!cell || cell === target) continue;
+    if (cell.getAttribute("parent") === id || cell.getAttribute("source") === id || cell.getAttribute("target") === id) {
+      attached.push(cell);
+    }
+  }
+  for (const cell of attached) cell.parentNode?.removeChild(cell);
+  target.parentNode?.removeChild(target);
+}
+
+function promoteContentVertex(doc: XmlDocument, vertex: XmlElement): { from: string; to: string } | null {
+  const label = cellLabel(vertex);
+  const { incoming, outgoing } = sidesOf(doc, vertex);
+  if (incoming.length > 0 && outgoing.length > 0) {
+    let bestIn = incoming[0]!;
+    let bestOut = outgoing[0]!;
+    let found = false;
+    for (const source of incoming) {
+      for (const target of outgoing) {
+        if (source.other === target.other) continue;
+        if (findEdgeBetween(doc, source.other, target.other)) {
+          bestIn = source;
+          bestOut = target;
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+    if (!found) {
+      const byX = (side: Side) => absoluteGeometry(side.other).x;
+      bestIn = incoming.reduce((best, side) => (byX(side) < byX(best) ? side : best));
+      bestOut = outgoing.reduce((best, side) => (byX(side) < byX(best) ? side : best));
+    }
+    if (bestIn.other === bestOut.other) return null;
+    connectCells(doc, bestIn.other, bestOut.other, label);
+    for (const source of incoming) {
+      if (source.other === bestOut.other) continue;
+      connectCells(doc, source.other, bestOut.other, source === bestIn ? label : "");
+    }
+    for (const target of outgoing) {
+      if (target.other === bestIn.other || target.other === bestOut.other) continue;
+      connectCells(doc, bestIn.other, target.other, "");
+    }
+    const from = cellLabel(bestIn.other);
+    const to = cellLabel(bestOut.other);
+    removeVertex(doc, vertex);
+    return { from, to };
+  }
+
+  const neighbor = incoming[0]?.other ?? outgoing[0]?.other;
+  if (!neighbor) return null;
+  const neighborId = neighbor.getAttribute("id");
+  const vertexId = vertex.getAttribute("id");
+  const others = listEdges(doc).filter((edge) => {
+    const source = edge.getAttribute("source");
+    const target = edge.getAttribute("target");
+    const touchesNeighbor = source === neighborId || target === neighborId;
+    const touchesVertex = source === vertexId || target === vertexId;
+    return touchesNeighbor && !touchesVertex;
+  });
+  const best = others.find((edge) => edge.getAttribute("target") === neighborId) ?? others[0];
+  if (!best) return null;
+  best.setAttribute("value", label);
+  const fromId = best.getAttribute("source");
+  const toId = best.getAttribute("target");
+  const fromCell = fromId ? findCellById(doc, fromId) : null;
+  const toCell = toId ? findCellById(doc, toId) : null;
+  const from = fromCell ? cellLabel(fromCell) : "";
+  const to = toCell ? cellLabel(toCell) : "";
+  removeVertex(doc, vertex);
+  return { from, to };
+}
+
+function labelDecision(reply: string, slots: DiagramSlots = {}, intent: KevDecision["intent"] = "clarify"): KevDecision {
+  return { intent, reply, slots, operations: [], updatedXml: null };
+}
+
+/**
+ * Host edit: the named vertex's text becomes the label of the best connecting
+ * edge, neighbors are reconnected, and the vertex is removed.
+ * Null when the message is not that request.
+ */
+export function nodeToEdgeLabelTurn(
+  message: string,
+  xml: string,
+  earlier = "",
+): { decision: KevDecision; xml: string } | null {
+  const parsed = parseNodeToEdgeLabel(message);
+  if (!parsed) return null;
+  let doc: XmlDocument;
+  try {
+    doc = openDiagram(xml);
+  } catch {
+    return null;
+  }
+  const vertex = resolveLabelVertex(doc, parsed.query, earlier);
+  const asked = parsed.query?.trim();
+  if (!vertex) {
+    const name = asked ? cleanNodeQuery(asked) : "that node";
+    return {
+      decision: labelDecision(asked ? `I don't see ${name} on the diagram.` : "I don't see a node to turn into a label."),
+      xml,
+    };
+  }
+  const name = cellLabel(vertex);
+  const linked = promoteContentVertex(doc, vertex);
+  if (!linked) {
+    return {
+      decision: labelDecision(`${name} has to sit between two shapes before it can become an edge label.`),
+      xml,
+    };
+  }
+  polishDiagram(doc);
+  const next = serializeDiagram(doc);
+  const where = linked.from && linked.to ? ` from ${linked.from} to ${linked.to}` : "";
+  return {
+    decision: labelDecision(`Labeled the edge${where} “${name}” and removed the ${name} box.`, {
+      target: name,
+      edgeLabel: name,
+      from: linked.from || null,
+      to: linked.to || null,
+    }, "delete_shape"),
+    xml: next,
+  };
 }

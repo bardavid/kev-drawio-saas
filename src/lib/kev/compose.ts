@@ -40,9 +40,9 @@ import {
 } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import { routeEdges } from "@/lib/drawio/layout";
+import { architectureFromIdea } from "@/lib/kev/invent";
 import {
   componentsFromBrief,
-  componentsFromOpenIdea,
   depthFromOpenAnswer,
   highLevelOverview,
   ideaSubject,
@@ -733,12 +733,52 @@ export function composeDetailedFromBrief(message: string, summary: string): Comp
 
 /**
  * The user already chose a detailed diagram and asked for the names.
- * Topic notes did not supply them, so the idea's own clauses become the boxes.
+ * Topic notes did not supply them, so the host invents the roles of the system.
+ * Clause scraps of the sentence are not those boxes.
  */
 export function composeDetailedFromIdea(message: string): Composition | null {
-  const parts = componentsFromOpenIdea(message);
-  if (!parts) return null;
-  return compositionFromParts(message, parts, null);
+  const invented = architectureFromIdea(message);
+  if (!invented) return null;
+  return compositionFromInvented(message, invented);
+}
+
+function compositionFromInvented(
+  message: string,
+  invented: NonNullable<ReturnType<typeof architectureFromIdea>>,
+): Composition {
+  const layout = requestedLayout(message) ?? "horizontal";
+  const perRole = new Map<string, number>();
+  const placed = invented.nodes.map((node, index) => {
+    const nth = perRole.get(node.role) ?? 0;
+    perRole.set(node.role, nth + 1);
+    const paint = rolePaint(node.role, nth);
+    return { ...node, id: `role-${index + 1}`, paint };
+  });
+  const idByLabel = new Map(placed.map((node) => [node.label.toLowerCase(), node.id]));
+  const spec: LayerSpec = {
+    kind: "layers",
+    title: invented.title,
+    reply: `Drew ${invented.nodes.map((node) => node.label).join(", ")}.`,
+    axis: layout === "vertical" ? "vertical" : "horizontal",
+    groups: placed.map((node) => ({
+      id: `band-${node.id}`,
+      label: node.group,
+      nodes: [{ id: node.id, label: node.label, shape: node.shape, fill: node.paint.fill, stroke: node.paint.stroke }],
+    })),
+    edges: invented.edges.map((edge) => ({
+      from: idByLabel.get(edge.from.toLowerCase()) ?? edge.from,
+      to: idByLabel.get(edge.to.toLowerCase()) ?? edge.to,
+      label: edge.label,
+    })),
+  };
+  return {
+    spec,
+    colorName: null,
+    context: null,
+    researchQuery: ideaSubject(message),
+    layout: layout === "vertical" ? "vertical" : "horizontal",
+    grounded: false,
+  };
 }
 
 function compositionFromParts(

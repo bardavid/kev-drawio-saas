@@ -1,6 +1,6 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
 import type { KevClient } from "@/lib/kev/client";
-import { applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
+import { applyOperations, edgeQuery, groundDecision, nodeToEdgeLabelTurn } from "@/lib/kev/mutate";
 import { OPEN_IDEA_REPLY } from "@/lib/kev/scale";
 import {
   CAPACITY_REPLY,
@@ -862,6 +862,8 @@ function unchanged(xml: string, reply = UNCHANGED_DIAGRAM_REPLY): { decision: Ke
 }
 
 export function previewDemo(message: string, xml: string): { decision: KevDecision; xml: string } {
+  const asEdgeLabel = nodeToEdgeLabelTurn(message, xml);
+  if (asEdgeLabel) return asEdgeLabel;
   if (overNamedCapacity(message)) {
     return {
       decision: { intent: "clarify", reply: CAPACITY_REPLY, slots: {}, operations: [], updatedXml: null },
