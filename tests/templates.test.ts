@@ -792,11 +792,15 @@ describe("popular diagram templates", () => {
 
   it("keeps a 3-tier web app on the chain planner", () => {
     const report = assertClean(previewDemo("draw a 3 tier system architecture", STARTER_XML).xml);
+    const boxes = report.nodes.filter((node) => node.role !== "cluster");
     assert.deepEqual(
-      report.nodes.map((node) => node.label),
+      boxes.map((node) => node.label),
       ["Client", "App", "Postgres"],
     );
-    assert.equal(report.nodes.some((node) => node.role === "cluster"), false);
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assert.equal(boxes.some((node) => node.label === "CDN"), false);
+    assert.equal(boxes.some((node) => node.label === "Load balancer"), false);
   });
 
   it("leaves an existing canvas in place instead of pasting a template over it", () => {

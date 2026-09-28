@@ -112,12 +112,15 @@ export function isBetweenEdit(text: string): boolean {
   return afterBefore && (INSERT_VERB.test(trimmed) || PLACEMENT_MANNER_RE.test(trimmed));
 }
 
-/** "Rename X to Y" and "Change X's name to Y" edit a label. They are not a new diagram. */
+/** "Rename X to Y", "call X by the name Y", and "refer to X as Y" edit a label. They are not a new diagram. */
 export function isRenameEdit(text: string): boolean {
-  const trimmed = text.trim();
+  const trimmed = text.trim().replace(/[?.!]+$/g, "").trim();
   if (/^(?:please\s+)?(?:rename|relabel)\b/i.test(trimmed)) return true;
   if (/\b(?:change|set|update)\s+(?:the\s+)?name\s+of\b/i.test(trimmed) && /\bto\b/i.test(trimmed)) return true;
-  return /\b(?:change|set|update)\b/i.test(trimmed) && /\bname\s+to\b/i.test(trimmed);
+  if (/\b(?:change|set|update)\b/i.test(trimmed) && /\bname\s+to\b/i.test(trimmed)) return true;
+  if (/\bcall\b/i.test(trimmed) && /\bby\s+the\s+name\b/i.test(trimmed)) return true;
+  if (/\brefer\s+to\b/i.test(trimmed) && /\bas\b/i.test(trimmed)) return true;
+  return /^(?:please\s+)?call\s+(?:the\s+)?\S+\s+\S+(?:\s+instead)?$/i.test(trimmed);
 }
 
 /** "Make the boxes orange" restyles. "Build" inside it is not a draw verb. */
@@ -332,25 +335,31 @@ function colorSlots(colorName: string | null): Pick<DiagramSlots, "colorName" | 
   return { colorName, fillColor: PALETTE[colorName].fill, strokeColor: PALETTE[colorName].stroke };
 }
 
+function isChromeVertex(style: string): boolean {
+  return /(?:^|;)drawai=(?:cluster|lifeline|anchor)(?:;|$)/.test(style);
+}
+
 function needsColor(summary: DiagramSummary, colorName: string): boolean {
   const color = PALETTE[colorName];
-  if (!color || summary.vertices.length === 0) return false;
-  return summary.vertices.some((vertex) => !vertex.style.includes(`fillColor=${color.fill}`));
+  const vertices = summary.vertices.filter((vertex) => !isChromeVertex(vertex.style));
+  if (!color || vertices.length === 0) return false;
+  return vertices.some((vertex) => !vertex.style.includes(`fillColor=${color.fill}`));
 }
 
 function layoutSatisfied(summary: DiagramSummary, plan: ArchitecturePlan): boolean {
   if (!plan.layout || plan.nodes.length === 0) return true;
-  const byLabel = new Map(summary.vertices.map((vertex) => [vertex.label.toLowerCase(), vertex]));
+  const vertices = summary.vertices.filter((vertex) => !isChromeVertex(vertex.style));
+  const byLabel = new Map(vertices.map((vertex) => [vertex.label.toLowerCase(), vertex]));
   if (!plan.nodes.every((node) => byLabel.has(node.toLowerCase()))) return false;
-  const ordered = [...summary.vertices].sort((left, right) =>
+  const ordered = [...vertices].sort((left, right) =>
     plan.layout === "vertical" ? left.y - right.y || left.x - right.x : left.x - right.x || left.y - right.y,
   );
   const indexes = plan.nodes.map((label) => ordered.findIndex((vertex) => vertex.label.toLowerCase() === label.toLowerCase()));
   for (let index = 1; index < indexes.length; index += 1) {
     if ((indexes[index] ?? -1) <= (indexes[index - 1] ?? -1)) return false;
   }
-  if (plan.layout === "horizontal") return new Set(summary.vertices.map((vertex) => vertex.y)).size === 1;
-  return new Set(summary.vertices.map((vertex) => vertex.x)).size === 1;
+  if (plan.layout === "horizontal") return new Set(vertices.map((vertex) => vertex.y)).size === 1;
+  return new Set(vertices.map((vertex) => vertex.x)).size === 1;
 }
 
 function namedColor(text: string): string | null {

@@ -4,6 +4,7 @@ import { applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
 import {
   CAPACITY_REPLY,
   composeOnCanvas,
+  renderBlankArchitecture,
   renderComposition,
   resolveComposition,
   sameMxfile,
@@ -405,17 +406,29 @@ export function decideDemo(message: string): KevDecision {
   return decision("clarify", HELP);
 }
 
+function renamePair(target: string, next: string): { target: string; next: string } {
+  return {
+    target: target.trim(),
+    next: next.replace(/\s+instead\b.*$/i, "").trim(),
+  };
+}
+
 function parseRename(text: string): { target: string; next: string } | null {
   const patterns = [
     /\b(?:change|set|update)\s+(?:the\s+)?(.+?)['’]s\s+name\s+to\s+(.+)$/i,
     /\b(?:change|set|update)\s+(?:the\s+)?name\s+of\s+(?:the\s+)?(.+?)\s+to\s+(.+)$/i,
     /\b(?:rename|relabel)\s+(?:the\s+)?(?:label\s+(?:of\s+)?)?(.+?)\s+(?:to|as|so\s+it\s+reads)\s+(.+)$/i,
     /\bchange\s+(?:the\s+)?label\s+(?:of\s+|on\s+)?(.+?)\s+(?:so\s+it\s+reads|to)\s+(.+)$/i,
+    /\bcall\s+(?:the\s+)?(.+?)\s+by\s+the\s+name\s+(.+?)(?:\s+instead)?\s*$/i,
+    /\brefer\s+to\s+(?:the\s+)?(.+?)\s+as\s+(.+?)(?:\s+instead)?\s*$/i,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match?.[1] && match[2]) return { target: match[1], next: match[2] };
+    if (match?.[1] && match[2]) return renamePair(match[1], match[2]);
   }
+  if (/\bby\s+the\s+name\b/i.test(text) || /\brefer\s+to\b/i.test(text)) return null;
+  const called = text.match(/^(?:please\s+)?call\s+(?:the\s+)?(\S+)\s+(\S+)(?:\s+instead)?\s*$/i);
+  if (called?.[1] && called[2]) return renamePair(called[1], called[2]);
   return null;
 }
 
@@ -640,6 +653,8 @@ export function previewDemo(message: string, xml: string): { decision: KevDecisi
     if (placed === "keep") return unchanged(xml, KEPT_CANVAS_REPLY);
     return { decision: placed.decision, xml: placed.xml };
   }
+  const visual = renderBlankArchitecture(message, xml);
+  if (visual) return visual;
   const plan = resolvePlan(message);
   if (plan) {
     const operations = operationsForPlan(plan, xml);

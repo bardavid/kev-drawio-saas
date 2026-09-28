@@ -7,6 +7,7 @@ import {
   CAPACITY_REPLY,
   composeOnCanvas,
   compositionDecision,
+  renderBlankArchitecture,
   renderComposition,
   resolveComposition,
   sameMxfile,
@@ -362,6 +363,24 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
       intent: "clarify",
       slots: withPalette(input.reading.slots),
       steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
+
+  const visual = renderBlankArchitecture(input.userMessage, input.currentXml);
+  if (visual) {
+    const operations = operationsForPlan(plan, input.currentXml);
+    return turn(input, {
+      reply: visual.decision.reply,
+      updatedXml: visual.xml,
+      intent: visual.decision.intent,
+      slots: visual.decision.slots,
+      steps: operations.map((operation) => ({
+        detail: describeOperation(operation),
+        intent: operation.intent,
+        accepted: true,
+        confirm: input.reading.confidence,
+      })),
       confidence: input.reading.confidence,
     });
   }

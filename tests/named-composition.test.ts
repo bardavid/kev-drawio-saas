@@ -785,6 +785,9 @@ describe("named composition", () => {
       "Change API's name to Backend",
       "Change the name of API to Backend",
       "Update the API's name to Backend",
+      "Please call API by the name Backend instead",
+      "refer to API as Backend",
+      "please call API Backend",
     ];
     for (const phrase of phrases) {
       process.env.KEV_BASE_URL = "http://kev.local";
@@ -864,6 +867,90 @@ describe("named composition", () => {
     );
     assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#9673a6")));
     assert.ok(after.edges.every((edge) => !edge.style.includes("fillColor=#dae8fc")));
+  });
+
+  it("gives a blank architecture pastel fills, labeled edges, and topic groups", () => {
+    const prompts = [
+      "draw a 3 tier web app",
+      "Browser → Application → Database",
+      "draw an architecture: Browser, Application, Database",
+    ];
+    for (const prompt of prompts) {
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      const report = assertClean(drawn.xml);
+      const boxes = content(report.nodes);
+      assert.ok(boxes.length >= 3, prompt);
+      assert.ok(report.nodes.filter((node) => node.role === "cluster").length >= boxes.length, prompt);
+      assert.ok(report.edges.length >= boxes.length - 1, prompt);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
+      assertPastel(boxes, prompt);
+      if (prompt.includes("Browser")) {
+        assert.deepEqual(
+          boxes.map((node) => node.label),
+          ["Browser", "Application", "Database"],
+          prompt,
+        );
+      }
+    }
+  });
+
+  it("draws one node per named step when a flow lists four or more", () => {
+    const prompts = [
+      {
+        text: "fulfillment flow listing receive order, pick items, pack box, print label, hand to carrier",
+        steps: ["Receive Order", "Pick Items", "Pack Box", "Print Label", "Hand To Carrier"],
+      },
+      {
+        text: "Draw a receiving flow: unload truck, inspect crates, sort bins, store pallet, escort to dock",
+        steps: ["Unload Truck", "Inspect Crates", "Sort Bins", "Store Pallet", "Escort To Dock"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+      assert.doesNotMatch(drawn.decision.reply, /Which nodes should I draw/);
+      const report = assertClean(drawn.xml);
+      assert.deepEqual(content(report.nodes).map((node) => node.label), prompt.steps, prompt.text);
+      assert.ok(report.edges.length >= prompt.steps.length - 1, prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt.text);
+    }
+  });
+
+  it("renames when asked to call a shape by another name", async () => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "Client → Gateway → Database" }],
+      currentXml: STARTER_XML,
+    });
+    assert.ok(content(assertClean(drawn.updatedXml).nodes).some((node) => node.label === "Gateway"));
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async () => {
+      throw new Error("rename must not ask Kev");
+    }) as typeof fetch;
+    const renamed = await runKevTurn({
+      messages: [
+        { role: "user", content: "Client → Gateway → Database" },
+        { role: "assistant", content: drawn.reply },
+        { role: "user", content: "Please call Gateway by the name Edge instead" },
+      ],
+      currentXml: drawn.updatedXml,
+    });
+    assert.equal(renamed.intent, "edit_shape");
+    assert.match(renamed.reply, /Renamed Gateway to Edge/);
+    const labels = content(assertClean(renamed.updatedXml).nodes).map((node) => node.label);
+    assert.ok(labels.includes("Edge"));
+    assert.equal(labels.includes("Gateway"), false);
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+
+    const nonsense = await runKevTurn({
+      messages: [{ role: "user", content: "zzzzzyx nonsense blobble wibble not a real request" }],
+      currentXml: renamed.updatedXml,
+    });
+    assert.equal(nonsense.intent, "clarify");
+    assert.equal(nonsense.updatedXml, renamed.updatedXml);
   });
 
   it("drops a role gloss when a product of that role is already named", () => {

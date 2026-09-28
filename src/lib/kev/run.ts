@@ -7,6 +7,7 @@ import {
   CAPACITY_REPLY,
   composeOnCanvas,
   renderComposition,
+  renderBlankArchitecture,
   resolveComposition,
   sameMxfile,
   templateReferenceFor,
@@ -367,6 +368,8 @@ function localDiagram(
     }
     return result(placed.decision, mode, model, placed.xml, false);
   }
+  const visual = renderBlankArchitecture(userMessage, currentXml);
+  if (visual) return result(visual.decision, mode, model, visual.xml, false);
   const plan = resolvePlan(userMessage);
   if (!plan) return null;
   const operations = operationsForPlan(plan, currentXml);
