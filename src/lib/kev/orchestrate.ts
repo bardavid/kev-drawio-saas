@@ -5,18 +5,21 @@ import {
   colorInMessage,
   describeComposition,
   CAPACITY_REPLY,
+  composeDetailedFromBrief,
   composeOnCanvas,
   compositionDecision,
+  highLevelComposition,
   renderBlankArchitecture,
   renderComposition,
   resolveComposition,
+  unresolvedOpenIdea,
   sameMxfile,
   overNamedCapacity,
   type Composition,
 } from "@/lib/kev/compose";
 import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
-import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
+import { researchIdea, researchTopic, wikipediaTitle } from "@/lib/kev/research";
 import { decideDemo } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations } from "@/lib/kev/mutate";
 import {
@@ -32,7 +35,6 @@ import {
 import {
   COLOR_KEEP,
   COLOR_NONE,
-  COMPOSITION_CLARIFY,
   COMPOSITION_COLOR_INSTRUCTIONS,
   COMPOSITION_NOOP,
   COMPOSITION_REFERENCE_LEAD,
@@ -49,6 +51,7 @@ import {
   STEP_SHAPE_INSTRUCTIONS,
   colorCriterion,
   compositionApplyCriterion,
+  compositionClarifyCriterion,
   compositionConfirmInstructions,
   compositionNextInstructions,
   shapeKindCriterion,
@@ -67,6 +70,7 @@ import {
   type SystemOneQuestion,
   type SystemOneRequest,
 } from "@/lib/kev/systemone";
+import { DETAILED_UNRESOLVED_REPLY, OPEN_IDEA_REPLY } from "@/lib/kev/scale";
 import type {
   DiagramOperation,
   DiagramSlots,
@@ -105,6 +109,8 @@ export interface OrchestratorContext {
   topicContext?: string | null;
   reading: KevReading;
   model?: string;
+  /** A composition already chosen from the depth reading. */
+  prepared?: Composition | null;
 }
 
 export function buildSpecificityRequest(input: {
@@ -216,6 +222,7 @@ export function buildOrchestratorStepRequest(input: {
  */
 export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevTurnResult | null> {
   if (isBareDraw(input.userMessage)) return bareDraw(input);
+  if (unresolvedOpenIdea(input.userMessage)) return planOpenIdea(input);
 
   let current = input;
   if (modelIsUnsure(input.reading) && wikipediaTitle(input.userMessage) && !input.topicContext) {
@@ -515,7 +522,7 @@ export function buildCompositionRequest(input: {
       instructions: compositionNextInstructions(phase),
       criteria: {
         apply: compositionApplyCriterion(phase),
-        clarify: COMPOSITION_CLARIFY,
+        clarify: compositionClarifyCriterion(phase),
         noop: COMPOSITION_NOOP,
       },
     },
@@ -544,8 +551,45 @@ const COMPOSITION_PHASES: Array<{ phase: CompositionPhase; detail: string }> = [
   { phase: "style", detail: "Confirm the diagram style" },
 ];
 
+/**
+ * A detailed idea with no named boxes is unsure about its components.
+ * Topic notes supply them. A high-level reading stays one subject box.
+ * Anything else leaves the canvas alone instead of drawing sentence scraps.
+ */
+async function planOpenIdea(input: OrchestratorContext): Promise<KevTurnResult> {
+  const depth = input.reading.depth ?? null;
+  if (depth === "few") {
+    const composition = highLevelComposition(input.userMessage);
+    if (!composition) return clarifyOpen(input, OPEN_IDEA_REPLY);
+    return runComposition({ ...input, prepared: composition });
+  }
+  if (depth === "many") {
+    let topicContext = input.topicContext ?? null;
+    if (!topicContext) {
+      const brief = await researchIdea(input.userMessage, { network: true });
+      topicContext = brief?.summary ?? null;
+    }
+    const composition = topicContext ? composeDetailedFromBrief(input.userMessage, topicContext) : null;
+    if (!composition) return clarifyOpen(input, DETAILED_UNRESOLVED_REPLY);
+    return runComposition({ ...input, topicContext, prepared: composition });
+  }
+  return clarifyOpen(input, OPEN_IDEA_REPLY);
+}
+
+function clarifyOpen(input: OrchestratorContext, reply: string): KevTurnResult {
+  return turn(input, {
+    reply,
+    updatedXml: input.originalXml,
+    intent: "clarify",
+    slots: withPalette(input.reading.slots),
+    steps: [],
+    confidence: input.reading.confidence,
+  });
+}
+
 function drawingFor(input: OrchestratorContext): Composition | null {
   const composition =
+    input.prepared ??
     resolveComposition(input.userMessage, { context: input.topicContext }) ??
     composeFromBrief(input.userMessage, input.topicContext ?? "");
   if (!composition || composition.colorName) return composition;

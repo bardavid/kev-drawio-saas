@@ -1,12 +1,14 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
+import { OPEN_IDEA_REPLY } from "@/lib/kev/scale";
 import {
   CAPACITY_REPLY,
   composeOnCanvas,
   renderBlankArchitecture,
   renderComposition,
   resolveComposition,
+  unresolvedOpenIdea,
   sameMxfile,
   overNamedCapacity,
 } from "@/lib/kev/compose";
@@ -652,6 +654,12 @@ export function previewDemo(message: string, xml: string): { decision: KevDecisi
     if (placed === "unchanged") return unchanged(xml);
     if (placed === "keep") return unchanged(xml, KEPT_CANVAS_REPLY);
     return { decision: placed.decision, xml: placed.xml };
+  }
+  if (unresolvedOpenIdea(message)) {
+    return {
+      decision: { intent: "clarify", reply: OPEN_IDEA_REPLY, slots: {}, operations: [], updatedXml: null },
+      xml,
+    };
   }
   const visual = renderBlankArchitecture(message, xml);
   if (visual) return visual;

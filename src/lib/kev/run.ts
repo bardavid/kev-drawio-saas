@@ -10,6 +10,7 @@ import {
   renderBlankArchitecture,
   resolveComposition,
   sameMxfile,
+  unresolvedOpenIdea,
   templateReferenceFor,
   overNamedCapacity,
 } from "@/lib/kev/compose";
@@ -20,6 +21,7 @@ import { maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
 import { architectureDecision, isRenameEdit, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
+import { OPEN_IDEA_REPLY } from "@/lib/kev/scale";
 import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
 import {
@@ -410,6 +412,15 @@ function localDiagram(
       );
     }
     return result(placed.decision, mode, model, placed.xml, false);
+  }
+  if (unresolvedOpenIdea(userMessage)) {
+    return result(
+      { intent: "clarify", slots: {}, operations: [], reply: OPEN_IDEA_REPLY, updatedXml: null },
+      mode,
+      model,
+      originalXml,
+      false,
+    );
   }
   const visual = renderBlankArchitecture(userMessage, currentXml);
   if (visual) return result(visual.decision, mode, model, visual.xml, false);

@@ -21,6 +21,7 @@ If an insert says “box”, “shape”, “node”, “stage”, “between”
 Midpoint and manner words (midstream, midway, halfway, and the same family) are placement too. Strip them wherever they sit in the new label.
 If the edit is only color or stroke → it is a restyle. Geometry stays. Do not move, reroute, or delete cells.
 Research runs only when a reading is unsure. The host already gates it.
+Depth. Judge the idea before the boxes. A high-level idea, or boxes the user already named, is few. A low-level idea is detailed and needs many components and the interactions between them. Leftover noun fragments of the sentence are not those components. When the user did not name the components and the idea is detailed, that list is unsure until topic notes supply it.
 
 Forks. Pick one branch. Do not blend them.
 Intent: if the user only changes color or stroke of existing boxes or arrows → style. If they name a new node to add → add_shape. Never both.
@@ -79,6 +80,13 @@ export const TARGET_INSTRUCTIONS =
   "Which existing shape is the edge target? If the user named a destination → that shape. Else → none. “Make the arrows blue” names no shape.";
 
 export const DISRUPTION_INSTRUCTIONS = `How much of the current diagram should change? If nothing was requested → leave the diagram alone. If only color, stroke, or a label changes → a small local edit. If a few edges are rewired → rewire a few shapes. If they asked to rebuild positions → rebuild the layout. ${BETWEEN_FORK} Do not score placement fluff as a rebuild.`;
+
+export const DEPTH_INSTRUCTIONS = `Is this a high-level diagram or a low-level, detailed one? Judge the idea. If the user named the boxes, counted them, or drew a short chain → few. If the idea needs many components and the interactions between them → many. Leftover noun fragments of the sentence are not those components. “Two boxes: A and B” is few. A vague description of a rich system is many. Pick one.`;
+
+export const DEPTH_CRITERIA = {
+  few: "If a few boxes express the idea, or the user already named them → this.",
+  many: "If the idea needs many components and interactions → this.",
+} as const;
 
 export const ANCHOR_NONE = "If they said every or all boxes or arrows, or named no single shape → this.";
 
@@ -167,7 +175,7 @@ export type GuidePhase = "outline" | "structure" | "style";
 
 export function compositionNextInstructions(phase: GuidePhase): string {
   if (phase === "outline") {
-    return "The host proposed the nodes for this diagram. If these are the named nodes, with brands kept and placement fluff stripped → apply. If a node was invented → clarify. If the user asked not to draw → noop. Pick one.";
+    return "The host proposed the nodes for this diagram. If the user named these nodes, or the idea is high-level and these few boxes express it → apply. If the idea is detailed and these nodes are leftover fragments of the sentence, or a few-box ask gained a node the user did not name → clarify. If the user asked not to draw → noop. Pick one.";
   }
   if (phase === "structure") {
     return "The host proposed the edges for this diagram. If these edges connect the named nodes → apply. If an edge was invented → clarify. If the user asked not to draw → noop. Pick one.";
@@ -177,7 +185,7 @@ export function compositionNextInstructions(phase: GuidePhase): string {
 
 export function compositionConfirmInstructions(phase: GuidePhase): string {
   if (phase === "outline") {
-    return "Are these the right nodes? If they are the nodes the user named → yes. If a node was invented, or a brand was replaced by its role word, or a Stage was invented from placement fluff → no.";
+    return "Are these the right nodes for the depth of the idea? If the user named them, or a few boxes express a high-level idea → yes. If a detailed idea collapsed into leftover fragments, or a few-box ask gained extra nodes → no.";
   }
   if (phase === "structure") {
     return "Are these the right edges? If they connect the named nodes → yes. If an edge was invented → no.";
@@ -186,9 +194,17 @@ export function compositionConfirmInstructions(phase: GuidePhase): string {
 }
 
 export function compositionApplyCriterion(phase: GuidePhase): string {
-  if (phase === "outline") return "If these are the named nodes → this.";
+  if (phase === "outline") return "If these nodes match the depth of the idea → this.";
   if (phase === "structure") return "If these edges connect the named nodes → this.";
   return "If the plan matches the request → this.";
+}
+
+export function compositionClarifyCriterion(phase: GuidePhase): string {
+  if (phase === "outline") {
+    return "If a detailed idea collapsed into leftover fragments, or a few-box ask gained a node the user did not name → this.";
+  }
+  if (phase === "structure") return "If an edge was invented → this.";
+  return "If a node or edge was invented → this.";
 }
 
 export const COMPOSITION_CLARIFY = "If a node or edge was invented → this.";

@@ -1,6 +1,5 @@
 import { PALETTE, inferShape } from "@/lib/drawio/styles";
 import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
-import { isInteractionAsk, planNodeIsAskFragment } from "@/lib/kev/system-ask";
 import type { DiagramOperation, DiagramSlots, Intent, KevDecision } from "@/lib/kev/types";
 
 /**
@@ -39,7 +38,7 @@ const LEXICON: Record<string, string> = {
 };
 
 const GENERIC = new Set(["database", "db", "service", "server", "app", "web", "cache", "queue", "box", "node", "tier"]);
-const WORD_NUM: Record<string, number> = { two: 2, three: 3, four: 4, five: 5 };
+const WORD_NUM: Record<string, number> = { two: 2, three: 3, four: 4, five: 5, six: 6 };
 const COLOR_RE = new RegExp(`\\b(${Object.keys(PALETTE).join("|")})\\b`, "i");
 const DRAW_VERB = /\b(draw|sketch|build|create|architect)\b/i;
 
@@ -152,7 +151,9 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
   // "3-tier web app" and "three-layer web application" name a stack even when
   // they never say draw and have no arrow.
   const tierAsk = tiers !== null && !isLedByEdit(text);
-  if (!hasVerb && !hasArrow && !tierAsk) return null;
+  // "two boxes: A and B" names a small diagram even when it never says draw.
+  const countedAsk = boxCount(text) !== null && !isLedByEdit(text);
+  if (!hasVerb && !hasArrow && !tierAsk && !countedAsk) return null;
 
   // "with Redis cache" names a cache vertex. It is not part of the tier chain,
   // and the default Client → App → Postgres stack used to drop it.
@@ -164,13 +165,6 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
   nodes = expandTiers(nodes, tiers);
   if (aside) nodes = insertRedis(nodes);
   nodes = uniqueLabels(nodes).slice(0, 8);
-  // "storage and its interactions" is the topic, not two vertices.
-  // A chain the user drew with arrows, or real names beside the ask, stays.
-  if (isInteractionAsk(text) && !hasArrow) {
-    const kept = nodes.filter((node) => !planNodeIsAskFragment(node));
-    if (kept.length >= 2) nodes = kept;
-    else return null;
-  }
   if (nodes.length < 2) return null;
 
   return {
@@ -402,6 +396,28 @@ function tierCount(text: string): number | null {
   return count;
 }
 
+function boxCount(text: string): number | null {
+  const match = text.match(/\b(two|three|four|five|six|\d+)\s+(?:boxes|shapes|nodes)\b/i);
+  if (!match?.[1]) return null;
+  const raw = match[1].toLowerCase();
+  const count = WORD_NUM[raw] ?? Number(raw);
+  if (!Number.isFinite(count) || count < 2 || count > 6) return null;
+  return count;
+}
+
+/**
+ * The user named the boxes: a tier count, a counted set, an arrow chain, or a list of short names.
+ * A long clause joined by "and" is a description, not that list.
+ */
+export function hasEnumeratedBoxes(message: string): boolean {
+  const text = message.trim();
+  if (!text || isLedByEdit(text)) return false;
+  if (tierCount(text) !== null || boxCount(text) !== null) return true;
+  const cleaned = stripModifiers(text);
+  if (/→|->|=>|—>|-->|–>/.test(cleaned) && labelsFromChain(cleaned).length >= 2) return true;
+  return labelsFromList(cleaned).length >= 2;
+}
+
 function stripModifiers(text: string): string {
   return text
     .replace(/\b(horizontally|horizontal|vertically|vertical|column|stack|left to right|top to bottom)\b/gi, " ")
@@ -430,7 +446,21 @@ function labelsFromList(text: string): string[] {
     .map((part) => part.trim())
     .filter(Boolean);
   if (parts.length < 2) return [];
-  const labels = parts.map((part) => endpointLabel(part));
+  const usable: string[] = [];
+  for (const part of parts) {
+    // "and its interactions" points at the edges. It is not another box.
+    if (/^(?:its|their|his|her)\b/i.test(part)) continue;
+    const words = part
+      .replace(/[^a-z0-9\s-]/gi, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    // A long clause is the idea, not one item in a list of boxes.
+    if (words.length > 4) return [];
+    if (words.length === 0) continue;
+    usable.push(part);
+  }
+  if (usable.length < 2) return [];
+  const labels = usable.map((part) => endpointLabel(part));
   if (labels.some((label) => !label)) return [];
   return labels.filter((label): label is string => Boolean(label));
 }
@@ -455,8 +485,10 @@ function endpointLabel(fragment: string): string | null {
   if (hits.length > 0) return hits[hits.length - 1] ?? null;
   for (let index = words.length - 1; index >= 0; index -= 1) {
     const word = words[index] ?? "";
-    if (word.length < 2 || /^(tier|tiers|layer|layers|complex|draw|please)$/i.test(word)) continue;
+    if (/^(tier|tiers|layer|layers|complex|draw|please|a|an|the)$/i.test(word)) continue;
     if (/^\d+$/.test(word)) continue;
+    // “Two boxes: A and B” names the boxes. A one-letter label is still a box.
+    if (word.length < 2 && !/^[A-Za-z]$/.test(word)) continue;
     return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
   }
   return null;

@@ -33,8 +33,8 @@ import {
   resolvePlan,
   withPalette,
 } from "@/lib/kev/plan";
-import { expandOpenSystem, shouldExpandSystem } from "@/lib/kev/expand";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
+import { componentsFromBrief, ideaSubject, longUnlistedDescription } from "@/lib/kev/scale";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
 
@@ -585,7 +585,7 @@ export function resolveComposition(
   const labels = extractNamedEntities(text).map((entity) => entity.label);
   const grounded = labels.length >= 2;
   const picture = wantsPicture(text);
-  if (!picture && !grounded && !shouldExpandSystem(text)) return null;
+  if (!picture && !grounded) return null;
 
   if (isIoUring(text)) return packComposition(ioUringSpec(), text, hints, null, false);
 
@@ -621,30 +621,9 @@ export function resolveComposition(
 
   if (architectureOwns(text, labels)) return null;
 
-  const opened = expandOpenSystem(text);
-  if (opened) {
-    return packComposition(
-      {
-        kind: "layers",
-        title: opened.title,
-        reply: opened.reply,
-        axis: opened.axis,
-        groups: opened.groups.map((group) => ({
-          id: group.id,
-          label: group.label,
-          flow: "column" as const,
-          nodes: group.nodes,
-        })),
-        edges: opened.edges,
-      },
-      text,
-      hints,
-      opened.context,
-      true,
-    );
-  }
-
-  if (grounded && !namedDropsChain(text, labels)) {
+  // Scraps of a longer description are not the named boxes. Sequences and
+  // workflows below still draw. A template already returned above.
+  if (!(longUnlistedDescription(text) && picture) && grounded && !namedDropsChain(text, labels)) {
     const composed = compositionFromNamed(text);
     if (composed) {
       if (hints?.colorName && !composed.colorName) composed.colorName = hints.colorName;
@@ -658,6 +637,95 @@ export function resolveComposition(
   if (isSequence(text)) return packComposition(genericSequence(text), text, hints, null, false);
   if (isWorkflow(text)) return packComposition(genericWorkflow(text), text, hints, null, false);
   return null;
+}
+
+/**
+ * The user described an idea and did not name the boxes. Known sketches already
+ * returned from resolveComposition. What remains is not a two-fragment drawing.
+ */
+export function unresolvedOpenIdea(message: string): boolean {
+  const text = message.trim();
+  if (!longUnlistedDescription(text)) return false;
+  return resolveComposition(text) === null && parseArchitecture(text) === null;
+}
+
+/** One box for a high-level reading. The subject stays whole. */
+export function highLevelComposition(message: string): Composition | null {
+  const label = ideaSubject(message);
+  if (!label) return null;
+  const paint = PALETTE.orange!;
+  const spec: LayerSpec = {
+    kind: "layers",
+    title: label,
+    reply: `Drew a high-level view of ${label}.`,
+    groups: [
+      {
+        id: "idea",
+        label,
+        nodes: [{ id: "idea-1", label, shape: "rectangle", fill: paint.fill, stroke: paint.stroke }],
+      },
+    ],
+    edges: [],
+  };
+  return {
+    spec,
+    colorName: null,
+    context: null,
+    researchQuery: null,
+    layout: requestedLayout(message) ?? layoutDefault(spec.kind),
+    grounded: false,
+  };
+}
+
+/**
+ * A detailed reading whose components come from topic notes.
+ * Returns null when the notes do not name enough interacting parts.
+ */
+export function composeDetailedFromBrief(message: string, summary: string): Composition | null {
+  const parts = componentsFromBrief(summary);
+  if (!parts) return null;
+  const layout = requestedLayout(message) ?? layoutDefault("layers");
+  const ids = new Map<string, string>();
+  parts.nodes.forEach((label, index) => {
+    const base = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "part";
+    ids.set(label.toLowerCase(), `${base}-${index + 1}`);
+  });
+  const indexOf = new Map(parts.nodes.map((label, index) => [label.toLowerCase(), index]));
+  const spec: LayerSpec = {
+    kind: "layers",
+    title: ideaSubject(message) ?? "Diagram",
+    reply: `Drew ${parts.nodes.join(", ")}.`,
+    axis: layout === "horizontal" ? "horizontal" : undefined,
+    groups: parts.nodes.map((label, index) => {
+      const paint = PALETTE[PASTEL_NAMES[index % PASTEL_NAMES.length]!]!;
+      const id = ids.get(label.toLowerCase()) ?? `part-${index + 1}`;
+      return {
+        id: `band-${id}`,
+        label,
+        nodes: [{ id, label, shape: "rectangle" as const, fill: paint.fill, stroke: paint.stroke }],
+      };
+    }),
+    edges: parts.edges.map((edge) => {
+      const from = ids.get(edge.from.toLowerCase()) ?? edge.from;
+      const to = ids.get(edge.to.toLowerCase()) ?? edge.to;
+      const fromAt = indexOf.get(edge.from.toLowerCase()) ?? 0;
+      const toAt = indexOf.get(edge.to.toLowerCase()) ?? 0;
+      return {
+        from,
+        to,
+        label: edge.label,
+        side: layout !== "horizontal" && Math.abs(fromAt - toAt) > 1,
+      };
+    }),
+  };
+  return {
+    spec,
+    colorName: null,
+    context: summary,
+    researchQuery: ideaSubject(message),
+    layout,
+    grounded: false,
+  };
 }
 
 export function describeComposition(composition: Composition): string {
@@ -1299,6 +1367,19 @@ function clusterStyle(header: number): string {
   );
 }
 
+/** A straight row edge would pass through a box that is not an endpoint. */
+function rowEdgeCrosses(source: Placed, target: Placed, nodes: Placed[]): boolean {
+  const y = (source.y + source.height / 2 + target.y + target.height / 2) / 2;
+  const left = Math.min(source.x + source.width, target.x + target.width);
+  const right = Math.max(source.x, target.x);
+  if (right - left < 8) return false;
+  return nodes.some((node) => {
+    if (node.id === source.id || node.id === target.id) return false;
+    if (node.x + node.width <= left || node.x >= right) return false;
+    return y > node.y && y < node.y + node.height;
+  });
+}
+
 /** Topic groups in a row. Edges run through the gap, so a taller tier does not cross its neighbor. */
 function drawHorizontalBands(spec: LayerSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
   const measured = spec.groups.map((group) => {
@@ -1341,14 +1422,31 @@ function drawHorizontalBands(spec: LayerSpec, paint: PalettePaint, force: boolea
   });
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
+  const content = nodes.filter((node) => !node.style.includes("drawai=cluster"));
   const edges: DrawnEdge[] = spec.edges.map((edge) => {
     const source = byId.get(edge.from);
     const target = byId.get(edge.to);
     if (!source || !target) {
       return { from: edge.from, to: edge.to, label: edge.label, points: [], style: edgeStyle() };
     }
+    if (rowEdgeCrosses(source, target, content)) {
+      const laneY = 36;
+      return {
+        from: source.id,
+        to: target.id,
+        label: edge.label,
+        points: [
+          { x: Math.round(source.x + source.width / 2), y: laneY },
+          { x: Math.round(target.x + target.width / 2), y: laneY },
+        ],
+        style: edgeStyle() + "exitX=0.500;exitY=0;entryX=0.500;entryY=0;drawai=routed;",
+      };
+    }
     const sourceMid = midY.get(edge.from) ?? source.y + source.height / 2;
     const targetMid = midY.get(edge.to) ?? target.y + target.height / 2;
+    const forward = target.x >= source.x;
+    const exitX = forward ? 1 : 0;
+    const entryX = forward ? 0 : 1;
     const exitY = Math.min(0.85, Math.max(0.15, (sourceMid - source.y) / source.height));
     const entryY = Math.min(0.85, Math.max(0.15, (targetMid - target.y) / target.height));
     const points =
@@ -1363,7 +1461,9 @@ function drawHorizontalBands(spec: LayerSpec, paint: PalettePaint, force: boolea
       to: target.id,
       label: edge.label,
       points,
-      style: edgeStyle() + `exitX=1;exitY=${exitY.toFixed(3)};entryX=0;entryY=${entryY.toFixed(3)};drawai=routed;`,
+      style:
+        edgeStyle() +
+        `exitX=${exitX};exitY=${exitY.toFixed(3)};entryX=${entryX};entryY=${entryY.toFixed(3)};drawai=routed;`,
     };
   });
   return { nodes, edges };
