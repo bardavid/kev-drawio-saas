@@ -416,4 +416,103 @@ describe("named composition", () => {
     assert.ok(genericLabels.includes("Object storage"));
     assert.ok(genericLabels.includes("Redis"));
   });
+
+  it("draws a release pipeline with pastel fills and a topic container", () => {
+    const prompt = "Sketch the release pipeline. GitHub Actions runs Build, then it finishes at Deploy to Vercel";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    const report = assertClean(drawn.xml);
+    assert.deepEqual(content(report.nodes).map((node) => node.label), ["GitHub Actions", "Build", "Deploy to Vercel"]);
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assertPastel(content(report.nodes), prompt);
+  });
+
+  it("splices a step onto the Build to Deploy edge when the anchors have trailing fluff", () => {
+    const drawn = previewDemo(
+      "Sketch the release pipeline. GitHub Actions runs Build, then it finishes at Deploy to Vercel",
+      STARTER_XML,
+    );
+    const placed = (xml: string) =>
+      content(assessDiagram(xml).nodes).map((node) => ({
+        label: node.label,
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
+      }));
+    const before = placed(drawn.xml);
+    const phrases = [
+      "Splice a Test step into the pipeline between Build and the Deploy stages",
+      "Wedge Test into the flow between Build and Deploy stages of this pipeline",
+    ];
+    for (const phrase of phrases) {
+      const edited = previewDemo(phrase, drawn.xml);
+      assert.equal(edited.decision.intent, "add_shape", phrase);
+      assert.equal(edited.decision.slots.label, "Test", phrase);
+      const report = assertClean(edited.xml);
+      const labels = content(report.nodes).map((node) => node.label);
+      assert.ok(labels.includes("Test"), phrase);
+      assert.equal(labels.includes("Stages"), false, phrase);
+      assert.equal(labels.includes("Deploy Stages"), false, phrase);
+      assert.deepEqual(
+        [...content(report.nodes)].sort((a, b) => a.x - b.x).map((node) => node.label),
+        ["GitHub Actions", "Build", "Test", "Deploy to Vercel"],
+        phrase,
+      );
+      assert.ok(report.edges.some((edge) => edge.from === "Build" && edge.to === "Test"), phrase);
+      assert.ok(report.edges.some((edge) => edge.from === "Test" && edge.to === "Deploy to Vercel"), phrase);
+      assert.equal(
+        report.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
+        false,
+        phrase,
+      );
+      const kept = placed(edited.xml);
+      assert.deepEqual(
+        kept.find((node) => node.label === "GitHub Actions"),
+        before.find((node) => node.label === "GitHub Actions"),
+        phrase,
+      );
+      assert.deepEqual(
+        kept.find((node) => node.label === "Build"),
+        before.find((node) => node.label === "Build"),
+        phrase,
+      );
+    }
+  });
+
+  it("keeps Tigris beside blobs and does not mint a node from clause crumbs", () => {
+    const prompt = "A Fly.io service keeps blobs in Tigris and uses Upstash Redis as its cache";
+    const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+    for (const label of ["Fly.io", "Tigris", "Upstash"]) {
+      assert.ok(labels.includes(label), `${prompt} → ${labels.join(", ")}`);
+    }
+    assert.equal(labels.includes("Caches"), false, labels.join(", "));
+    assert.equal(labels.includes("Compute There"), false, labels.join(", "));
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    const report = assertClean(drawn.xml);
+    const drawnLabels = report.nodes.map((node) => node.label);
+    for (const label of ["Fly.io", "Tigris", "Upstash"]) assert.ok(drawnLabels.includes(label), label);
+    assert.equal(drawnLabels.includes("Compute There"), false);
+    const tigris = content(report.nodes).find((node) => node.label === "Tigris");
+    const upstash = content(report.nodes).find((node) => node.label === "Upstash");
+    assert.ok(tigris?.style.includes("shape=cloud"));
+    assert.ok(upstash?.style.includes("shape=cylinder3"));
+    const clusters = report.nodes.filter((node) => node.role === "cluster").map((node) => node.label);
+    for (const label of ["Services", "Storage", "Data"]) assert.ok(clusters.includes(label), clusters.join(", "));
+    assertPastel(content(report.nodes), prompt);
+
+    const alt = "Fly.io setup: compute there, Tigris for object storage, and Upstash Redis as the cache";
+    const altLabels = extractNamedEntities(alt).map((entity) => entity.label);
+    for (const label of ["Fly.io", "Tigris", "Upstash"]) {
+      assert.ok(altLabels.includes(label), `${alt} → ${altLabels.join(", ")}`);
+    }
+    assert.equal(altLabels.includes("Compute There"), false, altLabels.join(", "));
+    assert.equal(altLabels.includes("Compute"), false, altLabels.join(", "));
+    const altDrawn = previewDemo(alt, STARTER_XML);
+    const altNodes = assessDiagram(altDrawn.xml).nodes.map((node) => node.label);
+    assert.equal(altNodes.includes("Compute There"), false);
+    assert.ok(altNodes.includes("Tigris"));
+  });
 });

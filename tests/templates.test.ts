@@ -63,6 +63,8 @@ interface Fixture {
   above?: Array<[string, string]>;
   messages?: string[];
   clusters?: string[];
+  /** Blank CI/CD uses the named-stack pastel path instead of a flat white workflow. */
+  pastel?: boolean;
 }
 
 const FIXTURES: Fixture[] = [
@@ -580,6 +582,8 @@ const FIXTURES: Fixture[] = [
       ["Build", "Deploy to Vercel", "Deploy"],
     ],
     rows: [["GitHub Actions", "Build", "Deploy to Vercel"]],
+    clusters: ["Steps"],
+    pastel: true,
   },
   {
     prompt: "draw a state machine for a pizza order: browsing, cart, checkout, baking, delivered",
@@ -624,7 +628,17 @@ describe("popular diagram templates", () => {
         `${fixture.prompt} left edge ${Math.min(...report.nodes.map((node) => node.x))}`,
       );
       for (const label of fixture.labels) box(report, label);
-      assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
+      if (fixture.pastel) {
+        assert.ok(
+          content(report.nodes).every((node) => {
+            const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+            return Boolean(fill && fill !== "#ffffff");
+          }),
+          fixture.prompt,
+        );
+      } else {
+        assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
+      }
       for (const [from, to, label] of fixture.edges) linked(report, from, to, label);
       for (const row of fixture.rows ?? []) sameRow(report, row);
       for (const [upper, lower] of fixture.above ?? []) above(report, upper, lower);
