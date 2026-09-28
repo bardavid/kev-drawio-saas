@@ -8,6 +8,8 @@ import {
   ANCHOR_NONE,
   COLOR_INSTRUCTIONS,
   COLOR_NONE,
+  DEPTH_CRITERIA,
+  DEPTH_INSTRUCTIONS,
   DISRUPTION_INSTRUCTIONS,
   INTENT_CRITERIA,
   INTENT_INSTRUCTIONS,
@@ -194,6 +196,7 @@ export function buildSystemOneRequest(input: {
         instructions: DISRUPTION_INSTRUCTIONS,
         criteria: DISRUPTION_CRITERIA,
       },
+      depth: choiceQuestion(DEPTH_INSTRUCTIONS, { ...DEPTH_CRITERIA }),
     },
   };
 }
@@ -250,6 +253,8 @@ export function parseSystemOneResponse(payload: unknown, labels: string[]): KevR
   const layout = readChoice(answers.layout)?.choice;
   const place = readChoice(answers.place)?.choice;
   const score = readScore(answers.disruption);
+  const depthChoice = readChoice(answers.depth)?.choice.toLowerCase();
+  const depth = depthChoice === "few" || depthChoice === "many" ? depthChoice : null;
 
   const slots: DiagramSlots = {
     shape: shape && isShapeKind(shape) ? shape : null,
@@ -268,6 +273,7 @@ export function parseSystemOneResponse(payload: unknown, labels: string[]): KevR
     confidence: intentAnswer?.confidence ?? null,
     disruption: score?.score ?? null,
     disruptionLegend: score?.legend ?? null,
+    depth,
     model: typeof record?.model === "string" && record.model.trim() ? record.model.trim() : undefined,
   };
 }

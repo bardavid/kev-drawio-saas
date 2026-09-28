@@ -483,7 +483,7 @@ describe("composition gate", { concurrency: 1 }, () => {
       currentXml: STARTER_XML,
     });
     assert.deepEqual(calls, [
-      "anchor,color,disruption,intent,layout,needs_xml_edit,place,shape,source,target",
+      "anchor,color,depth,disruption,intent,layout,needs_xml_edit,place,shape,source,target",
       "confirm,next",
       "confirm,next",
       "color,confirm,next",

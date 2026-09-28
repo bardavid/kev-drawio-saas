@@ -471,7 +471,10 @@ describe("configured pipeline", { concurrency: 1 }, () => {
       messages: [{ role: "user", content: "draw" }],
       currentXml: SEEDED_XML,
     });
-    assert.deepEqual(calls, ["anchor,color,disruption,intent,layout,needs_xml_edit,place,shape,source,target", "next,specific"]);
+    assert.deepEqual(calls, [
+      "anchor,color,depth,disruption,intent,layout,needs_xml_edit,place,shape,source,target",
+      "next,specific",
+    ]);
     assert.equal(result.mode, "kev");
     assert.equal(result.intent, "clarify");
     assert.equal(result.updatedXml, SEEDED_XML);

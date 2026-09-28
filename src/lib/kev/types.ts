@@ -59,6 +59,11 @@ export interface KevReading {
   confidence: number | null;
   disruption: number | null;
   disruptionLegend: string | null;
+  /**
+   * few: a high-level idea, or boxes the user already named.
+   * many: a detailed idea that needs components and interactions.
+   */
+  depth?: "few" | "many" | null;
   model?: string;
 }
 

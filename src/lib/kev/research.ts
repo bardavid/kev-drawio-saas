@@ -1,3 +1,5 @@
+import { ideaSubject } from "@/lib/kev/scale";
+
 /**
  * Short factual notes for diagram topics the planner may not know.
  * Wikipedia's public summary API needs no key. Failures fall back to a
@@ -26,9 +28,7 @@ export function redisDiagramRequest(message: string): boolean {
   return /\b(usage|diagram|architecture)\b/i.test(message);
 }
 
-/** Wikipedia page title for a draw-a-topic-diagram request, or null when research should not run. */
-export function wikipediaTitle(message: string): string | null {
-  if (redisDiagramRequest(message)) return "Redis";
+function classicUsageTitle(message: string): string | null {
   if (!/\b(draw|sketch)\b/i.test(message) || !/\bdiagram\b/i.test(message)) return null;
   if (!/\b(usage|architecture)\b/i.test(message)) return null;
   if (/\bsequence\b/i.test(message) || /\b(workflow|flowchart)\b/i.test(message)) return null;
@@ -47,9 +47,15 @@ export function wikipediaTitle(message: string): string | null {
     .join(" ");
 }
 
+/** Wikipedia page title for a draw-a-topic-diagram request, or null when research should not run. */
+export function wikipediaTitle(message: string): string | null {
+  if (redisDiagramRequest(message)) return "Redis";
+  return classicUsageTitle(message);
+}
+
 export function builtinBrief(message: string): TopicBrief | null {
-  if (!redisDiagramRequest(message)) return null;
-  return { topic: "Redis", summary: REDIS_USAGE_BRIEF, source: "builtin" };
+  if (redisDiagramRequest(message)) return { topic: "Redis", summary: REDIS_USAGE_BRIEF, source: "builtin" };
+  return null;
 }
 
 function clipBrief(text: string): string {
@@ -106,4 +112,52 @@ export async function researchTopic(
     if (live) return { topic: title, summary: live, source: "web" };
   }
   return builtin;
+}
+
+/**
+ * Topic notes for a detailed idea whose components were not named.
+ * An exact summary is tried first. A public search title is the fallback.
+ * Offline, or when the page has no summary, this returns null. There is no
+ * built-in diagram for an unnamed topic.
+ */
+export async function researchIdea(
+  message: string,
+  options?: { network?: boolean; fetch?: typeof fetch },
+): Promise<TopicBrief | null> {
+  const topic = ideaSubject(message);
+  if (!topic || !wikiTitle(topic)) return null;
+  if (!options?.network) return null;
+  const fetchImpl = options.fetch ?? fetch;
+  const exact = await fetchTopicBrief(topic, fetchImpl);
+  if (exact) return { topic, summary: exact, source: "web" };
+  const found = await searchWikiTitle(topic, fetchImpl);
+  if (!found || found.toLowerCase() === topic.toLowerCase()) return null;
+  const live = await fetchTopicBrief(found, fetchImpl);
+  if (!live) return null;
+  return { topic: found, summary: live, source: "web" };
+}
+
+function wikiTitle(title: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9 .()+_-]{0,80}$/.test(title);
+}
+
+async function searchWikiTitle(query: string, fetchImpl: typeof fetch): Promise<string | null> {
+  const url = `https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=${encodeURIComponent(query)}`;
+  try {
+    const response = await fetchImpl(url, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: {
+        accept: "application/json",
+        "user-agent": "draw.ai (https://github.com/bardavid/kev-drawio-saas)",
+      },
+    });
+    if (!response.ok) return null;
+    const payload: unknown = await response.json().catch(() => null);
+    if (!Array.isArray(payload) || !Array.isArray(payload[1])) return null;
+    const title = payload[1][0];
+    if (typeof title !== "string" || !wikiTitle(title.trim())) return null;
+    return title.trim();
+  } catch {
+    return null;
+  }
 }
