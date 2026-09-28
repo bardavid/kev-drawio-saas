@@ -1,5 +1,5 @@
 import { extractNamedEntities, isClauseVerb, listedComponents } from "@/lib/kev/entities";
-import { hasEnumeratedBoxes, isBetweenEdit, isCanvasEdit } from "@/lib/kev/plan";
+import { hasEnumeratedBoxes, isBetweenEdit, isCanvasEdit, parseArchitecture } from "@/lib/kev/plan";
 
 /**
  * Depth of a drawing: a few boxes, or many components and their interactions.
@@ -7,6 +7,7 @@ import { hasEnumeratedBoxes, isBetweenEdit, isCanvasEdit } from "@/lib/kev/plan"
  */
 
 const PICTURE = /\b(draw|sketch|diagram|show|illustrate|map|build|create|architect)\b/i;
+const TIER_COUNT = /\b(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i;
 /** "Walk through …" / "Picture a …" / "Trace the …" introduce an idea. The verb is not a box. */
 const OPENING =
   /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how|why|where|whether|a|an|the)\b/i;
@@ -88,6 +89,74 @@ export function openIdeaDepthFollowUp(
     }
   }
   return null;
+}
+
+/**
+ * A long picture that named only scraps. Two or three leftovers are not the
+ * component list, and a counted tier stack already has its own drawing.
+ * A depth answer can continue this idea even when the first turn drew the scraps.
+ */
+export function sparseOpenPicture(message: string): boolean {
+  const text = message.trim();
+  if (!text || isCanvasEdit(text) || REPLACE_CANVAS.test(text)) return false;
+  if (depthFromOpenAnswer(text) || hasEnumeratedBoxes(text)) return false;
+  if (!PICTURE.test(text) && !OPENING.test(text) && !INTERACTIONS.test(text)) return false;
+  if (TIER_COUNT.test(text)) return false;
+  if (contentWords(text).length < 8) return false;
+  const named = extractNamedEntities(text).filter(
+    (entity) => entity.origin !== "adhoc" || text.includes(entity.label),
+  );
+  if (named.length >= 4) return false;
+  const plan = parseArchitecture(text);
+  if (plan && plan.nodes.length >= 4) return false;
+  return true;
+}
+
+/**
+ * The latest line chooses depth, and an earlier turn already drew a sparse
+ * picture of the idea. The open-idea question is a different continuation.
+ * A depth sentence with no earlier picture is not this.
+ */
+export function sparseDepthFollowUp(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+): { idea: string; depth: "few" | "many" } | null {
+  if (messages.length < 3) return null;
+  const latest = messages[messages.length - 1];
+  if (!latest || latest.role !== "user") return null;
+  const depth = depthFromOpenAnswer(latest.content);
+  if (!depth) return null;
+  let nearestAssistant: string | null = null;
+  let assistantAfterIdea = false;
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message?.content.trim()) continue;
+    if (message.role === "assistant") {
+      if (nearestAssistant === null) nearestAssistant = message.content.trim();
+      assistantAfterIdea = true;
+      continue;
+    }
+    if (message.role === "user" && sparseOpenPicture(message.content)) {
+      if (nearestAssistant === OPEN_IDEA_REPLY) return null;
+      if (!assistantAfterIdea) return null;
+      return { idea: message.content.trim(), depth };
+    }
+  }
+  return null;
+}
+
+/**
+ * A depth answer continues an earlier idea.
+ * `replace` is set when that idea was already drawn as scraps: the depth
+ * view takes the page. The open-idea question still draws onto a blank page.
+ */
+export function depthContinuation(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+): { idea: string; depth: "few" | "many"; replace: boolean } | null {
+  const clarified = openIdeaDepthFollowUp(messages);
+  if (clarified) return { ...clarified, replace: false };
+  const sparse = sparseDepthFollowUp(messages);
+  if (!sparse) return null;
+  return { ...sparse, replace: true };
 }
 
 export interface BriefLink {
@@ -173,6 +242,10 @@ export function ideaSubject(message: string): string | null {
   );
   text = text.replace(/^(?:please\s+)?(?:picture|trace|follow|describe|explain)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "");
   text = text.replace(/\s+and\s+(?:its|their|his|her)\s+\S+\s*$/i, "");
+  text = text.replace(/\s+[—–]\s+[\s\S]*$/, "");
+  text = text.replace(/\s+-\s+(?:show|draw|sketch|illustrate|map)\b[\s\S]*$/i, "");
+  // A relative or purpose clause is not the subject of the box.
+  text = text.replace(/\s+(?:that|which|who|where|when|so)\b[\s\S]*$/i, "");
   text = text.replace(/\b(?:horizontally|horizontal|vertically|vertical|left to right|top to bottom)\b/gi, " ");
   const words = text
     .replace(/[^A-Za-z0-9\s.+_-]/g, " ")
@@ -246,7 +319,10 @@ function solidBriefLabel(label: string): boolean {
 }
 
 const IDEA_CLAUSE =
-  /\s+(that|which|who|where|when|for|using|via|with|through|and|uses|use)\s+/i;
+  /\s+(that|which|who|where|when|for|using|via|with|through|and|uses|use|so)\s+/i;
+/** A finite verb that introduces the next noun, not a name. Local to clause boxes. */
+const OPEN_PREDICATE =
+  /^(?:batch(?:es|ed|ing)?|stay(?:s|ed|ing)?|saturat(?:e|es|ed|ing)|show(?:s|n|ed|ing)?|keep(?:s|ing)?|remain(?:s|ed|ing)?)$/i;
 const LEADING_USE = /^(?:use|uses|using|used)$/i;
 
 /**
@@ -307,6 +383,9 @@ function ideaRemainder(message: string): string {
   );
   text = text.replace(/^(?:please\s+)?(?:picture|trace|follow|describe|explain)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "");
   text = text.replace(/\s+and\s+(?:its|their|his|her)\s+\S+\s*$/i, "");
+  // A dash tail is an instruction ("— show the moving parts"), not another part.
+  text = text.replace(/\s+[—–]\s+[\s\S]*$/, "");
+  text = text.replace(/\s+-\s+(?:show|draw|sketch|illustrate|map)\b[\s\S]*$/i, "");
   return text;
 }
 
@@ -318,15 +397,23 @@ function cleanIdeaPhrase(raw: string): { label: string; verb: string | null } | 
   let verb: string | null = null;
   while (
     words.length > 0 &&
-    (GLUE.test(words[0] ?? "") || isClauseVerb(words[0] ?? "") || LEADING_USE.test(words[0] ?? ""))
+    (GLUE.test(words[0] ?? "") ||
+      isClauseVerb(words[0] ?? "") ||
+      LEADING_USE.test(words[0] ?? "") ||
+      OPEN_PREDICATE.test(words[0] ?? ""))
   ) {
-    if (LEADING_USE.test(words[0] ?? "") || isClauseVerb(words[0] ?? "")) verb = displayWord(words[0] ?? "");
+    if (LEADING_USE.test(words[0] ?? "") || isClauseVerb(words[0] ?? "") || OPEN_PREDICATE.test(words[0] ?? "")) {
+      verb = displayWord(words[0] ?? "");
+    }
     words.shift();
   }
+  const predicateAt = words.findIndex((word, index) => index > 0 && OPEN_PREDICATE.test(word));
+  if (predicateAt > 0) words.splice(predicateAt);
   while (words.length > 0 && (GLUE.test(words[words.length - 1] ?? "") || isClauseVerb(words[words.length - 1] ?? ""))) {
     words.pop();
   }
-  if (words.length === 0 || words.length > 8) return null;
+  if (words.length > 8) words.splice(8);
+  if (words.length === 0) return null;
   if (words.length === 1 && GENERIC_LABEL.test(words[0] ?? "")) return null;
   if (words.every((word) => /^(?:interactions?|diagrams?|overviews?|sketches?|please)$/i.test(word))) return null;
   const label = words.map(displayWord).join(" ");
@@ -356,6 +443,7 @@ function clauseEdgeLabel(marker: string | null): string {
   if (token === "with") return "With";
   if (token === "via" || token === "through") return "Via";
   if (token === "using" || token === "use" || token === "uses") return "Uses";
+  if (token === "so") return "For";
   if (token === "that" || token === "which" || token === "who" || token === "where" || token === "when") return "Includes";
   return "Connects";
 }
@@ -396,7 +484,8 @@ function clipPhrase(raw: string): string | null {
 }
 
 function displayWord(word: string): string {
-  if (/^[A-Z0-9]{2,}$/.test(word)) return word;
+  // "GPU" and "GPUs" stay as written. A normal word is title case.
+  if (/^[A-Z0-9]{2,}s?$/.test(word)) return word;
   return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
 }
 
@@ -456,7 +545,6 @@ export function wantsRicherDiagram(message: string, depth?: DepthReading): boole
 }
 
 const PICTURE_LEAD = /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\b/i;
-const TIER_COUNT = /\b(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i;
 
 /**
  * A follow-up that asks to grow the open diagram.
