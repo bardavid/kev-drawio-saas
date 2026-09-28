@@ -12,7 +12,7 @@ import {
   templateReferenceFor,
 } from "@/lib/kev/compose";
 import { decideDemo, edgeRestyleDecision } from "@/lib/kev/demo";
-import { DiagramXmlError, applyOperations, edgeQuery } from "@/lib/kev/mutate";
+import { DiagramXmlError, applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
@@ -256,6 +256,7 @@ function finish(
       if (between) decision = between;
     }
   }
+  decision = groundDecision(currentXml, decision);
   if (decision.intent === "clarify" || decision.intent === "noop") {
     return result(decision, mode, model, originalXml, false, extra);
   }

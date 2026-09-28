@@ -283,11 +283,38 @@ function segmentsOf(text: string): Array<{ start: number; end: number; text: str
 }
 
 function wordsOf(segment: string): string[] {
-  return segment
-    .toLowerCase()
-    .replace(/[^a-z0-9\s/+-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
+  return (segment.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).map((word) => word.toLowerCase());
+}
+
+const ROLE_WORDS = new Set<string>();
+for (const hit of [...PHRASES, ...LISTED]) {
+  for (const word of hit.phrase.split(/\s+/)) ROLE_WORDS.add(word);
+}
+
+function mentionTokens(segment: string): string[] {
+  return wordsOf(segment).filter(
+    (word) => !CUE.has(word) && !HARD_CUE.has(word) && !MODIFIERS.has(word) && !/^\d+$/.test(word),
+  );
+}
+
+function looksNamed(token: string, segment: string): boolean {
+  if (token.includes(".") || /\d/.test(token)) return true;
+  const match = segment.match(new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"));
+  if (!match || match.index === undefined) return false;
+  const raw = segment.slice(match.index, match.index + match[0].length);
+  return /^[A-Z]/.test(raw);
+}
+
+/**
+ * Tokens the user named beside a role phrase. "Tigris object storage" keeps Tigris.
+ * The role phrase still supplies the group and the shape.
+ */
+function brandTokens(segment: string, matched: Set<string>): string[] {
+  const leftovers = mentionTokens(segment).filter((token) => !matched.has(token) && !ROLE_WORDS.has(token));
+  const named = leftovers.filter((token) => looksNamed(token, segment));
+  if (named.length > 0) return named.slice(0, 3);
+  if (leftovers.length > 0 && leftovers.length <= 2) return leftovers;
+  return [];
 }
 
 function containsPhrase(words: string[], phrase: string[]): boolean {
@@ -347,12 +374,12 @@ const HARD_CUE = new Set([
 ]);
 
 function adHoc(segment: string): { label: string; role: EntityRole } | null {
-  const raw = wordsOf(segment);
-  if (raw.some((word) => HARD_CUE.has(word))) return null;
-  const words = raw.filter((word) => !CUE.has(word) && !/^\d+$/.test(word));
-  if (words.length === 0 || words.length > 3) return null;
-  if (words.every((word) => MODIFIERS.has(word))) return null;
-  const label = titleLabel(words);
+  const words = mentionTokens(segment);
+  // "draw a diagram" is not a node. A dotted brand in that sentence still is ("Draw Fly.io").
+  const hard = wordsOf(segment).some((word) => HARD_CUE.has(word));
+  const kept = hard ? words.filter((word) => word.includes(".")) : words;
+  if (kept.length === 0 || kept.length > 3) return null;
+  const label = titleLabel(kept);
   if (label.length < 2) return null;
   return { label, role: inferRole(label) };
 }
@@ -412,27 +439,43 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   const spans = catalogSpans(text);
   const drafts: Draft[] = [];
   const seen = new Set<string>();
-  for (const span of spans) {
-    if (seen.has(span.entry.id)) continue;
-    seen.add(span.entry.id);
-    drafts.push({
-      id: span.entry.id,
-      label: span.entry.label,
-      role: span.entry.role,
-      shape: shapeFor(span.entry, span.entry.label),
-      order: span.start,
-      origin: "catalog",
-    });
+  const consumed = new Set<Span>();
+
+  function pushDraft(draft: Draft) {
+    const key = draft.origin === "catalog" ? draft.id : draft.label.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    drafts.push(draft);
   }
 
   for (const segment of segmentsOf(text)) {
-    const covered = spans.some((span) => span.start < segment.end && segment.start < span.end);
-    if (covered) continue;
+    const overlapping = spans.filter((span) => span.start < segment.end && segment.start < span.end);
+    if (overlapping.length > 0) {
+      // A slash splits "Pub/Sub" into two segments. Only the segment that holds the whole phrase owns it.
+      const owned = overlapping.filter(
+        (span) => !consumed.has(span) && segment.start <= span.start && segment.end >= span.end,
+      );
+      if (owned.length === 1) {
+        const span = owned[0]!;
+        consumed.add(span);
+        const matched = new Set(wordsOf(text.slice(span.start, span.end)));
+        const brand = brandTokens(segment.text, matched);
+        const branded = brand.length > 0;
+        const label = branded ? titleLabel(brand) : span.entry.label;
+        pushDraft({
+          id: branded ? label.toLowerCase() : span.entry.id,
+          label,
+          role: span.entry.role,
+          shape: shapeFor(span.entry, label),
+          order: segment.start,
+          origin: branded ? "adhoc" : "catalog",
+        });
+      }
+      continue;
+    }
     const listed = listedEntry(segment.text, text);
     if (listed) {
-      if (seen.has(listed.id)) continue;
-      seen.add(listed.id);
-      drafts.push({
+      pushDraft({
         id: listed.id,
         label: listed.label,
         role: listed.role,
@@ -444,16 +487,25 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     }
     const extra = adHoc(segment.text);
     if (!extra) continue;
-    const key = extra.label.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    drafts.push({
-      id: key,
+    pushDraft({
+      id: extra.label.toLowerCase(),
       label: extra.label,
       role: extra.role,
       shape: shapeFor({ role: extra.role }, extra.label),
       order: segment.start,
       origin: "adhoc",
+    });
+  }
+
+  for (const span of spans) {
+    if (consumed.has(span)) continue;
+    pushDraft({
+      id: span.entry.id,
+      label: span.entry.label,
+      role: span.entry.role,
+      shape: shapeFor(span.entry, span.entry.label),
+      order: span.start,
+      origin: "catalog",
     });
   }
 
