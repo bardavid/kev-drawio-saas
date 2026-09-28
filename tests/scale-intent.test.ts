@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { assessDiagram, type QualityNode } from "../src/lib/drawio/layout";
 import { PALETTE } from "../src/lib/drawio/styles";
-import { STARTER_XML } from "../src/lib/drawio/starter";
+import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { previewDemo } from "../src/lib/kev/demo";
 import { parseArchitecture } from "../src/lib/kev/plan";
 import { DEPTH_INSTRUCTIONS, STRATEGY_BLOCK, compositionNextInstructions } from "../src/lib/kev/prompt-guide";
@@ -939,5 +939,178 @@ describe("depth after a sparse open picture", { concurrency: 1 }, () => {
     assert.doesNotMatch(result.reply, /What should the new shape be called|Name the shape to edit|Describe a diagram change/);
     assert.notEqual(result.reply, OPEN_IDEA_REPLY);
     assertDetailed(result.updatedXml, idea);
+  });
+});
+
+const LAYOUT_OPEN_ASKS = [
+  "Lay out an edge CDN that fans origin pulls through regional POPs with stale-while-revalidate so origins stay cool — show the moving parts",
+  "Lay out a packet ferry that hops sealed crates through regional sheds with stale manifests so docks stay quiet — show the moving parts",
+  "Arrange a harbor crane yard that swings loads through a shared boom lock and a tag line so hulls stay steady — show the moving parts",
+];
+
+describe("layout-led open ask on a blank page", { concurrency: 1 }, () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+  });
+
+  it("asks for depth instead of a shape name or a reflow", async () => {
+    for (const idea of LAYOUT_OPEN_ASKS) {
+      const drawn = previewDemo(idea, STARTER_XML);
+      assert.equal(drawn.decision.intent, "clarify", idea);
+      assert.equal(drawn.decision.reply, OPEN_IDEA_REPLY, idea);
+      assert.equal(drawn.xml, STARTER_XML, idea);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called|Name the shape to edit|Reflowed/, idea);
+    }
+
+    const reflow = previewDemo("Lay the diagram out vertically", SEEDED_XML);
+    assert.equal(reflow.decision.intent, "layout");
+    assert.match(reflow.decision.reply, /Reflowed/);
+    const xs = summarizeDiagram(reflow.xml).vertices.map((vertex) => vertex.x);
+    assert.equal(new Set(xs).size, 1);
+  });
+
+  it("keeps asking when Kev reads the open ask as a nameless add, even at high-level depth", async () => {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const idea = LAYOUT_OPEN_ASKS[0]!;
+    for (const depth of ["many", "few"] as const) {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("wikipedia.org")) return Response.json({ extract: UNUSABLE_NOTES });
+        return Response.json({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "add_shape", confidence: 0.86 },
+            needs_xml_edit: { type: "noul", noul: 0.9 },
+            depth: { type: "choice", choice: depth, confidence: 0.8 },
+            shape: { type: "choice", choice: "none" },
+            next: { type: "choice", choice: "apply", confidence: 0.7 },
+            confirm: { type: "noul", noul: 0.4 },
+          },
+        });
+      }) as typeof fetch;
+      const result = await runKevTurn({
+        messages: [{ role: "user", content: idea }],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(result.mode, "kev", depth);
+      assert.equal(result.intent, "clarify", depth);
+      assert.equal(result.reply, OPEN_IDEA_REPLY, depth);
+      assert.equal(result.updatedXml, STARTER_XML, depth);
+      assert.doesNotMatch(result.reply, /What should the new shape be called|Name the shape to edit|Describe a diagram change/, depth);
+    }
+  });
+
+  it("composes the earlier idea when invent, pick, or give follows a shape-name miss on blank", async () => {
+    globalThis.fetch = (async () => Response.json({ extract: UNUSABLE_NOTES })) as typeof fetch;
+    for (const idea of LAYOUT_OPEN_ASKS) {
+      for (const answer of INVENT_ANSWERS) {
+        const result = await runKevTurn({
+          messages: [
+            { role: "user", content: idea },
+            { role: "assistant", content: "What should the new shape be called?" },
+            { role: "user", content: answer },
+          ],
+          currentXml: STARTER_XML,
+        });
+        assert.equal(result.intent, "add_shape", `${idea} / ${answer}`);
+        assert.notEqual(result.reply, OPEN_IDEA_REPLY, answer);
+        assert.doesNotMatch(
+          result.reply,
+          /What should the new shape be called|Name the shape to edit|Describe a diagram change|Name the shapes and the edit/,
+          answer,
+        );
+        assert.notEqual(result.updatedXml, STARTER_XML, answer);
+        const labels = assertDetailed(result.updatedXml, `${idea} / ${answer}`);
+        assert.equal(
+          labels.some((label) => /^(?:Lay Out|Arrange)$/i.test(label)),
+          false,
+          labels.join(", "),
+        );
+        assert.equal(
+          labels.some((label) => /CDN|POP|Ferry|Shed|Harbor|Boom|Lock|Hull/i.test(label)),
+          true,
+          labels.join(", "),
+        );
+      }
+    }
+  });
+
+  it("composes after a shape-name miss when Kev would ask for a label again", async () => {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const idea = LAYOUT_OPEN_ASKS[1]!;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("wikipedia.org")) return Response.json({ extract: UNUSABLE_NOTES });
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "edit_shape", confidence: 0.4 },
+          needs_xml_edit: { type: "noul", noul: 0.2 },
+          depth: { type: "choice", choice: "few", confidence: 0.3 },
+          shape: { type: "choice", choice: "none" },
+          next: { type: "choice", choice: "clarify", confidence: 0.2 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: idea },
+        { role: "assistant", content: "Name the shape to edit." },
+        { role: "user", content: "Go detailed — pick the box names for me" },
+      ],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(result.mode, "kev");
+    assert.equal(result.intent, "add_shape");
+    assert.doesNotMatch(result.reply, /What should the new shape be called|Name the shape to edit|Describe a diagram change/);
+    const labels = assertDetailed(result.updatedXml, idea);
+    assert.equal(labels.some((label) => /Ferry|Shed|Crate|Dock|Manifest/i.test(label)), true, labels.join(", "));
+  });
+
+  it("draws one subject box when a high-level answer follows the shape-name miss", async () => {
+    let wiki = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("wikipedia.org")) wiki += 1;
+      return Response.json({ extract: UNUSABLE_NOTES });
+    }) as typeof fetch;
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: LAYOUT_OPEN_ASKS[0]! },
+        { role: "assistant", content: "What should the new shape be called?" },
+        { role: "user", content: "Just the high-level overview" },
+      ],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(wiki, 0);
+    assert.equal(result.intent, "add_shape");
+    const labels = content(assertClean(result.updatedXml).nodes).map((node) => node.label);
+    assert.equal(labels.length, 1);
+    assert.match(labels[0] ?? "", /CDN|Edge/);
+    assert.doesNotMatch(labels[0] ?? "", /Lay Out/);
+  });
+
+  it("still soft-fails invent with no earlier idea, and keeps a thin tier", async () => {
+    for (const answer of INVENT_ANSWERS) {
+      const alone = previewDemo(answer, STARTER_XML);
+      assert.equal(alone.decision.reply, "Describe a diagram change.", answer);
+      assert.equal(alone.xml, STARTER_XML, answer);
+    }
+    const tier = await runKevTurn({
+      messages: [
+        { role: "user", content: LAYOUT_OPEN_ASKS[0]! },
+        { role: "assistant", content: "What should the new shape be called?" },
+        { role: "user", content: "three tier web app" },
+      ],
+      currentXml: STARTER_XML,
+    });
+    assert.deepEqual(content(assertClean(tier.updatedXml).nodes).map((node) => node.label), [
+      "Client",
+      "App",
+      "Postgres",
+    ]);
   });
 });

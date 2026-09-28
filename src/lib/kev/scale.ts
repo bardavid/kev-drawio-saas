@@ -1,5 +1,5 @@
 import { extractNamedEntities, isClauseVerb, listedComponents } from "@/lib/kev/entities";
-import { hasEnumeratedBoxes, isBetweenEdit, isCanvasEdit, parseArchitecture } from "@/lib/kev/plan";
+import { hasEnumeratedBoxes, isBetweenEdit, isCanvasEdit, opensPicture, parseArchitecture } from "@/lib/kev/plan";
 
 /**
  * Depth of a drawing: a few boxes, or many components and their interactions.
@@ -7,6 +7,9 @@ import { hasEnumeratedBoxes, isBetweenEdit, isCanvasEdit, parseArchitecture } fr
  */
 
 const PICTURE = /\b(draw|sketch|diagram|show|illustrate|map|build|create|architect)\b/i;
+/** A drawing verb at the start, including "lay out" / "arrange" when they introduce a system. */
+const PICTURE_LEAD_STRIP =
+  /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map|lay\s+out|arrange|organize|organise)\s+(?:me\s+)?(?:a|an|the\s+)?/i;
 const TIER_COUNT = /\b(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i;
 /** "Walk through …" / "Picture a …" / "Trace the …" introduce an idea. The verb is not a box. */
 const OPENING =
@@ -100,7 +103,7 @@ export function sparseOpenPicture(message: string): boolean {
   const text = message.trim();
   if (!text || isCanvasEdit(text) || REPLACE_CANVAS.test(text)) return false;
   if (depthFromOpenAnswer(text) || hasEnumeratedBoxes(text)) return false;
-  if (!PICTURE.test(text) && !OPENING.test(text) && !INTERACTIONS.test(text)) return false;
+  if (!PICTURE.test(text) && !OPENING.test(text) && !INTERACTIONS.test(text) && !opensPicture(text)) return false;
   if (TIER_COUNT.test(text)) return false;
   if (contentWords(text).length < 8) return false;
   const named = extractNamedEntities(text).filter(
@@ -113,8 +116,9 @@ export function sparseOpenPicture(message: string): boolean {
 }
 
 /**
- * The latest line chooses depth, and an earlier turn already drew a sparse
- * picture of the idea. The open-idea question is a different continuation.
+ * The latest line chooses depth, and an earlier turn was a sparse picture
+ * or a layout-led open ask. The open-idea question is a different continuation.
+ * A shape-name miss on a blank page still carries that earlier idea.
  * A depth sentence with no earlier picture is not this.
  */
 export function sparseDepthFollowUp(
@@ -135,7 +139,9 @@ export function sparseDepthFollowUp(
       assistantAfterIdea = true;
       continue;
     }
-    if (message.role === "user" && sparseOpenPicture(message.content)) {
+    // A layout-led picture ("Lay out a system that …") is the same idea when the
+    // assistant asked for a shape name instead of drawing scraps.
+    if (message.role === "user" && (sparseOpenPicture(message.content) || opensPicture(message.content))) {
       if (nearestAssistant === OPEN_IDEA_REPLY) return null;
       if (!assistantAfterIdea) return null;
       return { idea: message.content.trim(), depth };
@@ -184,7 +190,7 @@ export function contentWords(message: string): string[] {
 export function longUnlistedDescription(message: string): boolean {
   const text = message.trim();
   if (!text || isCanvasEdit(text)) return false;
-  if (!PICTURE.test(text) && !OPENING.test(text) && !INTERACTIONS.test(text)) return false;
+  if (!PICTURE.test(text) && !OPENING.test(text) && !INTERACTIONS.test(text) && !opensPicture(text)) return false;
   if (hasEnumeratedBoxes(text)) return false;
   // A name the user actually wrote counts. A title-cased scrap of a lowercase phrase does not.
   const named = extractNamedEntities(text).filter(
@@ -232,10 +238,7 @@ export function overviewSubject(message: string): string | null {
 /** Subject of an open idea, for a high-level box or a topic lookup. */
 export function ideaSubject(message: string): string | null {
   let text = message.trim();
-  text = text.replace(
-    /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
-    "",
-  );
+  text = text.replace(PICTURE_LEAD_STRIP, "");
   text = text.replace(
     /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how)\s+(?:a|an|the\s+)?/i,
     "",
@@ -373,10 +376,7 @@ export function componentsFromOpenIdea(message: string): { nodes: string[]; edge
 
 function ideaRemainder(message: string): string {
   let text = message.trim();
-  text = text.replace(
-    /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
-    "",
-  );
+  text = text.replace(PICTURE_LEAD_STRIP, "");
   text = text.replace(
     /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how)\s+(?:a|an|the\s+)?/i,
     "",
