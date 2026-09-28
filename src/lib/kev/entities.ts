@@ -1144,7 +1144,7 @@ function listedActorPair(left: string, right: string, text: string): boolean {
  * An uncommon brand still replaces its role word ("upstash redis" → Upstash).
  */
 function salvageBigrams(
-  segment: { start: number; text: string },
+  segment: { start: number; end: number; text: string },
   spans: Span[],
   blocked: Set<string>,
   consumed: Set<Span>,
