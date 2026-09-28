@@ -1,5 +1,18 @@
 import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
-import { diagramIsBlank, normalizeMxfile, openDiagram, serializeDiagram } from "@/lib/drawio/xml";
+import {
+  cellLabel,
+  diagramIsBlank,
+  firstChildTag,
+  geometryOf,
+  getRoot,
+  listEdges,
+  listVertices,
+  nextCellId,
+  normalizeMxfile,
+  numberAttr,
+  openDiagram,
+  serializeDiagram,
+} from "@/lib/drawio/xml";
 import { composeNamedDiagram, extractNamedEntities } from "@/lib/kev/entities";
 import { isBetweenEdit, layoutDefault, parseArchitecture, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
@@ -232,11 +245,19 @@ function labelCovered(have: Set<string>, label: string): boolean {
   const key = label.toLowerCase();
   if (have.has(key)) return true;
   // "Pods" is already on a diagram that drew "Pod A" and "Pod B".
-  if (!key.endsWith("s")) return false;
-  const stem = key.slice(0, -1);
-  if (stem.length < 3) return false;
-  for (const item of have) {
-    if (item === stem || item.startsWith(`${stem} `)) return true;
+  if (key.endsWith("s")) {
+    const stem = key.slice(0, -1);
+    if (stem.length >= 3) {
+      for (const item of have) {
+        if (item === stem || item.startsWith(`${stem} `)) return true;
+      }
+    }
+  }
+  // "Database" is already drawn as "Primary database". "API" is not "API Gateway".
+  if (key.length >= 5) {
+    for (const item of have) {
+      if (item.endsWith(` ${key}`)) return true;
+    }
   }
   return false;
 }
@@ -264,6 +285,19 @@ function looseDropsPeers(spec: CompositionSpec, labels: string[]): boolean {
   if (spec.title !== "Event-driven" && spec.title !== "Kafka") return false;
   const have = new Set(specLabels(spec).map((label) => label.toLowerCase()));
   return labels.some((label) => !labelCovered(have, label) && !BUS_ALIAS.test(label));
+}
+
+/**
+ * One matching clause (CI/CD, cache-aside, a CDN) must not swallow a prompt
+ * that also names the rest of a stack. Extra template nodes are fine.
+ * Dropping most of the named services is not.
+ */
+function templateDropsNamedWork(spec: CompositionSpec, labels: string[]): boolean {
+  if (labels.length < 5) return false;
+  const have = new Set(specLabels(spec).map((label) => label.toLowerCase()));
+  const uncovered = labels.filter((label) => !labelCovered(have, label));
+  if (uncovered.length < 3) return false;
+  return uncovered.length * 2 >= labels.length;
 }
 
 function architectureOwns(text: string, labels: string[]): boolean {
@@ -403,9 +437,13 @@ export function resolveComposition(
   if (isIoUring(text)) return packComposition(ioUringSpec(), text, hints, null, false);
 
   const matched = matchTemplate(text);
-  // A typed template already knows the stack. Replace it only when a generic
-  // bus sketch would hide services the user actually named.
-  if (matched && (!grounded || !looseDropsPeers(matched.spec, labels))) {
+  // A typed template already knows its own stack. A single phrase match must
+  // not discard the other services the user named.
+  const dropsNamed =
+    matched != null &&
+    grounded &&
+    (looseDropsPeers(matched.spec, labels) || templateDropsNamedWork(matched.spec, labels));
+  if (matched && !dropsNamed) {
     return packComposition(matched.spec, text, hints, matched.context, grounded);
   }
 
@@ -474,6 +512,164 @@ export function templateCanvasPlan(currentXml: string, rendered: string): "draw"
   if (sameMxfile(rendered, currentXml)) return "unchanged";
   if (!diagramIsBlank(currentXml)) return "keep";
   return "draw";
+}
+
+/** Soft stop when a single drawing would have to hold more named services than we can lay out. */
+export const MAX_NAMED_ENTITIES = 40;
+
+export const CAPACITY_REPLY =
+  "That names more services than fit on one diagram. Split it into two drawings, or name the part to draw first.";
+
+export function overNamedCapacity(message: string): boolean {
+  return extractNamedEntities(message).length > MAX_NAMED_ENTITIES;
+}
+
+/**
+ * An ask that extends the open canvas. A fresh "draw …" on a page that already
+ * has shapes is a different diagram and stays put.
+ */
+export function isAdditiveExtension(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || isBetweenEdit(trimmed)) return false;
+  if (/\b(?:instead|from scratch|start over|redraw|wipe|clear (?:it|the canvas|this|the diagram))\b/i.test(trimmed)) {
+    return false;
+  }
+  if (/^(?:please\s+)?(?:also|additionally|furthermore)\b/i.test(trimmed)) return true;
+  if (/\b(?:attach|extend|splice)\b/i.test(trimmed)) return true;
+  if (/\b(?:add|include|put)\b/i.test(trimmed) && /\b(?:onto|on top of|as well|too|strip|alongside)\b/i.test(trimmed)) {
+    return true;
+  }
+  return /\b(?:to|onto) (?:the|this|our) (?:diagram|canvas|stack|architecture|drawing)\b/i.test(trimmed);
+}
+
+function contentLabels(spec: CompositionSpec): string[] {
+  if (spec.kind === "sequence") return spec.participants.map((participant) => participant.label);
+  if (spec.kind === "workflow") return spec.nodes.map((node) => node.label);
+  return spec.groups.flatMap((group) => group.nodes.map((node) => node.label));
+}
+
+export function additiveDecision(composition: Composition, xml: string): KevDecision {
+  const labels = contentLabels(composition.spec);
+  const listed = labels.join(", ");
+  return {
+    intent: "add_shape",
+    reply: listed ? `Added ${listed} onto the diagram.` : "Added the new shapes onto the diagram.",
+    slots: withPalette({
+      label: composition.spec.title,
+      shape: "rectangle",
+      colorName: composition.colorName,
+      layout: composition.layout,
+    }),
+    operations: [],
+    updatedXml: xml,
+  };
+}
+
+/** Place a new composition to the right of the open canvas. Labels already there are left alone. */
+export function spliceDiagram(currentXml: string, rendered: string): string | null {
+  const host = openDiagram(currentXml);
+  const incoming = openDiagram(rendered);
+  const hostRoot = getRoot(host);
+  const existing = listVertices(host);
+  const have = new Set(existing.map((cell) => cellLabel(cell).trim().toLowerCase()).filter(Boolean));
+
+  let maxX = 0;
+  let minY = 40;
+  let seenY = false;
+  for (const cell of existing) {
+    const box = geometryOf(cell);
+    maxX = Math.max(maxX, box.x + box.width);
+    if (!seenY || box.y < minY) minY = box.y;
+    seenY = true;
+  }
+
+  const fresh = listVertices(incoming).filter((cell) => {
+    const label = cellLabel(cell).trim().toLowerCase();
+    return !label || !have.has(label);
+  });
+  if (fresh.length === 0) return null;
+
+  let minX = Infinity;
+  let incomingMinY = Infinity;
+  for (const cell of fresh) {
+    const box = geometryOf(cell);
+    minX = Math.min(minX, box.x);
+    incomingMinY = Math.min(incomingMinY, box.y);
+  }
+  const dx = maxX + 80 - minX;
+  const dy = minY - incomingMinY;
+
+  const idMap = new Map<string, string>();
+  let next = Number(nextCellId(host));
+  if (!Number.isFinite(next)) next = 2;
+  for (const cell of fresh) {
+    const copy = host.importNode(cell, true) as XmlElement;
+    const oldId = copy.getAttribute("id") ?? "";
+    const id = String(next);
+    next += 1;
+    idMap.set(oldId, id);
+    copy.setAttribute("id", id);
+    copy.setAttribute("parent", "1");
+    const geometry = firstChildTag(copy, "mxGeometry");
+    if (geometry) {
+      geometry.setAttribute("x", String(Math.round(numberAttr(geometry, "x", 0) + dx)));
+      geometry.setAttribute("y", String(Math.round(numberAttr(geometry, "y", 0) + dy)));
+    }
+    hostRoot.appendChild(copy);
+  }
+
+  for (const edge of listEdges(incoming)) {
+    const source = idMap.get(edge.getAttribute("source") ?? "");
+    const target = idMap.get(edge.getAttribute("target") ?? "");
+    if (!source || !target) continue;
+    const copy = host.importNode(edge, true) as XmlElement;
+    copy.setAttribute("id", String(next));
+    next += 1;
+    copy.setAttribute("parent", "1");
+    copy.setAttribute("source", source);
+    copy.setAttribute("target", target);
+    const points = copy.getElementsByTagName("mxPoint");
+    for (let index = 0; index < points.length; index += 1) {
+      const point = points[index];
+      if (!point) continue;
+      const x = numberAttr(point, "x", Number.NaN);
+      const y = numberAttr(point, "y", Number.NaN);
+      if (Number.isFinite(x)) point.setAttribute("x", String(Math.round(x + dx)));
+      if (Number.isFinite(y)) point.setAttribute("y", String(Math.round(y + dy)));
+    }
+    hostRoot.appendChild(copy);
+  }
+
+  const model = host.getElementsByTagName("mxGraphModel")[0];
+  if (model) {
+    let pageW = numberAttr(model, "pageWidth", 1169);
+    let pageH = numberAttr(model, "pageHeight", 827);
+    for (const cell of listVertices(host)) {
+      const box = geometryOf(cell);
+      pageW = Math.max(pageW, box.x + box.width + 80);
+      pageH = Math.max(pageH, box.y + box.height + 80);
+    }
+    model.setAttribute("pageWidth", String(Math.ceil(pageW / 10) * 10));
+    model.setAttribute("pageHeight", String(Math.ceil(pageH / 10) * 10));
+  }
+  return serializeDiagram(host);
+}
+
+export function composeOnCanvas(
+  message: string,
+  currentXml: string,
+  composition: Composition,
+  rendered: string,
+): { xml: string; decision: KevDecision } | "keep" | "unchanged" {
+  const canvas = templateCanvasPlan(currentXml, rendered);
+  if (canvas === "unchanged") return "unchanged";
+  if (canvas === "keep") {
+    if (!isAdditiveExtension(message)) return "keep";
+    const merged = spliceDiagram(currentXml, rendered);
+    if (!merged || sameMxfile(merged, currentXml)) return "keep";
+    return { xml: merged, decision: additiveDecision(composition, merged) };
+  }
+  return { xml: rendered, decision: compositionDecision(composition, rendered) };
 }
 
 export function compositionDecision(composition: Composition, xml: string): KevDecision {

@@ -4,11 +4,13 @@ import { env } from "@/lib/env";
 import {
   colorInMessage,
   describeComposition,
+  CAPACITY_REPLY,
+  composeOnCanvas,
   compositionDecision,
   renderComposition,
   resolveComposition,
   sameMxfile,
-  templateCanvasPlan,
+  overNamedCapacity,
   type Composition,
 } from "@/lib/kev/compose";
 import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
@@ -546,6 +548,16 @@ function phasePlan(composition: Composition, phase: CompositionPhase): string {
  * not replaced by the template.
  */
 async function runComposition(input: OrchestratorContext): Promise<KevTurnResult> {
+  if (overNamedCapacity(input.userMessage)) {
+    return turn(input, {
+      reply: CAPACITY_REPLY,
+      updatedXml: input.originalXml,
+      intent: "clarify",
+      slots: withPalette(input.reading.slots),
+      steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
   const composition = drawingFor(input);
   if (!composition) {
     return turn(input, {
@@ -559,8 +571,8 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
   }
 
   const xml = renderComposition(composition);
-  const canvas = templateCanvasPlan(input.currentXml, xml);
-  if (canvas === "unchanged" || sameMxfile(xml, input.originalXml)) {
+  const placed = composeOnCanvas(input.userMessage, input.currentXml, composition, xml);
+  if (placed === "unchanged" || (placed !== "keep" && sameMxfile(placed.xml, input.originalXml))) {
     return turn(input, {
       reply: UNCHANGED_DIAGRAM_REPLY,
       updatedXml: input.originalXml,
@@ -570,12 +582,22 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
       confidence: input.reading.confidence,
     });
   }
-  if (canvas === "keep") {
+  if (placed === "keep") {
     return turn(input, {
       reply: KEPT_CANVAS_REPLY,
       updatedXml: input.originalXml,
       intent: "noop",
       slots: withPalette(input.reading.slots),
+      steps: [],
+      confidence: input.reading.confidence,
+    });
+  }
+  if (placed.decision.reply.startsWith("Added ")) {
+    return turn(input, {
+      reply: placed.decision.reply,
+      updatedXml: placed.xml,
+      intent: "add_shape",
+      slots: placed.decision.slots,
       steps: [],
       confidence: input.reading.confidence,
     });

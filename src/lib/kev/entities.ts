@@ -67,8 +67,6 @@ const GROUP_LABEL: Record<EntityRole, string> = {
 };
 
 const ROLE_ORDER: EntityRole[] = ["actor", "client", "edge", "compute", "step", "data", "storage", "bus"];
-const FRONT = new Set<EntityRole>(["actor", "client", "edge", "compute", "step"]);
-const SINK = new Set<EntityRole>(["data", "storage", "bus"]);
 
 const CATALOG: CatalogEntry[] = [
   { id: "api-gateway", label: "API Gateway", role: "edge", shape: "hexagon", phrases: ["amazon api gateway", "api gateway", "apigw", "api gw"] },
@@ -163,7 +161,7 @@ const CATALOG: CatalogEntry[] = [
     label: "Object storage",
     role: "storage",
     shape: "cloud",
-    phrases: ["object storage", "object store", "blobs", "blob"],
+    phrases: ["object storage", "object store", "blobs", "blob", "objects"],
   },
   { id: "browser", label: "Browser", role: "client", phrases: ["browser"], listed: true },
   { id: "client", label: "Client", role: "client", phrases: ["client"], listed: true },
@@ -174,6 +172,8 @@ const CATALOG: CatalogEntry[] = [
   { id: "cache", label: "Cache", role: "data", shape: "cylinder", phrases: ["cache"], listed: true },
   { id: "queue", label: "Queue", role: "bus", shape: "queue", phrases: ["queue"], listed: true },
   { id: "build", label: "Build", role: "step", phrases: ["build"], listed: true },
+  { id: "test", label: "Test", role: "step", phrases: ["test"], listed: true },
+  { id: "deploy", label: "Deploy", role: "step", phrases: ["deploy"], listed: true },
   { id: "web", label: "Web", role: "client", phrases: ["web"], listed: true },
 ];
 
@@ -188,7 +188,7 @@ const CUE = new Set([
   "where", "after", "before", "every", "box", "boxes", "shape", "shapes", "node", "nodes",
   "arrow", "arrows", "edges", "connector", "connectors", "line", "lines",
   "footprint", "route", "card", "stream", "streaming", "storage", "object", "named", "called",
-  "azure", "aws", "amazon", "gcp", "google", "cloudflare", "stripe", "payment",
+  "azure", "aws", "amazon", "gcp", "google", "payment",
   "side", "also", "just", "me", "my", "our", "their", "shopper", "customer", "records", "record",
   "page", "call", "sits", "ahead", "behind", "hang", "off", "them", "tier", "web", "app",
   "orange", "green", "blue", "purple", "yellow", "red", "teal", "pink", "gray", "grey", "black", "white",
@@ -244,13 +244,25 @@ function catalogSpans(text: string): Span[] {
   const hay = text.toLowerCase();
   const found: Span[] = [];
   for (const hit of PHRASES) {
-    if (hit.entry.when && !hit.entry.when(text)) continue;
     let from = 0;
     while (from < hay.length) {
       const at = hay.indexOf(hit.phrase, from);
       if (at === -1) break;
       const end = at + hit.phrase.length;
-      if (bounded(hay, at, end)) found.push({ start: at, end, entry: hit.entry });
+      if (!bounded(hay, at, end)) {
+        from = at + Math.max(1, hit.phrase.length);
+        continue;
+      }
+      // A short phrase gated on a vendor ("workers" when the text says Cloudflare)
+      // only counts beside that vendor, not anywhere in a long stack description.
+      if (hit.entry.when) {
+        const window = text.slice(Math.max(0, at - 48), Math.min(text.length, end + 48));
+        if (!hit.entry.when(window)) {
+          from = at + Math.max(1, hit.phrase.length);
+          continue;
+        }
+      }
+      found.push({ start: at, end, entry: hit.entry });
       from = at + Math.max(1, hit.phrase.length);
     }
   }
@@ -265,7 +277,7 @@ function catalogSpans(text: string): Span[] {
 }
 
 const SEGMENT_SPLIT =
-  /\s*(?:,|;|:|\+|\/|&|→|->|=>)\s*|\s+\b(?:and|then|via|using|with|including|include|plus|alongside|into|through|before)\b\s+|\s+\b(?:in front of|ahead of|followed by|fan(?:s|ned)? out(?:\s+(?:via|through|to|with))?)\b\s+/gi;
+  /\s*(?:,|;|:|\?|!|\.\s+|\+|\/|&|→|->|=>)\s*|\s+\b(?:and|then|via|using|with|including|include|plus|alongside|into|through|before)\b\s+|\s+\b(?:in front of|ahead of|followed by|fan(?:s|ned)? out(?:\s+(?:via|through|to|with))?)\b\s+/gi;
 
 function segmentsOf(text: string): Array<{ start: number; end: number; text: string }> {
   const parts: Array<{ start: number; end: number; text: string }> = [];
@@ -295,12 +307,6 @@ function wordsOf(segment: string): string[] {
 const ROLE_WORDS = new Set<string>();
 for (const hit of [...PHRASES, ...LISTED]) {
   for (const word of hit.phrase.split(/\s+/)) ROLE_WORDS.add(word);
-}
-
-function mentionTokens(segment: string): string[] {
-  return wordsOf(segment).filter(
-    (word) => !CUE.has(word) && !HARD_CUE.has(word) && !MODIFIERS.has(word) && !/^\d+$/.test(word),
-  );
 }
 
 /** Adjectives in a title ("Complex 3 Tier") are not service names. */
@@ -340,7 +346,10 @@ function listedEntry(segment: string, text: string): CatalogEntry | null {
     const phrase = hit.phrase.split(/\s+/);
     if (!containsPhrase(words, phrase)) continue;
     const rest = withoutPhrase(words, phrase);
-    if (rest.every((word) => MODIFIERS.has(word))) return hit.entry;
+    // "then the database" keeps Database. Glue around a listed noun is not another node.
+    if (rest.every((word) => MODIFIERS.has(word) || CUE.has(word) || FLUFF.has(word) || GLOSS.has(word))) {
+      return hit.entry;
+    }
   }
   return null;
 }
@@ -370,6 +379,209 @@ const HARD_CUE = new Set([
   "sketch",
   "layout",
 ]);
+
+/**
+ * Style and grammar. Never a vertex, even when the sentence capitalizes them.
+ * "pastel fills", "labeled", "each", "own", "into place".
+ */
+const FLUFF = new Set([
+  "pastel",
+  "fill",
+  "fills",
+  "filled",
+  "filling",
+  "labeled",
+  "labelled",
+  "unlabeled",
+  "unlabelled",
+  "label",
+  "labels",
+  "container",
+  "containers",
+  "topic",
+  "topics",
+  "color",
+  "colors",
+  "colour",
+  "colours",
+  "palette",
+  "style",
+  "styles",
+  "styled",
+  "styling",
+  "each",
+  "own",
+  "per",
+  "both",
+  "either",
+  "another",
+  "such",
+  "same",
+  "various",
+  "multiple",
+  "several",
+  "every",
+  "into",
+  "onto",
+  "within",
+  "without",
+  "across",
+  "between",
+  "among",
+  "around",
+  "inside",
+  "outside",
+  "near",
+  "over",
+  "under",
+  "place",
+  "places",
+  "placed",
+  "intact",
+  "kept",
+  "keeping",
+  "brands",
+  "brand",
+  "pattern",
+  "patterns",
+  "clearly",
+  "production",
+  "dense",
+  "live",
+  "saas",
+  "region",
+  "regions",
+  "multi-region",
+  "door",
+  "doors",
+  "observability",
+]);
+
+/**
+ * Words that describe a product. They must not replace it.
+ * A few of them may sit beside an uncommon brand ("Stripe Billing", "Cloudflare CDN").
+ */
+const GLOSS = new Set([
+  "events",
+  "event",
+  "media",
+  "uploads",
+  "upload",
+  "hot",
+  "reads",
+  "read",
+  "worker",
+  "workers",
+  "fleet",
+  "search",
+  "searches",
+  "hosted",
+  "hosting",
+  "host",
+  "traffic",
+  "domain",
+  "domains",
+  "background",
+  "handles",
+  "handle",
+  "handling",
+  "carries",
+  "carry",
+  "stores",
+  "store",
+  "storing",
+  "stored",
+  "wire",
+  "wires",
+  "wired",
+  "exporting",
+  "exports",
+  "export",
+  "writes",
+  "write",
+  "writing",
+  "objects",
+  "backed",
+  "backing",
+  "running",
+  "runs",
+  "talking",
+  "sits",
+  "sit",
+  "sitting",
+  "fans",
+  "flowing",
+  "flows",
+  "release",
+  "releases",
+  "at",
+  "by",
+  "as",
+  "is",
+  "are",
+  "was",
+  "be",
+  "been",
+  "hit",
+  "hits",
+  "miss",
+  "misses",
+  "populate",
+  "populates",
+  "populated",
+  "returns",
+  "return",
+  "goes",
+  "going",
+  "loads",
+  "load",
+  "loaded",
+  "cache-aside",
+  "lookaside",
+  "look-aside",
+  "aside",
+  "ci",
+  "cd",
+  "use",
+  "uses",
+  "using",
+  "three",
+  "two",
+  "four",
+  "five",
+  "one",
+  "login",
+  "logins",
+  "payments",
+  "payment",
+  "billing",
+  "cdn",
+  "waf",
+  "services",
+  "servers",
+  "application",
+  "applications",
+  "microservices",
+  "microservice",
+  "components",
+  "component",
+  "holds",
+  "hold",
+  "holding",
+  "keeps",
+  "sends",
+  "send",
+  "receives",
+  "receive",
+  "calls",
+  "call",
+]);
+
+/** Role words that stay on the label when an uncommon brand is right beside them. */
+const BESIDE = new Set(["billing", "cdn", "waf"]);
+
+/** A vendor name used as a diagram title, not a box, unless a component sits beside it. */
+const TITLE_VENDOR = new Set(["cloudflare", "stripe", "aws", "azure", "gcp", "amazon", "google"]);
 
 /** Clause crumbs. They choose a role or point at one; they are not a node. */
 const CRUMB = new Set([
@@ -407,28 +619,106 @@ const CRUMB = new Set([
   "then",
 ]);
 
-function adHoc(segment: string): { label: string; role: EntityRole } | null {
-  const words = mentionTokens(segment);
-  // "draw a diagram" is not a node. A dotted brand in that sentence still is ("Draw Fly.io").
-  const hard = wordsOf(segment).some((word) => HARD_CUE.has(word));
-  const kept = hard ? words.filter((word) => word.includes(".")) : words;
-  if (kept.length === 0 || kept.length > 3) return null;
-  const named = kept.filter((token) => looksNamed(token, segment));
-  const substantive = kept.filter((token) => !CRUMB.has(token));
-  const chosen = named.length > 0 ? named : substantive;
-  if (chosen.length === 0 || chosen.length > 3) return null;
-  const label = titleLabel(chosen);
-  if (label.length < 2) return null;
-  return { label, role: inferRole(label) };
+function tierToken(token: string): boolean {
+  return /^(?:\d+|two|three|four|five)[\s-]*tier$/.test(token);
+}
+
+function rejectedToken(token: string): boolean {
+  return (
+    FLUFF.has(token) ||
+    GLOSS.has(token) ||
+    CUE.has(token) ||
+    HARD_CUE.has(token) ||
+    MODIFIERS.has(token) ||
+    CRUMB.has(token) ||
+    TITLE_WORD.has(token) ||
+    tierToken(token) ||
+    /^\d+$/.test(token)
+  );
+}
+
+/**
+ * An uncommon brand. Lowercase tokens count only beside a role phrase
+ * ("tigris" next to object storage). Ordinary words do not.
+ */
+function isUncommonBrand(token: string, segment: string, allowLowercase = false): boolean {
+  if (rejectedToken(token)) return false;
+  // "Vercel" and "Orders" are products even when the word also appears inside a role phrase.
+  const roleWord = ROLE_WORDS.has(token);
+  if (roleWord && !looksNamed(token, segment) && !token.includes(".") && !/\d/.test(token)) return false;
+  if (token.includes(".") || /\d/.test(token)) return true;
+  if (token.length < 3) return false;
+  if (looksNamed(token, segment)) return true;
+  return allowLowercase && !roleWord && token.length >= 4;
+}
+
+interface SegmentPiece {
+  label: string;
+  role: EntityRole;
+  order: number;
+}
+
+/** Proper names in a clause. Style, grammar, and bare gloss do not become boxes. */
+function nodesFromSegment(segment: { start: number; text: string }): SegmentPiece[] {
+  const items: Array<{ token: string; index: number }> = [];
+  for (const match of segment.text.matchAll(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g)) {
+    const token = match[0].toLowerCase();
+    if (
+      FLUFF.has(token) ||
+      CUE.has(token) ||
+      HARD_CUE.has(token) ||
+      MODIFIERS.has(token) ||
+      CRUMB.has(token) ||
+      TITLE_WORD.has(token) ||
+      tierToken(token)
+    ) {
+      continue;
+    }
+    if (/^\d+$/.test(token)) continue;
+    items.push({ token, index: match.index ?? 0 });
+  }
+  const brands = items.filter((item) => isUncommonBrand(item.token, segment.text));
+  if (brands.length >= 2) {
+    return brands.map((brand) => ({
+      label: titleLabel([brand.token]),
+      role: inferRole(brand.token),
+      order: segment.start + brand.index,
+    }));
+  }
+  if (brands.length === 1) {
+    const brand = brands[0]!;
+    const beside = items.filter((item) => BESIDE.has(item.token));
+    if (TITLE_VENDOR.has(brand.token) && beside.length === 0) return [];
+    const label = titleLabel([brand.token, ...beside.map((item) => item.token)]);
+    return [{ label, role: inferRole(label), order: segment.start + brand.index }];
+  }
+  if (items.length === 1 && items[0] && BESIDE.has(items[0].token)) {
+    const only = items[0];
+    return [{ label: titleLabel([only.token]), role: inferRole(only.token), order: segment.start + only.index }];
+  }
+  const named = items.filter(
+    (item) => looksNamed(item.token, segment.text) && !GLOSS.has(item.token) && !ROLE_WORDS.has(item.token) && !FLUFF.has(item.token),
+  );
+  if (named.length === 0 || named.length > 3) return [];
+  const label = titleLabel(named.map((item) => item.token));
+  if (label.length < 2) return [];
+  return [{ label, role: inferRole(label), order: segment.start + (named[0]?.index ?? 0) }];
+}
+
+function junkLabel(label: string): boolean {
+  const words = label.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  if (words.every((word) => FLUFF.has(word))) return true;
+  return words.every((word) => FLUFF.has(word) || (GLOSS.has(word) && !BESIDE.has(word)));
 }
 
 const BRAND_WINDOW = 4;
 
 function isBrandToken(token: string, segment: string): boolean {
-  if (CUE.has(token) || HARD_CUE.has(token) || MODIFIERS.has(token) || ROLE_WORDS.has(token) || CRUMB.has(token)) {
-    return false;
-  }
-  return looksNamed(token, segment);
+  // "Client" beside Postgres is another service, not a brand that renames it.
+  // Dotted or numbered tokens (Fly.io, Next.js) can still replace a role phrase.
+  if (ROLE_WORDS.has(token) && !token.includes(".") && !/\d/.test(token)) return false;
+  return isUncommonBrand(token, segment, true);
 }
 
 function nearestBrand(tokens: string[], segment: string, fromEnd: boolean): { token: string; dist: number } | null {
@@ -478,18 +768,38 @@ function brandsBeside(
   if (leftOk && rightOk && left && right) return left.dist <= right.dist ? [left.token] : [right.token];
   if (leftOk && left) return [left.token];
   if (rightOk && right) return [right.token];
-  const pool = [...before.slice(-BRAND_WINDOW), ...after.slice(0, BRAND_WINDOW)].filter(
-    (token) =>
-      !CUE.has(token) &&
-      !HARD_CUE.has(token) &&
-      !MODIFIERS.has(token) &&
-      !ROLE_WORDS.has(token) &&
-      !CRUMB.has(token) &&
-      !TITLE_WORD.has(token) &&
-      !/^\d+$/.test(token),
-  );
-  if (pool.length > 0 && pool.length <= 2) return pool;
   return [];
+}
+
+/** A capitalized listed stage ("Build") sharing a clause with another product. */
+function listedExtras(
+  segment: { start: number; text: string },
+  fullText: string,
+  blocked: Set<string>,
+): Array<{ entry: CatalogEntry; order: number }> {
+  const hay = segment.text.toLowerCase();
+  const found: Array<{ entry: CatalogEntry; order: number }> = [];
+  for (const hit of LISTED) {
+    // Only stages (Build, Test, Deploy). A capitalized title word such as "Web" or "App"
+    // shares the clause and must not become its own vertex.
+    if (hit.entry.role !== "step") continue;
+    if (hit.entry.when && !hit.entry.when(fullText)) continue;
+    let from = 0;
+    while (from < hay.length) {
+      const at = hay.indexOf(hit.phrase, from);
+      if (at === -1) break;
+      const end = at + hit.phrase.length;
+      from = at + Math.max(1, hit.phrase.length);
+      if (!bounded(hay, at, end)) continue;
+      const tokens = hit.phrase.split(/\s+/);
+      if (tokens.some((token) => blocked.has(token))) continue;
+      const raw = segment.text.slice(at, end);
+      if (!/^[A-Z0-9]/.test(raw)) continue;
+      found.push({ entry: hit.entry, order: segment.start + at });
+      for (const token of tokens) blocked.add(token);
+    }
+  }
+  return found;
 }
 
 function looseNames(
@@ -499,9 +809,8 @@ function looseNames(
   const found: Array<{ label: string; order: number }> = [];
   for (const match of segment.text.matchAll(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g)) {
     const token = match[0].toLowerCase();
-    if (used.has(token) || CUE.has(token) || HARD_CUE.has(token) || MODIFIERS.has(token)) continue;
-    if (ROLE_WORDS.has(token) || CRUMB.has(token) || TITLE_WORD.has(token) || /^\d+$/.test(token)) continue;
-    if (!looksNamed(token, segment.text)) continue;
+    if (used.has(token) || rejectedToken(token) || FLUFF.has(token)) continue;
+    if (!isUncommonBrand(token, segment.text)) continue;
     found.push({
       label: titleLabel([token]),
       order: segment.start + (match.index ?? 0),
@@ -512,10 +821,10 @@ function looseNames(
 
 function inferRole(label: string): EntityRole {
   const text = label.toLowerCase();
-  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1)\b/.test(text)) return "data";
+  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch)\b/.test(text)) return "data";
   if (/\b(storage|bucket|blob|s3|r2)\b/.test(text)) return "storage";
   if (/\b(queue|queues|bus|kafka|sqs|sns|hub|pubsub)\b/.test(text)) return "bus";
-  if (/\b(gateway|apim|balancer|cloudfront)\b/.test(text)) return "edge";
+  if (/\b(gateway|apim|balancer|cloudfront|cdn|waf)\b/.test(text)) return "edge";
   if (/\b(browser|client|shopper)\b/.test(text)) return "client";
   if (/\b(user|actor|customer)\b/.test(text)) return "actor";
   return "compute";
@@ -573,6 +882,7 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   const consumed = new Set<Span>();
 
   function pushDraft(draft: Draft) {
+    if (draft.origin === "adhoc" && junkLabel(draft.label)) return;
     const key = draft.origin === "catalog" ? draft.id : draft.label.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
@@ -605,6 +915,16 @@ export function extractNamedEntities(message: string): NamedEntity[] {
             origin: branded ? "adhoc" : "catalog",
           });
         }
+        for (const extra of listedExtras(segment, text, used)) {
+          pushDraft({
+            id: extra.entry.id,
+            label: extra.entry.label,
+            role: extra.entry.role,
+            shape: shapeFor(extra.entry, extra.entry.label),
+            order: extra.order,
+            origin: "listed",
+          });
+        }
         for (const extra of looseNames(segment, used)) {
           pushDraft({
             id: extra.label.toLowerCase(),
@@ -630,16 +950,16 @@ export function extractNamedEntities(message: string): NamedEntity[] {
       });
       continue;
     }
-    const extra = adHoc(segment.text);
-    if (!extra) continue;
-    pushDraft({
-      id: extra.label.toLowerCase(),
-      label: extra.label,
-      role: extra.role,
-      shape: shapeFor({ role: extra.role }, extra.label),
-      order: segment.start,
-      origin: "adhoc",
-    });
+    for (const extra of nodesFromSegment(segment)) {
+      pushDraft({
+        id: extra.label.toLowerCase(),
+        label: extra.label,
+        role: extra.role,
+        shape: shapeFor({ role: extra.role }, extra.label),
+        order: extra.order,
+        origin: "adhoc",
+      });
+    }
   }
 
   for (const span of spans) {
@@ -726,6 +1046,11 @@ function connectTiers(previous: NamedEntity[], current: NamedEntity[], edges: Di
   }
 }
 
+/** Parent→child, adjacent tiers, or a step chain. Never a cross-product of every pair. */
+export function maxSparseEdges(nodeCount: number): number {
+  return Math.max(nodeCount - 1, 1) * 2;
+}
+
 function layerEdges(nodes: NamedEntity[]): DiagramEdge[] {
   const byRole = new Map<EntityRole, NamedEntity[]>();
   for (const node of nodes) {
@@ -735,46 +1060,30 @@ function layerEdges(nodes: NamedEntity[]): DiagramEdge[] {
   }
   const present = ROLE_ORDER.filter((role) => (byRole.get(role)?.length ?? 0) > 0);
   const edges: DiagramEdge[] = [];
-  const sinkNodes = present.filter((role) => SINK.has(role)).flatMap((role) => byRole.get(role) ?? []);
-  const sequential = present.every((role) => (byRole.get(role)?.length ?? 0) === 1);
-  if (sequential && sinkNodes.length <= 1) {
-    const ordered = present.flatMap((role) => byRole.get(role) ?? []);
-    for (let index = 1; index < ordered.length; index += 1) {
-      const from = ordered[index - 1];
-      const to = ordered[index];
-      if (from && to) pushEdge(edges, from, to);
-    }
-    return edges;
+
+  const steps = byRole.get("step") ?? [];
+  for (let index = 1; index < steps.length; index += 1) {
+    const from = steps[index - 1];
+    const to = steps[index];
+    if (from && to) pushEdge(edges, from, to);
   }
 
-  const frontRoles = present.filter((role) => FRONT.has(role));
   let previous: NamedEntity[] = [];
-  for (const role of frontRoles) {
+  for (const role of present) {
     const current = byRole.get(role) ?? [];
+    if (role === "step" && current.length > 1) {
+      const head = current[0];
+      const tail = current[current.length - 1];
+      if (head) connectTiers(previous, [head], edges);
+      previous = tail ? [tail] : [];
+      continue;
+    }
     connectTiers(previous, current, edges);
     previous = current;
   }
-  if (previous.length > 0 && sinkNodes.length > 0) {
-    if (previous.length === 1) {
-      sinkNodes.forEach((sink, index) => {
-        const source = previous[0];
-        if (source) pushEdge(edges, source, sink, index > 0);
-      });
-    } else {
-      for (const source of previous) {
-        sinkNodes.forEach((sink, index) => pushEdge(edges, source, sink, index > 0));
-      }
-    }
-  }
-  if (edges.length === 0) {
-    const ordered = present.flatMap((role) => byRole.get(role) ?? []);
-    for (let index = 1; index < ordered.length; index += 1) {
-      const from = ordered[index - 1];
-      const to = ordered[index];
-      if (from && to) pushEdge(edges, from, to);
-    }
-  }
-  return edges;
+
+  const cap = maxSparseEdges(nodes.length);
+  return edges.length > cap ? edges.slice(0, cap) : edges;
 }
 
 function topicTitle(text: string): string | null {
