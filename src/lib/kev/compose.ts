@@ -1,4 +1,4 @@
-import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
+import { PALETTE, SHAPE_STYLE, applyColors, inferColorName, type ShapeKind } from "@/lib/drawio/styles";
 import { diagramIsBlank, normalizeMxfile, openDiagram, serializeDiagram } from "@/lib/drawio/xml";
 import { layoutDefault, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
@@ -8,7 +8,6 @@ import type { KevDecision } from "@/lib/kev/types";
 type XmlElement = import("@xmldom/xmldom").Element;
 type XmlDocument = import("@xmldom/xmldom").Document;
 
-const WIRE_FILL = "#ffffff";
 const WIRE_STROKE = "#334155";
 const WIRE_FONT = "#0f172a";
 const CLUSTER_HEADER = "#f1f5f9";
@@ -252,7 +251,7 @@ export function compositionDecision(composition: Composition, xml: string): KevD
 }
 
 export function renderComposition(composition: Composition): string {
-  const paint = paintFor(composition.colorName);
+  const paint = forcedPaint(composition.colorName);
   const drawn = drawSpec(composition.spec, paint);
   padLeft(drawn.nodes, drawn.edges, 80);
   return xmlFor(drawn.nodes, drawn.edges, composition.spec.title);
@@ -481,13 +480,23 @@ function ioUringSpec(): LayerSpec {
   };
 }
 
-function paintFor(colorName: string | null): PalettePaint {
-  const named = colorName ? PALETTE[colorName] : undefined;
-  if (!named) return { fill: WIRE_FILL, stroke: WIRE_STROKE, font: WIRE_FONT };
+/** A named color paints every node. Otherwise each node gets a pastel from its label and shape. */
+function forcedPaint(colorName: string | null): PalettePaint | null {
+  if (!colorName) return null;
+  const named = PALETTE[colorName];
+  if (!named) return null;
   return { fill: named.fill, stroke: named.stroke, font: named.font ?? WIRE_FONT };
 }
 
-function nodeStyle(shape: ShapeKind, paint: PalettePaint, role: string): string {
+function nodePaint(label: string, shape: ShapeKind, forced: PalettePaint | null): PalettePaint {
+  if (forced) return forced;
+  const named = PALETTE[inferColorName(label, shape)];
+  if (!named) return { fill: "#d5e8d4", stroke: "#82b366", font: WIRE_FONT };
+  return { fill: named.fill, stroke: named.stroke, font: named.font ?? WIRE_FONT };
+}
+
+function nodeStyle(shape: ShapeKind, label: string, forced: PalettePaint | null, role: string): string {
+  const paint = nodePaint(label, shape, forced);
   const base = applyColors(SHAPE_STYLE[shape], paint.fill, paint.stroke, paint.font);
   return `${base}fontSize=13;fontFamily=Helvetica;drawai=${role};`;
 }
@@ -504,13 +513,13 @@ function sizeFor(shape: ShapeKind): { width: number; height: number } {
   return { width: 176, height: 64 };
 }
 
-function drawSpec(spec: CompositionSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawSpec(spec: CompositionSpec, paint: PalettePaint | null): { nodes: Placed[]; edges: DrawnEdge[] } {
   if (spec.kind === "sequence") return drawSequence(spec, paint);
   if (spec.kind === "workflow") return drawWorkflow(spec, paint);
   return drawLayers(spec, paint);
 }
 
-function drawSequence(spec: SequenceSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawSequence(spec: SequenceSpec, paint: PalettePaint | null): { nodes: Placed[]; edges: DrawnEdge[] } {
   const header = 56;
   const longest = spec.participants.reduce((max, participant) => Math.max(max, participant.label.length), 0);
   const width = Math.max(150, Math.min(210, Math.round(28 + longest * 7.2)));
@@ -523,11 +532,15 @@ function drawSequence(spec: SequenceSpec, paint: PalettePaint): { nodes: Placed[
     y: 40,
     width,
     height,
-    style:
-      `shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;` +
-      `recursiveResize=0;outlineConnect=0;portConstraint=eastwest;size=${header};` +
-      `fillColor=${paint.fill};strokeColor=${paint.stroke};fontColor=${paint.font};` +
-      `fontSize=13;fontFamily=Helvetica;drawai=node;`,
+    style: (() => {
+      const color = nodePaint(participant.label, participant.shape, paint);
+      return (
+        `shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;` +
+        `recursiveResize=0;outlineConnect=0;portConstraint=eastwest;size=${header};` +
+        `fillColor=${color.fill};strokeColor=${color.stroke};fontColor=${color.font};` +
+        `fontSize=13;fontFamily=Helvetica;drawai=node;`
+      );
+    })(),
   }));
 
   const edges: DrawnEdge[] = spec.messages.map((message, index) => {
@@ -548,7 +561,7 @@ function drawSequence(spec: SequenceSpec, paint: PalettePaint): { nodes: Placed[
   return { nodes, edges };
 }
 
-function drawWorkflow(spec: WorkflowSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawWorkflow(spec: WorkflowSpec, paint: PalettePaint | null): { nodes: Placed[]; edges: DrawnEdge[] } {
   const slot = 228;
   const mainY = 220;
   const nodes: Placed[] = spec.nodes.map((node) => {
@@ -564,7 +577,7 @@ function drawWorkflow(spec: WorkflowSpec, paint: PalettePaint): { nodes: Placed[
       y,
       width: size.width,
       height: size.height,
-      style: nodeStyle(node.shape, paint, "node"),
+      style: nodeStyle(node.shape, node.label, paint, "node"),
     };
   });
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -613,7 +626,7 @@ function link(source: Placed, target: Placed, edge: FlowEdge): DrawnEdge {
   };
 }
 
-function drawLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawLayers(spec: LayerSpec, paint: PalettePaint | null): { nodes: Placed[]; edges: DrawnEdge[] } {
   if (spec.groups.some((group) => group.flow === "row" && group.nodes.length > 1)) return drawRowLayers(spec, paint);
   return drawStackedLayers(spec, paint);
 }
@@ -636,7 +649,7 @@ interface ClusterBox {
 const FRAME_HEADER = 36;
 const FRAME_PAD = 18;
 
-function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawRowLayers(spec: LayerSpec, paint: PalettePaint | null): { nodes: Placed[]; edges: DrawnEdge[] } {
   const nodes: Placed[] = [];
   const clusters = new Map<string, ClusterBox>();
   const nodeCluster = new Map<string, ClusterBox>();
@@ -714,7 +727,7 @@ function placedNode(
   x: number,
   y: number,
   size: { width: number; height: number },
-  paint: PalettePaint,
+  paint: PalettePaint | null,
 ): Placed {
   return {
     id: node.id,
@@ -723,7 +736,7 @@ function placedNode(
     y: Math.round(y),
     width: size.width,
     height: size.height,
-    style: nodeStyle(node.shape, paint, "node"),
+    style: nodeStyle(node.shape, node.label, paint, "node"),
   };
 }
 
@@ -832,7 +845,7 @@ function routeLayerEdge(
   };
 }
 
-function drawStackedLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawStackedLayers(spec: LayerSpec, paint: PalettePaint | null): { nodes: Placed[]; edges: DrawnEdge[] } {
   const innerW = 188;
   const padX = 28;
   const header = 34;
@@ -870,7 +883,7 @@ function drawStackedLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Place
         y: nodeY,
         width: size.width,
         height: size.height,
-        style: nodeStyle(node.shape, paint, "node"),
+        style: nodeStyle(node.shape, node.label, paint, "node"),
       });
       nodeY += size.height + gap;
     });

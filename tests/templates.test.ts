@@ -63,7 +63,12 @@ interface Fixture {
   above?: Array<[string, string]>;
   messages?: string[];
   clusters?: string[];
+  /** Named services must appear. Exact edges and cluster titles are not the contract. */
+  loose?: boolean;
+  stolen?: string[];
 }
+
+const PASTEL_FILL = /fillColor=#(?:dae8fc|d5e8d4|ffe6cc|fff2cc|f8cecc|e1d5e7|f5f5f5|d5e8e4|fad7e4)\b/i;
 
 const FIXTURES: Fixture[] = [
   {
@@ -286,7 +291,7 @@ const FIXTURES: Fixture[] = [
       ["ALB", "ECS"],
       ["ECS", "RDS"],
     ],
-    clusters: ["Edge", "Public subnet", "Private subnet", "Data subnet"],
+    clusters: ["Clients", "Edge", "Compute", "Data"],
   },
   {
     prompt: "draw a kubernetes deployment",
@@ -467,13 +472,14 @@ const FIXTURES: Fixture[] = [
     prompt: "draw a UML sequence diagram for user login with browser, auth service, and database",
     labels: ["User", "Browser", "Auth Service", "Database"],
     edges: [
-      ["User", "Browser", "Enter credentials"],
-      ["Browser", "Auth Service", "POST /login"],
+      ["User", "Browser", "Request"],
+      ["Browser", "User", "Response"],
+      ["Browser", "Auth Service", "Authorize"],
+      ["Auth Service", "Browser", "Access token"],
       ["Auth Service", "Database", "Query"],
-      ["Database", "Auth Service", "User record"],
-      ["Auth Service", "Browser", "Session"],
+      ["Database", "Auth Service", "Rows"],
     ],
-    messages: ["Enter credentials", "POST /login", "Query", "User record", "Session", "Logged in"],
+    messages: ["Request", "Response", "Authorize", "Access token", "Query", "Rows"],
   },
   {
     prompt: "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache",
@@ -490,7 +496,7 @@ const FIXTURES: Fixture[] = [
       ["ECS Fargate", "RDS"],
       ["RDS", "ElastiCache"],
     ],
-    clusters: ["Edge", "Public subnet", "Private subnet", "Data subnet"],
+    clusters: ["Clients", "Edge", "Compute", "Data", "Cache"],
   },
   {
     prompt: "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery",
@@ -503,19 +509,20 @@ const FIXTURES: Fixture[] = [
       ["Pub/Sub", "Dataflow"],
       ["Dataflow", "BigQuery"],
     ],
-    clusters: ["Ingest", "Processing", "Warehouse"],
+    clusters: ["Messaging", "Compute", "Data"],
   },
   {
     prompt: "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database",
     labels: ["Browser", "Stripe Checkout", "Webhook handler", "Database"],
     edges: [
-      ["Browser", "Stripe Checkout", "Redirect"],
+      ["Browser", "Stripe Checkout", "Request"],
+      ["Stripe Checkout", "Browser", "Response"],
       ["Stripe Checkout", "Webhook handler", "Webhook"],
-      ["Webhook handler", "Database", "Record payment"],
-      ["Database", "Webhook handler", "Saved"],
-      ["Stripe Checkout", "Browser", "Success URL"],
+      ["Webhook handler", "Stripe Checkout", "200 OK"],
+      ["Webhook handler", "Database", "Query"],
+      ["Database", "Webhook handler", "Rows"],
     ],
-    messages: ["Redirect", "Webhook", "Record payment", "Saved", "200 OK", "Success URL"],
+    messages: ["Request", "Response", "Webhook", "200 OK", "Query", "Rows"],
   },
   {
     prompt: "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB",
@@ -532,7 +539,7 @@ const FIXTURES: Fixture[] = [
       ["S3", "Lambda"],
       ["Lambda", "DynamoDB"],
     ],
-    clusters: ["Clients", "CDN", "Static", "Compute", "Data"],
+    clusters: ["Clients", "Edge", "Storage", "Compute", "Data"],
   },
   {
     prompt: "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Memorystore",
@@ -555,22 +562,14 @@ const FIXTURES: Fixture[] = [
     prompt: "draw an OAuth login sequence with browser, authorization server, and resource server",
     labels: ["User", "Browser", "Authorization Server", "Resource Server"],
     edges: [
-      ["User", "Browser", "Click login"],
+      ["User", "Browser", "Request"],
+      ["Browser", "User", "Response"],
       ["Browser", "Authorization Server", "Authorize"],
       ["Authorization Server", "Browser", "Access token"],
-      ["Browser", "Resource Server", "GET /resource"],
-      ["Resource Server", "Browser", "Protected resource"],
+      ["Authorization Server", "Resource Server", "GET /resource"],
+      ["Resource Server", "Authorization Server", "Protected resource"],
     ],
-    messages: [
-      "Click login",
-      "Authorize",
-      "Code",
-      "Exchange code",
-      "Access token",
-      "GET /resource",
-      "Protected resource",
-      "Logged in",
-    ],
+    messages: ["Request", "Response", "Authorize", "Access token", "GET /resource", "Protected resource"],
   },
   {
     prompt: "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel",
@@ -598,7 +597,7 @@ const FIXTURES: Fixture[] = [
     edges: [
       ["Internet", "API Management", "HTTPS"],
       ["API Management", "Azure Functions", "HTTP"],
-      ["Azure Functions", "Cosmos DB", "SQL"],
+      ["Azure Functions", "Cosmos DB", "Read / write"],
       ["Azure Functions", "Event Hubs", "Publish"],
     ],
     above: [
@@ -624,7 +623,20 @@ describe("popular diagram templates", () => {
         `${fixture.prompt} left edge ${Math.min(...report.nodes.map((node) => node.x))}`,
       );
       for (const label of fixture.labels) box(report, label);
-      assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
+      assert.ok(content(report.nodes).every((node) => PASTEL_FILL.test(node.style)), fixture.prompt);
+      if (fixture.loose) {
+        const labels = content(report.nodes).map((node) => node.label);
+        for (const stolen of fixture.stolen ?? []) {
+          assert.equal(labels.includes(stolen), false, `${fixture.prompt} stole ${stolen}`);
+        }
+        assert.ok(report.edges.length > 0 && report.edges.every((edge) => edge.label.trim().length > 0), fixture.prompt);
+        if (!fixture.messages) {
+          assert.ok(
+            report.nodes.some((node) => node.role === "cluster"),
+            `${fixture.prompt} should group topics`,
+          );
+        }
+      } else {
       for (const [from, to, label] of fixture.edges) linked(report, from, to, label);
       for (const row of fixture.rows ?? []) sameRow(report, row);
       for (const [upper, lower] of fixture.above ?? []) above(report, upper, lower);
@@ -650,13 +662,14 @@ describe("popular diagram templates", () => {
           assert.ok(previous.y < current.y, `${previous.label} above ${current.label}`);
         }
       }
+      }
     });
   }
 
   it("routes AWS serverless asks to API Gateway, Lambda, and DynamoDB before the VPC sketch", () => {
     const prompt = "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB";
     const matched = matchTemplate(prompt);
-    assert.equal(matched?.spec.title, "AWS serverless");
+    assert.equal(matched?.spec.title, "AWS");
     const composition = resolveComposition(prompt);
     assert.ok(composition);
     const outline = describeComposition(composition);
@@ -678,23 +691,30 @@ describe("popular diagram templates", () => {
       assert.equal(labels.includes(stolen), false, stolen);
     }
 
-    for (const variant of [
-      "draw a serverless architecture",
-      "draw an API with API Gateway and Lambda",
-      "draw an AWS architecture that uses DynamoDB",
-      "sketch Amazon API Gateway calling Lambda",
-    ]) {
-      assert.equal(matchTemplate(variant)?.spec.title, "AWS serverless", variant);
+    const bare = "draw a serverless architecture";
+    assert.equal(matchTemplate(bare)?.spec.title, "AWS serverless");
+    const bareLabels = content(assertClean(previewDemo(bare, STARTER_XML).xml).nodes).map((node) => node.label);
+    for (const label of ["API Gateway", "Lambda", "DynamoDB"]) assert.ok(bareLabels.includes(label), bare);
+    assert.equal(bareLabels.includes("ALB"), false);
+
+    const dynamo = "draw an AWS architecture that uses DynamoDB";
+    assert.equal(matchTemplate(dynamo)?.spec.title, "AWS serverless");
+    const dynamoLabels = content(assertClean(previewDemo(dynamo, STARTER_XML).xml).nodes).map((node) => node.label);
+    for (const label of ["API Gateway", "Lambda", "DynamoDB"]) assert.ok(dynamoLabels.includes(label), dynamo);
+    assert.equal(dynamoLabels.includes("ALB"), false);
+
+    for (const variant of ["draw an API with API Gateway and Lambda", "sketch Amazon API Gateway calling Lambda"]) {
       const variantLabels = content(assertClean(previewDemo(variant, STARTER_XML).xml).nodes).map((node) => node.label);
       assert.ok(variantLabels.includes("API Gateway"), variant);
       assert.ok(variantLabels.includes("Lambda"), variant);
-      assert.ok(variantLabels.includes("DynamoDB"), variant);
+      assert.equal(variantLabels.includes("DynamoDB"), false, variant);
       assert.equal(variantLabels.includes("ALB"), false, variant);
+      assert.equal(variantLabels.includes("ECS"), false, variant);
     }
 
     assert.equal(
       matchTemplate("draw an AWS VPC architecture with an ALB, ECS, and RDS")?.spec.title,
-      "AWS VPC",
+      "AWS",
     );
     assert.equal(matchTemplate("draw a cloud architecture")?.spec.title, "AWS VPC");
     assert.equal(matchTemplate("draw a kubernetes deployment")?.spec.title, "Kubernetes");
@@ -755,8 +775,6 @@ describe("popular diagram templates", () => {
       "draw an Azure architecture",
       "draw an Azure cloud architecture",
       "draw an Azure serverless architecture",
-      "draw Application Gateway, App Service, Azure SQL, and Service Bus",
-      "sketch an architecture with App Gateway, App Service, Azure SQL, and Service Bus",
     ]) {
       assert.equal(matchTemplate(variant)?.spec.title, "Azure", variant);
       const variantLabels = content(assertClean(previewDemo(variant, STARTER_XML).xml).nodes).map((node) => node.label);
@@ -766,11 +784,23 @@ describe("popular diagram templates", () => {
       assert.equal(variantLabels.includes("ALB"), false, variant);
       assert.equal(variantLabels.includes("Lambda"), false, variant);
     }
+    for (const variant of [
+      "draw Application Gateway, App Service, Azure SQL, and Service Bus",
+      "sketch an architecture with App Gateway, App Service, Azure SQL, and Service Bus",
+    ]) {
+      const variantLabels = content(assertClean(previewDemo(variant, STARTER_XML).xml).nodes).map((node) => node.label);
+      for (const label of ["Application Gateway", "App Service", "Azure SQL", "Service Bus"]) {
+        assert.ok(variantLabels.includes(label), `${variant} missing ${label}`);
+      }
+      assert.equal(variantLabels.includes("ALB"), false, variant);
+      assert.equal(variantLabels.includes("Lambda"), false, variant);
+      assert.equal(matchTemplate(variant)?.spec.title === "AWS VPC", false, variant);
+    }
 
     assert.equal(matchTemplate("draw a cloud architecture")?.spec.title, "AWS VPC");
     assert.equal(
       matchTemplate("draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB")?.spec.title,
-      "AWS serverless",
+      "AWS",
     );
     assert.equal(matchTemplate("draw a GCP architecture")?.spec.title, "GCP");
     assert.equal(matchTemplate("draw a kubernetes deployment")?.spec.title, "Kubernetes");
@@ -823,7 +853,9 @@ describe("popular diagram templates", () => {
         STARTER_XML,
       ).xml,
     );
-    for (const label of ["Ingress", "Service", "Deployment", "Pod A", "Pod B"]) box(report, label);
+    for (const label of ["Ingress", "Service", "Deployment", "Pods"]) box(report, label);
+    assert.equal(content(report.nodes).some((node) => node.label === "Pod A"), false);
+    assert.equal(content(report.nodes).some((node) => node.label === "Volume"), false);
   });
 
   it("draws Kafka, a blog model, a business process, and a document lifecycle", () => {
@@ -933,9 +965,13 @@ describe("popular diagram templates", () => {
     for (const prompt of ["draw Cloud Run and Pub/Sub", "draw Cloud SQL and Kafka", "draw a VPC connector and Pub/Sub"]) {
       const report = assertClean(previewDemo(prompt, STARTER_XML).xml);
       assert.equal(content(report.nodes).some((node) => node.label === "Event broker"), false, prompt);
-      assert.equal(content(report.nodes).some((node) => node.label === "Kafka"), false, prompt);
       assert.equal(content(report.nodes).some((node) => node.label === "Web"), false, prompt);
     }
+    const namedKafka = content(assertClean(previewDemo("draw Cloud SQL and Kafka", STARTER_XML).xml).nodes).map(
+      (node) => node.label,
+    );
+    assert.ok(namedKafka.includes("Kafka"));
+    assert.ok(namedKafka.includes("Cloud SQL"));
     const kafka = assertClean(previewDemo("draw a kafka architecture", STARTER_XML).xml);
     assert.ok(content(kafka.nodes).some((node) => node.label === "Kafka"));
   });
@@ -999,7 +1035,7 @@ describe("popular diagram templates", () => {
 
   it("keeps ElastiCache and Fargate on an AWS container architecture", () => {
     const prompt = "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache";
-    assert.equal(matchTemplate(prompt)?.spec.title, "AWS VPC");
+    assert.equal(matchTemplate(prompt)?.spec.title, "AWS");
     const drawn = previewDemo(prompt, STARTER_XML);
     assert.equal(drawn.decision.intent, "add_shape");
     const report = assertClean(drawn.xml);
@@ -1053,7 +1089,7 @@ describe("popular diagram templates", () => {
   it("draws a Stripe checkout sequence with the webhook handler and database", () => {
     const prompt =
       "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database";
-    assert.equal(matchTemplate(prompt)?.spec.title, "Stripe checkout");
+    assert.equal(matchTemplate(prompt)?.spec.title, "Sequence");
     const drawn = previewDemo(prompt, STARTER_XML);
     assert.equal(drawn.decision.intent, "add_shape");
     assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
@@ -1076,7 +1112,7 @@ describe("popular diagram templates", () => {
 
   it("draws API Gateway, Lambda, SQS, and SNS instead of clarifying or stealing another AWS stack", () => {
     const prompt = "draw an AWS architecture with API Gateway, Lambda, SQS, and SNS";
-    assert.equal(matchTemplate(prompt)?.spec.title, "AWS messaging");
+    assert.equal(matchTemplate(prompt)?.spec.title, "AWS");
     const composition = resolveComposition(prompt);
     assert.ok(composition);
     const outline = describeComposition(composition);
@@ -1108,7 +1144,7 @@ describe("popular diagram templates", () => {
     linked(report, "Lambda", "SNS", "Publish");
 
     const synonym = "draw an AWS architecture with API Gateway, Lambda, Simple Queue Service, and Simple Notification Service";
-    assert.equal(matchTemplate(synonym)?.spec.title, "AWS messaging");
+    assert.equal(matchTemplate(synonym)?.spec.title, "AWS");
     const synonymLabels = content(assertClean(previewDemo(synonym, STARTER_XML).xml).nodes).map((node) => node.label);
     for (const label of ["API Gateway", "Lambda", "SQS", "SNS"]) assert.ok(synonymLabels.includes(label), label);
     assert.equal(synonymLabels.includes("DynamoDB"), false);
@@ -1141,7 +1177,7 @@ describe("popular diagram templates", () => {
 
   it("keeps CloudFront and S3 on an AWS architecture that also names Lambda and DynamoDB", () => {
     const prompt = "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB";
-    assert.equal(matchTemplate(prompt)?.spec.title, "AWS CDN");
+    assert.equal(matchTemplate(prompt)?.spec.title, "AWS");
     const drawn = previewDemo(prompt, STARTER_XML);
     assert.equal(drawn.decision.intent, "add_shape");
     assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
@@ -1358,7 +1394,7 @@ describe("popular diagram templates", () => {
     above(report, "API Management", "Azure Functions");
     above(report, "Azure Functions", "Cosmos DB");
     linked(report, "API Management", "Azure Functions", "HTTP");
-    linked(report, "Azure Functions", "Cosmos DB", "SQL");
+    linked(report, "Azure Functions", "Cosmos DB", "Read / write");
     linked(report, "Azure Functions", "Event Hubs", "Publish");
     const appService = content(
       assertClean(

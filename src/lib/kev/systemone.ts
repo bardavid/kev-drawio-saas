@@ -85,7 +85,7 @@ export function diagramState(
   const parts = [
     "The host places shapes and routes edges. Answer the questions. Do not invent coordinates or XML.",
     "Edit the open canvas. Do not discard shapes the user did not ask to remove.",
-    "A reference template is optional. Use it, adapt it, or set it aside.",
+    "A reference template is optional. Use it, adapt it, or set it aside. Do not expect a template per phrasing. When the user names services, stages, or states, draw those names. Do not ask which nodes to draw, and do not substitute a different stack. Default drawings use pastel node fills, a short label on each edge that has a relationship, and topic containers such as Clients, Edge, Compute, and Data, even when the user never mentions style.",
     `User message:\n${userMessage.trim()}`,
     reference ? `Reference:\n${reference}` : "",
     topic ? `Topic context:\n${topic}` : "",

@@ -139,7 +139,10 @@ describe("diagram quality", () => {
       fromStarter.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
-    assert.ok(fromStarter.edges.every((edge) => edge.label === ""));
+    assert.deepEqual(
+      fromStarter.edges.map((edge) => edge.label),
+      ["Request", "Read / write"],
+    );
   });
 
   it("routes a skip edge around the node sitting between its ends", () => {
@@ -157,7 +160,11 @@ describe("diagram quality", () => {
     assert.deepEqual(names, ["User", "Browser", "Auth Service"]);
     assert.ok(content(report.nodes).every((node) => node.style.includes("umlLifeline")));
     assert.ok(content(report.nodes).every((node) => node.style.includes("fontSize=13")));
-    assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
+    assert.ok(
+      content(report.nodes).every((node) =>
+        /fillColor=#(?:f5f5f5|ffe6cc|d5e8d4|dae8fc|fff2cc|e1d5e7|f8cecc|d5e8e4|fad7e4)/.test(node.style),
+      ),
+    );
     const messages = report.edges.filter((edge) => edge.label).sort((a, b) => exitY(a.style) - exitY(b.style));
     assert.deepEqual(
       messages.map((edge) => edge.label),
@@ -307,12 +314,9 @@ describe("diagram quality", () => {
         after.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")),
         phrase,
       );
-      assert.ok(
-        after.nodes.filter((node) => node.role === "node").every((node) => node.style.includes("fillColor=#ffffff")),
-        phrase,
-      );
-      assert.ok(
-        after.nodes.filter((node) => node.role === "node").every((node) => node.style.includes("strokeColor=#334155")),
+      assert.deepEqual(
+        after.nodes.map((node) => node.style),
+        beforeReport.nodes.map((node) => node.style),
         phrase,
       );
       const beforeMessages = beforeReport.edges
@@ -491,7 +495,9 @@ describe("composition gate", { concurrency: 1 }, () => {
     assert.equal(result.steps?.every((step) => step.accepted && step.confirm === 0.43 && step.choice === "apply"), true);
     const report = assertClean(result.updatedXml);
     assert.deepEqual(content(report.nodes).map((node) => node.label), ["User", "Browser", "Auth Service"]);
-    assert.ok(content(report.nodes).every((node) => node.style.includes("fillColor=#ffffff")));
+    assert.ok(
+      content(report.nodes).every((node) => /fillColor=#(?:f5f5f5|ffe6cc|d5e8d4|dae8fc|fff2cc|e1d5e7|f8cecc|d5e8e4|fad7e4)/.test(node.style)),
+    );
     assert.equal(result.updatedXml.includes("Client"), false);
   });
 
@@ -845,7 +851,10 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       report.edges.map((edge) => `${edge.from}->${edge.to}`),
       ["Client->App", "App->Postgres"],
     );
-    assert.ok(report.edges.every((edge) => edge.label === ""));
+    assert.deepEqual(
+      report.edges.map((edge) => edge.label),
+      ["Request", "Read / write"],
+    );
     assert.equal(report.nodes.some((node) => node.label === "API"), false);
     assert.equal(new Set(report.nodes.map((node) => node.y)).size, 1);
     assert.match(report.nodes.find((node) => node.label === "Postgres")?.style ?? "", /cylinder3/);

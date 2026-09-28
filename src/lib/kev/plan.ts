@@ -150,6 +150,7 @@ export function operationsForPlan(plan: ArchitecturePlan, xml: string): DiagramO
           shape: inferShape(label),
           ...colorSlots(plan.colorName),
           from,
+          edgeLabel: from ? chainEdgeLabel(from, label) : null,
         },
       });
       present.add(key);
@@ -163,7 +164,7 @@ export function operationsForPlan(plan: ArchitecturePlan, xml: string): DiagramO
     const to = plan.nodes[index + 1] ?? "";
     const edge = `${from.toLowerCase()}->${to.toLowerCase()}`;
     if (present.has(from.toLowerCase()) && present.has(to.toLowerCase()) && !edges.has(edge)) {
-      operations.push({ intent: "connect", slots: { from, to } });
+      operations.push({ intent: "connect", slots: { from, to, edgeLabel: chainEdgeLabel(from, to) } });
       edges.add(edge);
     }
   }
@@ -268,6 +269,15 @@ function primaryIntent(operations: DiagramOperation[]): Intent {
   if (operations.some((operation) => operation.intent === "style")) return "style";
   if (operations.some((operation) => operation.intent === "layout")) return "layout";
   return "noop";
+}
+
+function chainEdgeLabel(from: string, to: string): string {
+  const shape = inferShape(to);
+  if (shape === "cylinder") return "Read / write";
+  if (shape === "queue") return "Publish";
+  if (shape === "cloud") return "Store";
+  if (/^(client|browser|user|internet)$/i.test(from)) return "Request";
+  return "Call";
 }
 
 function colorSlots(colorName: string | null): Pick<DiagramSlots, "colorName" | "fillColor" | "strokeColor"> {

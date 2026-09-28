@@ -10,6 +10,7 @@ import type {
   SequenceSpec,
   WorkflowSpec,
 } from "@/lib/kev/compose";
+import { composeNamed } from "@/lib/kev/generic";
 import { layoutDefault } from "@/lib/kev/plan";
 import { redisDiagramRequest, wikipediaTitle } from "@/lib/kev/research";
 
@@ -28,12 +29,20 @@ const TIER_RE = /\b(\d+|two|three|four|five)[\s-]*tier\b/i;
 export function matchTemplate(message: string): TemplateMatch | null {
   const text = message.trim();
   if (!text) return null;
+  // A 3-tier count belongs to the chain planner unless the prompt also names
+  // the CDN, load balancer, and database presentation stack.
+  if (isRichWebTiers(text)) return richWebTiers();
+  if (TIER_RE.test(text)) return null;
+  // Names in the prompt are the diagram. Kind templates below are soft defaults
+  // for requests that do not list concrete services, stages, or participants.
+  if (!curatedOwns(text)) {
+    const named = composeNamed(text);
+    if (named) return { spec: named.spec, context: named.context };
+  }
   // Named Azure services are not a generic Gateway → Service → Sql chain, and
   // "Azure cloud architecture" is not the AWS VPC sketch. This has to win
   // before the tier planner returns null and before isCloud.
   if (isAzure(text)) return azureArchitecture(text);
-  if (isRichWebTiers(text)) return richWebTiers();
-  if (TIER_RE.test(text)) return null;
   if (isOauth(text)) return oauthSequence(text);
   // Stripe Checkout names the webhook and the database. The generic checkout
   // sketch (Payment, Orders) drops both.
@@ -52,12 +61,8 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isGcp(text)) return gcpArchitecture(text);
   if (isEventDriven(text)) return eventDriven(text);
   if (isMicroservices(text)) return microservices(text);
-  // CloudFront and S3 are a CDN plus static origin. Lambda and DynamoDB do not
-  // turn that into API Gateway, and "AWS" does not turn it into an ALB / ECS VPC.
-  if (isAwsCdn(text)) return awsCdn(text);
-  // SQS and SNS are a messaging stack. They are not DynamoDB serverless and not an ALB / ECS VPC.
-  if (isAwsMessaging(text)) return awsMessaging(text);
-  // API Gateway, Lambda, and DynamoDB are not an ALB / ECS / RDS VPC.
+  // API Gateway, Lambda, and DynamoDB are the soft default for an unnamed serverless sketch.
+  // A prompt that already names services is composed above and does not land here.
   if (isAwsServerless(text)) return awsServerless();
   if (isCloud(text)) return cloudVpc(text);
   if (isKubernetes(text)) return kubernetes();
@@ -231,8 +236,19 @@ function isMicroservices(text: string): boolean {
   return /\bmicro-?services?\b/i.test(text);
 }
 
+function curatedOwns(text: string): boolean {
+  // These prompts name pieces, but the drawing is a pattern (tiers, hit/miss,
+  // subnet layout, scripted messages), not a flat list of those words.
+  // A login sequence that names its own cast is composed generically instead.
+  if (isCacheAside(text) || isMicroservices(text) || isDmz(text)) return true;
+  if (isDetailedVpc(text)) return true;
+  if (isStateMachineRequest(text)) return true;
+  if (/\b(request credentials|db lookup|session cookie|user\s*db)\b/i.test(text)) return true;
+  return false;
+}
+
 function isCloud(text: string): boolean {
-  if (isGcp(text) || isAzure(text) || isAwsCdn(text) || isAwsMessaging(text)) return false;
+  if (isGcp(text) || isAzure(text)) return false;
   return (
     /\b(vpc|aws|amazon web services)\b/i.test(text) ||
     /\bcloud architecture\b/i.test(text) ||
@@ -252,57 +268,12 @@ function mentionsDynamoDb(text: string): boolean {
   return /\bdynamodb\b|\bdynamo\s+db\b/i.test(text);
 }
 
-function mentionsCloudFront(text: string): boolean {
-  return /\bcloud\s*front\b/i.test(text);
-}
-
-function mentionsS3(text: string): boolean {
-  return /\bs3\b|\bsimple\s+storage\s+service\b/i.test(text);
-}
-
-function mentionsSqs(text: string): boolean {
-  return /\bsqs\b|\bsimple\s+queue(?:\s+service)?\b/i.test(text);
-}
-
-function mentionsSns(text: string): boolean {
-  return /\bsns\b|\bsimple\s+notification(?:\s+service)?\b/i.test(text);
-}
-
-function isAwsVpcStack(text: string): boolean {
-  return (
-    /\balb\b|\bapplication\s+load\s+balancer\b|\becs\b|\bfargate\b|\brds\b/i.test(text) || mentionsElastiCache(text)
-  );
-}
-
 /**
- * SQS or SNS, including Simple Queue Service and Simple Notification Service.
- * Wins before the DynamoDB serverless sketch and the ALB / ECS VPC.
- * CloudFront / S3 and the VPC services keep their templates.
- */
-function isAwsMessaging(text: string): boolean {
-  if (/\bsequence\b/i.test(text) || isStateMachineRequest(text) || /\b(workflow|flowchart)\b/i.test(text)) return false;
-  if (isGcp(text) || isAzure(text) || isKubernetes(text) || isAwsCdn(text) || isAwsVpcStack(text)) return false;
-  return mentionsSqs(text) || mentionsSns(text);
-}
-
-/**
- * CloudFront, or S3 together with Lambda, DynamoDB, or AWS.
- * Wins before serverless: Lambda + DynamoDB used to ignore CloudFront and S3.
- */
-function isAwsCdn(text: string): boolean {
-  if (isGcp(text) || isAzure(text) || isKubernetes(text)) return false;
-  if (mentionsCloudFront(text)) return true;
-  if (!mentionsS3(text)) return false;
-  return mentionsLambda(text) || mentionsDynamoDb(text) || /\b(aws|amazon(?:\s+web\s+services)?|cdn)\b/i.test(text);
-}
-
-/**
- * AWS serverless asks name the service, the API Gateway + Lambda pair, or DynamoDB.
- * Checked before the generic VPC sketch. Azure, GCP (including Serverless VPC Access and
- * Cloud Functions), Kubernetes, CloudFront / S3, and an SQS / SNS messaging stack keep their own templates.
+ * Soft default when the prompt says serverless but does not name a concrete set of services.
+ * Named services are composed generically and never reach this.
  */
 function isAwsServerless(text: string): boolean {
-  if (isGcp(text) || isAzure(text) || isKubernetes(text) || isAwsCdn(text) || isAwsMessaging(text)) return false;
+  if (isGcp(text) || isAzure(text) || isKubernetes(text)) return false;
   if (/\bserverless\b/i.test(text)) return true;
   if (mentionsApiGateway(text) && mentionsLambda(text)) return true;
   return mentionsDynamoDb(text) && /\b(aws|amazon(?:\s+web\s+services)?|serverless)\b/i.test(text);
@@ -329,12 +300,7 @@ function isSystemArchitecture(text: string): boolean {
   return /\b(system architecture|application architecture|web app architecture|api architecture|service architecture)\b/i.test(text);
 }
 
-function mentionsResourceServer(text: string): boolean {
-  return /\bresource\s+(?:server|api)\b/i.test(text);
-}
-
 function oauthSequence(text: string): TemplateMatch {
-  if (mentionsResourceServer(text)) return oauthWithResourceServer(text);
   const participants: SequenceParticipant[] = [
     { id: "user", label: "User", shape: "actor" },
     { id: "browser", label: "Browser", shape: "rectangle" },
@@ -364,35 +330,6 @@ function oauthSequence(text: string): TemplateMatch {
   };
 }
 
-/** The resource server is a participant. The app does not stand in for it. */
-function oauthWithResourceServer(text: string): TemplateMatch {
-  const authLabel = /\bauthorization\s+server\b/i.test(text) ? "Authorization Server" : "Auth server";
-  const resourceLabel = /\bresource\s+api\b/i.test(text) ? "Resource API" : "Resource Server";
-  return {
-    context:
-      "OAuth authorization-code login: the browser gets a code from the authorization server, exchanges it for an access token, and calls the resource server. The app is not the resource server.",
-    spec: sequence(
-      "OAuth login",
-      `Drew an OAuth login sequence: User, Browser, ${authLabel}, and ${resourceLabel}.`,
-      [
-        { id: "user", label: "User", shape: "actor" },
-        { id: "browser", label: "Browser", shape: "rectangle" },
-        { id: "auth", label: authLabel, shape: "rectangle" },
-        { id: "resource", label: resourceLabel, shape: "rectangle" },
-      ],
-      [
-        { from: "user", to: "browser", label: "Click login" },
-        { from: "browser", to: "auth", label: "Authorize" },
-        { from: "auth", to: "browser", label: "Code", dashed: true },
-        { from: "browser", to: "auth", label: "Exchange code" },
-        { from: "auth", to: "browser", label: "Access token", dashed: true },
-        { from: "browser", to: "resource", label: "GET /resource" },
-        { from: "resource", to: "browser", label: "Protected resource", dashed: true },
-        { from: "browser", to: "user", label: "Logged in", dashed: true },
-      ],
-    ),
-  };
-}
 
 /**
  * GitHub Actions, Build, and Deploy stay in that order.
@@ -753,6 +690,11 @@ function statesNamedIn(text: string): string[] {
   const colon = text.match(/:\s*(.+)$/);
   if (colon?.[1] && /,|\band\b/i.test(colon[1])) {
     const labels = uniqueStateLabels(splitStateList(colon[1]));
+    if (labels.length >= 2) return labels;
+  }
+  const dash = text.match(/(?:—|–|\s-\s)\s*(.+)$/);
+  if (dash?.[1] && /,|\band\b/i.test(dash[1])) {
+    const labels = uniqueStateLabels(splitStateList(dash[1]));
     if (labels.length >= 2) return labels;
   }
   const fromTo = text.match(/\bfrom\s+(.+)$/i);
@@ -1409,111 +1351,6 @@ function microservices(text: string): TemplateMatch {
   };
 }
 
-function awsCdn(text: string): TemplateMatch {
-  const parts: Array<{ id: string; label: string; cluster: string; clusterLabel: string; shape: LayerNode["shape"] }> = [];
-  if (mentionsCloudFront(text)) {
-    parts.push({ id: "cloudfront", label: "CloudFront", cluster: "cdn", clusterLabel: "CDN", shape: "rectangle" });
-  }
-  if (mentionsS3(text)) {
-    parts.push({ id: "s3", label: "S3", cluster: "static", clusterLabel: "Static", shape: "cylinder" });
-  }
-  if (mentionsLambda(text)) {
-    parts.push({ id: "lambda", label: "Lambda", cluster: "compute", clusterLabel: "Compute", shape: "rectangle" });
-  }
-  if (mentionsDynamoDb(text)) {
-    parts.push({ id: "dynamo", label: "DynamoDB", cluster: "data", clusterLabel: "Data", shape: "cylinder" });
-  }
-  const groups: LayerGroup[] = [col("clients", "Clients", [node("client", "Client", "rectangle")])];
-  for (const part of parts) groups.push(col(part.cluster, part.clusterLabel, [node(part.id, part.label, part.shape)]));
-
-  const ids = new Set(parts.map((part) => part.id));
-  const edges: LayerEdge[] = [];
-  const cdnStaticCompute = ids.has("cloudfront") && ids.has("s3") && ids.has("lambda") && ids.has("dynamo");
-  if (cdnStaticCompute) {
-    edges.push(edge("client", "cloudfront", "HTTPS"));
-    edges.push(edge("cloudfront", "s3", "Origin"));
-    edges.push(edge("cloudfront", "lambda", "Invoke", true));
-    edges.push(edge("lambda", "dynamo", "Read / write"));
-  } else {
-    let previous = "client";
-    for (const part of parts) {
-      const label =
-        part.id === "cloudfront" && previous === "client"
-          ? "HTTPS"
-          : part.id === "s3" && previous === "cloudfront"
-            ? "Origin"
-            : part.id === "lambda"
-              ? "Invoke"
-              : part.id === "dynamo"
-                ? "Read / write"
-                : "Request";
-      edges.push(edge(previous, part.id, label));
-      previous = part.id;
-    }
-  }
-
-  const names = parts.map((part) => part.label);
-  return {
-    context:
-      "CloudFront is the CDN, S3 is the static origin, Lambda is the compute, and DynamoDB stores the data. This is not API Gateway serverless and not an ALB / ECS / RDS VPC.",
-    spec: layers(
-      "AWS CDN",
-      cdnStaticCompute
-        ? "Drew an AWS architecture: Client → CloudFront → S3, with Lambda and DynamoDB."
-        : `Drew an AWS architecture with ${names.join(", ")}.`,
-      groups,
-      edges,
-    ),
-  };
-}
-
-function awsMessaging(text: string): TemplateMatch {
-  const selected: Array<{ id: string; label: string; shape: LayerNode["shape"]; tier: "edge" | "compute" | "bus" }> = [];
-  if (mentionsApiGateway(text)) selected.push({ id: "gateway", label: "API Gateway", shape: "hexagon", tier: "edge" });
-  if (mentionsLambda(text)) selected.push({ id: "lambda", label: "Lambda", shape: "rectangle", tier: "compute" });
-  if (mentionsSqs(text)) selected.push({ id: "sqs", label: "SQS", shape: "queue", tier: "bus" });
-  if (mentionsSns(text)) selected.push({ id: "sns", label: "SNS", shape: "queue", tier: "bus" });
-
-  const groups: LayerGroup[] = [];
-  const edges: LayerEdge[] = [];
-  const front = selected.some((service) => service.tier === "edge" || service.tier === "compute");
-  if (front) groups.push(col("clients", "Clients", [node("client", "Client", "rectangle")]));
-
-  let anchor: string | null = front ? "client" : null;
-  for (const tier of ["edge", "compute", "bus"] as const) {
-    const services = selected.filter((service) => service.tier === tier);
-    const first = services[0];
-    if (!first) continue;
-    const clusterId = tier === "edge" ? "edge" : tier === "compute" ? "compute" : "messaging";
-    const clusterLabel = tier === "edge" ? "Edge" : tier === "compute" ? "Compute" : "Messaging";
-    groups.push(col(clusterId, clusterLabel, services.map((service) => node(service.id, service.label, service.shape))));
-    if (tier === "bus" && anchor) {
-      const from = anchor;
-      services.forEach((service, index) => {
-        const label = service.id === "sns" ? "Publish" : "Send";
-        edges.push(edge(from, service.id, label, index > 0));
-      });
-      continue;
-    }
-    if (anchor) edges.push(edge(anchor, first.id, first.id === "lambda" ? "Invoke" : "HTTPS"));
-    anchor = first.id;
-  }
-
-  const names = selected.map((service) => service.label);
-  const full = ["API Gateway", "Lambda", "SQS", "SNS"].every((label) => names.includes(label));
-  return {
-    context:
-      "API Gateway accepts HTTPS and invokes Lambda. Lambda sends work to SQS and publishes notifications through SNS.",
-    spec: layers(
-      "AWS messaging",
-      full
-        ? "Drew an AWS architecture: Client → API Gateway → Lambda, with SQS and SNS."
-        : `Drew an AWS architecture with ${names.join(", ")}.`,
-      groups,
-      edges,
-    ),
-  };
-}
 
 function awsServerless(): TemplateMatch {
   return {
