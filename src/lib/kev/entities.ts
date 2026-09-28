@@ -962,13 +962,56 @@ export function chainEdgeLabel(fromLabel: string, toLabel: string): string {
 
 function inferRole(label: string): EntityRole {
   const text = label.toLowerCase();
-  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch)\b/.test(text)) return "data";
+  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch|stores?)\b/.test(text)) return "data";
   if (/\b(storage|bucket|blob|s3|r2)\b/.test(text)) return "storage";
   if (/\b(queue|queues|bus|kafka|sqs|sns|hub|pubsub)\b/.test(text)) return "bus";
   if (/\b(gateway|apim|balancer|cloudfront|cdn|waf)\b/.test(text)) return "edge";
   if (/\b(browser|client|shopper)\b/.test(text)) return "client";
   if (/\b(user|actor|customer)\b/.test(text)) return "actor";
   return "compute";
+}
+
+/**
+ * Role and shape of a name the user already wrote.
+ * A catalog phrase inside the name supplies them. The spoken label stays.
+ */
+function catalogForLabel(label: string, message: string): CatalogEntry | null {
+  const hay = label.toLowerCase();
+  let best: CatalogEntry | null = null;
+  let bestLength = -1;
+  const consider = (hit: PhraseHit) => {
+    if (hit.phrase.length <= bestLength) return;
+    if (hit.entry.when && !hit.entry.when(message)) return;
+    let from = 0;
+    while (from < hay.length) {
+      const at = hay.indexOf(hit.phrase, from);
+      if (at === -1) return;
+      if (bounded(hay, at, at + hit.phrase.length)) {
+        best = hit.entry;
+        bestLength = hit.phrase.length;
+        return;
+      }
+      from = at + 1;
+    }
+  };
+  for (const hit of PHRASES) consider(hit);
+  for (const hit of LISTED) consider(hit);
+  return best;
+}
+
+function draftsFromLabels(labels: string[], message: string): Draft[] {
+  return labels.map((label, index) => {
+    const known = catalogForLabel(label, message);
+    const role = known?.role ?? inferRole(label);
+    return {
+      id: known?.id ?? label.toLowerCase(),
+      label,
+      role,
+      shape: shapeFor(known ?? { role }, label),
+      order: index,
+      origin: "listed" as const,
+    };
+  });
 }
 
 function shapeFor(entry: { role: EntityRole; shape?: ShapeKind }, label: string): ShapeKind {
@@ -1872,10 +1915,52 @@ const BOX_LABEL_CUE =
  * Every listed name is a vertex, including words that usually name the diagram
  * ("edge", "path", "flow") rather than a product.
  */
+const PLACE_ALL_VERB =
+  /\b(?:place|put|add|draw|sketch|create|insert|drop|show|lay|layout|arrange|organize|organise|position)\b/i;
+
+/**
+ * Lay out / place / add / drop / draw / put, and the same family of verbs,
+ * followed by boxes labeled with names. "Lay out" is one of those verbs, not a reflow.
+ */
+export function labeledPlacement(message: string): boolean {
+  return explicitLabeledBoxes(normalize(message)) !== null;
+}
+
+const COMPONENT_LIST_RE =
+  /\b(?:covering|including|includes|include|containing|contains|consisting of|consists of|comprised of|composed of|made up of|namely|such as)\s+([^.]*)/i;
+
+/**
+ * Short names listed after a covering/including cue.
+ * The cue is grammar, not a topic. Each item is one component the user already named.
+ */
+export function listedComponents(message: string): string[] | null {
+  const match = normalize(message).match(COMPONENT_LIST_RE);
+  if (!match?.[1]) return null;
+  const parts = match[1]
+    .replace(/\s+\band\b\s+/gi, ", ")
+    .split(/\s*[,;]\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const words = (part.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter(
+      (word) => !/^(?:a|an|the|and|or|plus)$/i.test(word),
+    );
+    if (words.length === 0 || words.length > 4) return null;
+    const label = words.map((word) => displayToken(word)).join(" ");
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels.length >= 2 ? labels : null;
+}
+
 function explicitLabeledBoxes(text: string): string[] | null {
   const match = text.match(BOX_LABEL_CUE);
   if (!match?.[1]) return null;
-  if (!/\b(?:place|put|add|draw|sketch|create|insert|drop|show)\b/i.test(text)) return null;
+  if (!PLACE_ALL_VERB.test(text)) return null;
   const sentence = match[1].split(/(?<=[.!?])\s+/)[0] ?? match[1];
   const body = sentence.replace(/[?.!]+$/g, "").trim();
   if (!body) return null;
@@ -1920,21 +2005,8 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   const text = normalize(message);
   if (!text) return [];
   const boxed = explicitLabeledBoxes(text);
-  if (boxed) {
-    return entitiesFromDrafts(
-      boxed.map((label, index) => {
-        const role = inferRole(label);
-        return {
-          id: label.toLowerCase(),
-          label,
-          role,
-          shape: shapeFor({ role }, label),
-          order: index,
-          origin: "listed" as const,
-        };
-      }),
-    );
-  }
+  const listed = boxed ?? listedComponents(text);
+  if (listed) return entitiesFromDrafts(draftsFromLabels(listed, text));
   const spans = catalogSpans(text);
   const drafts: Draft[] = [];
   const seen = new Set<string>();
@@ -2395,8 +2467,13 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
         };
       });
   let edges = stacked ? stackNeighborEdges(ordered) : layerEdges(ordered);
-  // A same-role row has no tier boundary. Ordered stages still need a connector between neighbors.
-  if (!sequence && edges.length === 0 && nodes.length >= 2 && /\b(?:first|then|followed by)\b/i.test(text)) {
+  // A same-role row has no tier boundary. Ordered stages, and a list of named boxes, still need a connector between neighbors.
+  if (
+    !sequence &&
+    edges.length === 0 &&
+    nodes.length >= 2 &&
+    (/\b(?:first|then|followed by)\b/i.test(text) || labeledPlacement(text) || listedComponents(text))
+  ) {
     edges = chainInOrder(nodes);
   }
   const parsed = sequence ? exchangeMessages(text, nodes) : [];

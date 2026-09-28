@@ -1,4 +1,4 @@
-import { extractNamedEntities, isClauseVerb } from "@/lib/kev/entities";
+import { extractNamedEntities, isClauseVerb, listedComponents } from "@/lib/kev/entities";
 import { hasEnumeratedBoxes, isCanvasEdit } from "@/lib/kev/plan";
 
 /**
@@ -52,6 +52,41 @@ export function longUnlistedDescription(message: string): boolean {
   );
   if (named.length >= 2) return false;
   return contentWords(text).length >= 5;
+}
+
+/**
+ * A short high-level ask with no component list.
+ * "Rough overview of a product" is this. A covering-list of named parts is not.
+ */
+export function highLevelOverview(message: string): boolean {
+  const text = message.trim();
+  if (!text || isCanvasEdit(text) || hasEnumeratedBoxes(text) || listedComponents(text)) return false;
+  const words = contentWords(text);
+  if (words.length === 0 || words.length > 12) return false;
+  return (
+    /\b(?:overview|high[-\s]?level|bird(?:'s)?[-\s]?eye)\b/i.test(text) ||
+    /\brough\s+(?:overview|sketch|view|map|diagram|picture|look)\b/i.test(text)
+  );
+}
+
+/** Subject of an overview, with the framing words removed. Null when this is not an overview. */
+export function overviewSubject(message: string): string | null {
+  if (!highLevelOverview(message)) return null;
+  let text = message.trim();
+  text = text.replace(/^(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?/i, "");
+  text = text.replace(/^(?:give\s+me\s+|show\s+me\s+|i\s+want\s+|i(?:'d| would)\s+like\s+)?/i, "");
+  text = text.replace(/^(?:a\s+|an\s+|the\s+)?/i, "");
+  text = text.replace(/^(?:rough|quick|brief|simple|short|basic|coarse|high[-\s]?level|detailed)\s+/i, "");
+  text = text.replace(/^(?:overview|summary|sketch|view|look|picture|map|diagram)\s+/i, "");
+  text = text.replace(/^(?:of\s+)?(?:a\s+|an\s+|the\s+)?/i, "");
+  const words = text
+    .replace(/[^A-Za-z0-9\s.+_-]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word && !/^(?:a|an|the|of|and|its|their|please)$/i.test(word));
+  if (words.length === 0 || words.length > 6) return null;
+  return words
+    .map((word) => (/^[A-Z0-9]{2,}$/.test(word) ? word : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
+    .join(" ");
 }
 
 /** Subject of an open idea, for a high-level box or a topic lookup. */

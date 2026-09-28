@@ -21,7 +21,7 @@ If an insert says “box”, “shape”, “node”, “stage”, “between”
 Midpoint and manner words (midstream, midway, halfway, and the same family) are placement too. Strip them wherever they sit in the new label.
 If the edit is only color or stroke → it is a restyle. Geometry stays. Do not move, reroute, or delete cells.
 Research runs only when a reading is unsure. The host already gates it.
-Depth. Judge the idea before the boxes. A high-level idea, or boxes the user already named, is few. A low-level idea is detailed and needs many components and the interactions between them. Leftover noun fragments of the sentence are not those components. When the user did not name the components and the idea is detailed, that list is unsure until topic notes supply it.
+Depth. Judge the idea before the boxes. A short high-level idea is few boxes. A detailed idea that lists components is many components, and those names are the components. Leftover noun fragments of the sentence are not those components. When the user did not name the components and the idea is detailed, that list is unsure until topic notes supply it. Do not call the list empty when the user message already names the parts.
 
 Forks. Pick one branch. Do not blend them.
 Intent: if the user only changes color or stroke of existing boxes or arrows → style. If they name a new node to add → add_shape. Never both.
