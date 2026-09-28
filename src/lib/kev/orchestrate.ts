@@ -611,10 +611,17 @@ async function runComposition(input: OrchestratorContext): Promise<KevTurnResult
       choice,
     });
     if (!acceptTemplateStep(choice, confirm)) {
-      // A mismatched document preset used to make outline confirm clarify, which
-      // asked for Client → App → Postgres. A state machine draws its composed
-      // lifecycle instead of that example.
-      if (choice === "clarify" && isStateMachineRequest(input.userMessage)) {
+      // A mismatched preset used to clarify with Client → App → Postgres.
+      // Named services, steps, actors, and states are already in the prompt, so
+      // outline confirm must not ask for them again. An explicit noop still
+      // leaves the canvas alone.
+      const named =
+        choice !== "noop" &&
+        choice !== "skip" &&
+        (Boolean(composition.grounded) || (choice === "clarify" && isStateMachineRequest(input.userMessage)));
+      if (named) {
+        const last = steps[steps.length - 1];
+        if (last) last.accepted = true;
         const decision = compositionDecision(composition, xml);
         return turn(input, {
           reply: decision.reply,

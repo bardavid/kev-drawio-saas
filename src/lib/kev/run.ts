@@ -391,7 +391,10 @@ async function runOpenAITurn(input: {
   const client = new OpenAIKevClient();
   let templateReference = templateReferenceFor(input.userMessage);
   let decision = await client.decide({ ...input.request, templateReference });
-  if (decision.intent === "clarify" && isStateMachineRequest(input.userMessage)) {
+  if (
+    decision.intent === "clarify" &&
+    (isStateMachineRequest(input.userMessage) || resolveComposition(input.userMessage)?.grounded)
+  ) {
     const composed = resolveComposition(input.userMessage);
     if (composed) {
       const xml = renderComposition(composed);

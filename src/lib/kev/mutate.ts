@@ -165,6 +165,14 @@ function shiftRightOf(doc: XmlDocument, minX: number, dx: number) {
     const geometry = firstChildTag(vertex, "mxGeometry");
     if (!geometry) continue;
     const x = numberAttr(geometry, "x", 0);
+    const width = numberAttr(geometry, "width", 0);
+    const style = vertex.getAttribute("style") ?? "";
+    // A topic container that starts left of the insert has to grow, or the shifted shape leaves it.
+    if (style.includes("drawai=cluster") && x < minX - 0.5 && x + width >= minX - 0.5) {
+      geometry.setAttribute("width", String(Math.round(width + dx)));
+      moved = true;
+      continue;
+    }
     if (x >= minX - 0.5) {
       geometry.setAttribute("x", String(Math.round(x + dx)));
       moved = true;

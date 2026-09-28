@@ -1,6 +1,7 @@
 import { PALETTE, SHAPE_STYLE, applyColors, type ShapeKind } from "@/lib/drawio/styles";
 import { diagramIsBlank, normalizeMxfile, openDiagram, serializeDiagram } from "@/lib/drawio/xml";
-import { layoutDefault, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { composeNamedDiagram, extractNamedEntities } from "@/lib/kev/entities";
+import { layoutDefault, parseArchitecture, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
@@ -30,6 +31,8 @@ export interface SequenceParticipant {
   id: string;
   label: string;
   shape: ShapeKind;
+  fill?: string;
+  stroke?: string;
 }
 
 export interface SequenceMessage {
@@ -53,6 +56,8 @@ export interface FlowNode {
   shape: ShapeKind;
   column: number;
   row: number;
+  fill?: string;
+  stroke?: string;
 }
 
 export interface FlowEdge {
@@ -75,6 +80,8 @@ export interface LayerNode {
   id: string;
   label: string;
   shape: ShapeKind;
+  fill?: string;
+  stroke?: string;
 }
 
 export interface LayerGroup {
@@ -120,6 +127,11 @@ export interface Composition {
   researchQuery: string | null;
   /** Type default, unless the user named a direction. */
   layout: "horizontal" | "vertical";
+  /**
+   * The user already named at least two services, steps, actors, or states.
+   * Outline confirm must not ask for those names again.
+   */
+  grounded?: boolean;
 }
 
 interface Placed {
@@ -180,25 +192,252 @@ function isWorkflow(text: string): boolean {
   return /\b(workflow|flowchart)\b/i.test(text);
 }
 
-/** Sequence, workflow, and layered diagrams the chain planner cannot express. */
+const PASTEL_NAMES = ["orange", "green", "blue", "purple", "yellow", "teal", "pink"] as const;
+
+function isSingleInsert(text: string): boolean {
+  if (/\bbetween\b/i.test(text) || /\bconnect(?:ed|s)?\b/i.test(text)) return true;
+  const relation = text.match(/\b(?:in front of|ahead of|before|behind|after)\b/i);
+  if (!relation || relation.index === undefined) return false;
+  const tail = text.slice(relation.index + relation[0].length);
+  return extractNamedEntities(tail).length < 2;
+}
+
+function isIncrementalEdit(text: string): boolean {
+  const trimmed = text.trim();
+  if (/^(?:please\s+)?(?:rename|relabel|delete|remove|connect)\b/i.test(trimmed)) return true;
+  if (/^(?:please\s+)?(?:add|insert|place|put|drop)\b/i.test(trimmed)) {
+    // "Put Client, API, and Postgres" names a new diagram. "Add X in front of Y" edits one.
+    if (isSingleInsert(trimmed)) return true;
+    return extractNamedEntities(trimmed).length < 2;
+  }
+  if (/^(?:please\s+)?(?:paint|recolor|recolour|restyle)\b/i.test(trimmed)) return true;
+  if (/^(?:please\s+)?(?:change|make|turn|set|style|color|colour)\b/i.test(trimmed) && COLOR_RE.test(trimmed)) {
+    return true;
+  }
+  return /^(?:please\s+)?(?:lay|reflow|relayout|re-layout|arrange|organize|organise)\b/i.test(trimmed);
+}
+
+function specLabels(spec: CompositionSpec): string[] {
+  if (spec.kind === "sequence") return spec.participants.map((participant) => participant.label);
+  if (spec.kind === "workflow") return spec.nodes.map((node) => node.label);
+  return [
+    ...spec.groups.flatMap((group) => [group.label, ...group.nodes.map((node) => node.label)]),
+    ...(spec.enclosure ? [spec.enclosure.label] : []),
+  ];
+}
+
+function labelCovered(have: Set<string>, label: string): boolean {
+  const key = label.toLowerCase();
+  if (have.has(key)) return true;
+  // "Pods" is already on a diagram that drew "Pod A" and "Pod B".
+  if (!key.endsWith("s")) return false;
+  const stem = key.slice(0, -1);
+  if (stem.length < 3) return false;
+  for (const item of have) {
+    if (item === stem || item.startsWith(`${stem} `)) return true;
+  }
+  return false;
+}
+
+/** Every named label already appears on the spec. Extra template nodes are fine. */
+export function specCovers(spec: CompositionSpec, labels: string[]): boolean {
+  const have = new Set(specLabels(spec).map((label) => label.toLowerCase()));
+  return labels.every((label) => labelCovered(have, label));
+}
+
+/** The generic bus sketch. A vendor stack keeps its own services. */
+const BUS_ALIAS = /^(?:pub\/sub|pubsub|kafka|message bus|event bus|event broker|queue|queues|sns|sqs)$/i;
+
+function catalogLabels(text: string): string[] {
+  return extractNamedEntities(text)
+    .filter((entity) => entity.origin === "catalog")
+    .map((entity) => entity.label);
+}
+
+/**
+ * Event-broker presets invent Web, Billing, and Mail.
+ * They only stand in when the user did not name a peer service beside the bus.
+ */
+function looseDropsPeers(spec: CompositionSpec, labels: string[]): boolean {
+  if (spec.title !== "Event-driven" && spec.title !== "Kafka") return false;
+  const have = new Set(specLabels(spec).map((label) => label.toLowerCase()));
+  return labels.some((label) => !labelCovered(have, label) && !BUS_ALIAS.test(label));
+}
+
+function architectureOwns(text: string, labels: string[]): boolean {
+  const plan = parseArchitecture(text);
+  if (!plan || plan.nodes.length < 2) return false;
+  if (labels.length < 2) return true;
+  const nodes = new Set(plan.nodes.map((node) => node.toLowerCase()));
+  return labels.every((label) => nodes.has(label.toLowerCase()));
+}
+
+function tintSpec(spec: CompositionSpec): CompositionSpec {
+  const colorAt = (index: number) => PALETTE[PASTEL_NAMES[index % PASTEL_NAMES.length]!]!;
+  if (spec.kind === "sequence") {
+    return {
+      ...spec,
+      participants: spec.participants.map((participant, index) => {
+        const color = colorAt(index);
+        return participant.fill ? participant : { ...participant, fill: color.fill, stroke: color.stroke };
+      }),
+    };
+  }
+  if (spec.kind === "workflow") {
+    return {
+      ...spec,
+      nodes: spec.nodes.map((node, index) => {
+        const color = colorAt(index);
+        return node.fill ? node : { ...node, fill: color.fill, stroke: color.stroke };
+      }),
+    };
+  }
+  let index = 0;
+  return {
+    ...spec,
+    groups: spec.groups.map((group) => ({
+      ...group,
+      nodes: group.nodes.map((node) => {
+        const color = colorAt(index);
+        index += 1;
+        return node.fill ? node : { ...node, fill: color.fill, stroke: color.stroke };
+      }),
+    })),
+  };
+}
+
+function packComposition(
+  spec: CompositionSpec,
+  text: string,
+  hints: { colorName?: string | null; context?: string | null } | undefined,
+  context: string | null,
+  grounded: boolean,
+): Composition {
+  const painted = grounded && !wantsPicture(text) && !colorInMessage(text) ? tintSpec(spec) : spec;
+  const named = colorInMessage(text);
+  const brief = builtinBrief(text);
+  return {
+    spec: painted,
+    colorName: named ?? hints?.colorName ?? null,
+    context: hints?.context ?? brief?.summary ?? context,
+    researchQuery: brief ? "Redis" : null,
+    layout: requestedLayout(text) ?? layoutDefault(painted.kind),
+    grounded,
+  };
+}
+
+function compositionFromNamed(text: string): Composition | null {
+  const named = composeNamedDiagram(text);
+  if (!named) return null;
+  const listed = named.participants.map((node) => node.label).join(", ");
+  if (named.kind === "sequence") {
+    return packComposition(
+      {
+        kind: "sequence",
+        title: named.title,
+        reply: named.reply,
+        participants: named.participants.map((node) => ({
+          id: node.id,
+          label: node.label,
+          shape: node.shape,
+          fill: node.fill,
+          stroke: node.stroke,
+        })),
+        messages: named.messages,
+      },
+      text,
+      undefined,
+      `The user named ${listed}. Draw each one.`,
+      true,
+    );
+  }
+  return packComposition(
+    {
+      kind: "layers",
+      title: named.title,
+      reply: named.reply,
+      groups: named.groups.map((group) => ({
+        id: group.id,
+        label: group.label,
+        flow: group.flow,
+        nodes: group.nodes.map((node) => ({
+          id: node.id,
+          label: node.label,
+          shape: node.shape,
+          fill: node.fill,
+          stroke: node.stroke,
+        })),
+      })),
+      edges: named.edges.map((edge) => ({
+        from: edge.from,
+        to: edge.to,
+        label: edge.label,
+        side: edge.side,
+      })),
+    },
+    text,
+    undefined,
+    `The user named ${listed}. Draw each one.`,
+    true,
+  );
+}
+
+/**
+ * Sequence, workflow, and layered diagrams the chain planner cannot express.
+ * A prompt that already names two or more services, steps, actors, or states
+ * composes even when it never says "draw".
+ */
 export function resolveComposition(
   message: string,
   hints?: { colorName?: string | null; context?: string | null },
 ): Composition | null {
   const text = message.trim();
-  if (!text || !wantsPicture(text)) return null;
+  if (!text || isIncrementalEdit(text)) return null;
+  const labels = extractNamedEntities(text).map((entity) => entity.label);
+  const grounded = labels.length >= 2;
+  const picture = wantsPicture(text);
+  if (!picture && !grounded) return null;
+
+  if (isIoUring(text)) return packComposition(ioUringSpec(), text, hints, null, false);
+
   const matched = matchTemplate(text);
-  const spec = specFor(text);
-  if (!spec) return null;
-  const named = colorInMessage(text);
-  const brief = builtinBrief(text);
-  return {
-    spec,
-    colorName: named ?? hints?.colorName ?? null,
-    context: hints?.context ?? brief?.summary ?? matched?.context ?? null,
-    researchQuery: brief ? "Redis" : null,
-    layout: requestedLayout(text) ?? layoutDefault(spec.kind),
-  };
+  // A typed template already knows the stack. Replace it only when a generic
+  // bus sketch would hide services the user actually named.
+  if (matched && (!grounded || !looseDropsPeers(matched.spec, labels))) {
+    return packComposition(matched.spec, text, hints, matched.context, grounded);
+  }
+
+  if (isLoginSequence(text)) {
+    const spec = loginSequence(text);
+    if (!grounded || specCovers(spec, catalogLabels(text))) return packComposition(spec, text, hints, null, grounded);
+  }
+
+  if (redisDiagramRequest(text)) {
+    const spec = redisUsageSpec();
+    if (!grounded || specCovers(spec, catalogLabels(text))) {
+      return packComposition(spec, text, hints, builtinBrief(text)?.summary ?? null, grounded);
+    }
+  }
+
+  const flowchart = flowchartSpec(text);
+  if (flowchart) return packComposition(flowchart, text, hints, null, true);
+
+  if (architectureOwns(text, labels)) return null;
+
+  if (grounded) {
+    const composed = compositionFromNamed(text);
+    if (composed) {
+      if (hints?.colorName && !composed.colorName) composed.colorName = hints.colorName;
+      if (hints?.context) composed.context = hints.context;
+      return composed;
+    }
+  }
+
+  if (matched || !picture) return null;
+  if (isTaxWorkflow(text)) return packComposition(taxWorkflow(), text, hints, null, false);
+  if (isSequence(text)) return packComposition(genericSequence(text), text, hints, null, false);
+  if (isWorkflow(text)) return packComposition(genericWorkflow(text), text, hints, null, false);
+  return null;
 }
 
 export function describeComposition(composition: Composition): string {
@@ -253,21 +492,9 @@ export function compositionDecision(composition: Composition, xml: string): KevD
 
 export function renderComposition(composition: Composition): string {
   const paint = paintFor(composition.colorName);
-  const drawn = drawSpec(composition.spec, paint);
+  const drawn = drawSpec(composition.spec, paint, Boolean(composition.colorName));
   padLeft(drawn.nodes, drawn.edges, 80);
   return xmlFor(drawn.nodes, drawn.edges, composition.spec.title);
-}
-
-function specFor(text: string): CompositionSpec | null {
-  if (isIoUring(text)) return ioUringSpec();
-  const matched = matchTemplate(text);
-  if (matched) return matched.spec;
-  if (redisDiagramRequest(text)) return redisUsageSpec();
-  if (isLoginSequence(text)) return loginSequence(text);
-  if (isSequence(text)) return genericSequence(text);
-  if (isTaxWorkflow(text)) return taxWorkflow();
-  if (isWorkflow(text)) return genericWorkflow(text);
-  return null;
 }
 
 function plannedSteps(spec: CompositionSpec): string[] {
@@ -402,6 +629,48 @@ function taxWorkflow(): WorkflowSpec {
   };
 }
 
+function stepLabel(raw: string): string {
+  return raw
+    .replace(/^(?:and|then|of)\s+/i, "")
+    .replace(/[?.!]+$/g, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => (/^[A-Z0-9]{2,}$/.test(word) ? word : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
+    .join(" ");
+}
+
+/** Ordered clauses in a flowchart become one node each. A title before the colon is not a step. */
+function flowchartSpec(text: string): WorkflowSpec | null {
+  if (!/\bflowchart\b/i.test(text)) return null;
+  const colon = text.indexOf(":");
+  const body = colon === -1 ? text.replace(/^.*?\bflowchart\b(?:\s+of)?/i, "") : text.slice(colon + 1);
+  const steps = body
+    .split(/\s*(?:,|;)\s*|\s+\bthen\b\s+/i)
+    .map(stepLabel)
+    .filter((step) => step.length > 1);
+  if (steps.length < 2) return null;
+  const heading = (colon === -1 ? "" : text.slice(0, colon)).replace(/\bflowchart\b/i, " ").replace(/\bof\b/i, " ");
+  const title = stepLabel(heading) || "Flowchart";
+  return {
+    kind: "workflow",
+    title,
+    reply: `Drew a flowchart: ${steps.join(" → ")}.`,
+    nodes: steps.map((label, index) => ({
+      id: `step-${index + 1}`,
+      label,
+      shape: "rectangle" as const,
+      column: index,
+      row: 0,
+    })),
+    edges: steps.slice(1).map((_, index) => ({
+      from: `step-${index + 1}`,
+      to: `step-${index + 2}`,
+      label: "Next",
+    })),
+  };
+}
+
 function genericWorkflow(message: string): WorkflowSpec {
   const topic = message
     .replace(/^(?:please\s+)?(?:draw|sketch|diagram|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "")
@@ -487,6 +756,15 @@ function paintFor(colorName: string | null): PalettePaint {
   return { fill: named.fill, stroke: named.stroke, font: named.font ?? WIRE_FONT };
 }
 
+function nodePaint(
+  own: { fill?: string; stroke?: string },
+  fallback: PalettePaint,
+  force: boolean,
+): PalettePaint {
+  if (!force && own.fill && own.stroke) return { fill: own.fill, stroke: own.stroke, font: fallback.font };
+  return fallback;
+}
+
 function nodeStyle(shape: ShapeKind, paint: PalettePaint, role: string): string {
   const base = applyColors(SHAPE_STYLE[shape], paint.fill, paint.stroke, paint.font);
   return `${base}fontSize=13;fontFamily=Helvetica;drawai=${role};`;
@@ -504,31 +782,34 @@ function sizeFor(shape: ShapeKind): { width: number; height: number } {
   return { width: 176, height: 64 };
 }
 
-function drawSpec(spec: CompositionSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
-  if (spec.kind === "sequence") return drawSequence(spec, paint);
-  if (spec.kind === "workflow") return drawWorkflow(spec, paint);
-  return drawLayers(spec, paint);
+function drawSpec(spec: CompositionSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
+  if (spec.kind === "sequence") return drawSequence(spec, paint, force);
+  if (spec.kind === "workflow") return drawWorkflow(spec, paint, force);
+  return drawLayers(spec, paint, force);
 }
 
-function drawSequence(spec: SequenceSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawSequence(spec: SequenceSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
   const header = 56;
   const longest = spec.participants.reduce((max, participant) => Math.max(max, participant.label.length), 0);
   const width = Math.max(150, Math.min(210, Math.round(28 + longest * 7.2)));
   const column = Math.max(COLUMN, width + 56);
   const height = header + 48 + spec.messages.length * LANE + 28;
-  const nodes: Placed[] = spec.participants.map((participant, index) => ({
-    id: participant.id,
-    label: participant.label,
-    x: 80 + index * column,
-    y: 40,
-    width,
-    height,
-    style:
-      `shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;` +
-      `recursiveResize=0;outlineConnect=0;portConstraint=eastwest;size=${header};` +
-      `fillColor=${paint.fill};strokeColor=${paint.stroke};fontColor=${paint.font};` +
-      `fontSize=13;fontFamily=Helvetica;drawai=node;`,
-  }));
+  const nodes: Placed[] = spec.participants.map((participant, index) => {
+    const ink = nodePaint(participant, paint, force);
+    return {
+      id: participant.id,
+      label: participant.label,
+      x: 80 + index * column,
+      y: 40,
+      width,
+      height,
+      style:
+        `shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;` +
+        `recursiveResize=0;outlineConnect=0;portConstraint=eastwest;size=${header};` +
+        `fillColor=${ink.fill};strokeColor=${ink.stroke};fontColor=${ink.font};` +
+        `fontSize=13;fontFamily=Helvetica;drawai=node;`,
+    };
+  });
 
   const edges: DrawnEdge[] = spec.messages.map((message, index) => {
     const frac = (header + 40 + index * LANE) / height;
@@ -548,7 +829,7 @@ function drawSequence(spec: SequenceSpec, paint: PalettePaint): { nodes: Placed[
   return { nodes, edges };
 }
 
-function drawWorkflow(spec: WorkflowSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawWorkflow(spec: WorkflowSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
   const slot = 228;
   const mainY = 220;
   const nodes: Placed[] = spec.nodes.map((node) => {
@@ -564,7 +845,7 @@ function drawWorkflow(spec: WorkflowSpec, paint: PalettePaint): { nodes: Placed[
       y,
       width: size.width,
       height: size.height,
-      style: nodeStyle(node.shape, paint, "node"),
+      style: nodeStyle(node.shape, nodePaint(node, paint, force), "node"),
     };
   });
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -613,9 +894,9 @@ function link(source: Placed, target: Placed, edge: FlowEdge): DrawnEdge {
   };
 }
 
-function drawLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
-  if (spec.groups.some((group) => group.flow === "row" && group.nodes.length > 1)) return drawRowLayers(spec, paint);
-  return drawStackedLayers(spec, paint);
+function drawLayers(spec: LayerSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
+  if (spec.groups.some((group) => group.flow === "row" && group.nodes.length > 1)) return drawRowLayers(spec, paint, force);
+  return drawStackedLayers(spec, paint, force);
 }
 
 /** Equal slots so a single node lines up with the middle of an odd row. */
@@ -636,7 +917,7 @@ interface ClusterBox {
 const FRAME_HEADER = 36;
 const FRAME_PAD = 18;
 
-function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawRowLayers(spec: LayerSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
   const nodes: Placed[] = [];
   const clusters = new Map<string, ClusterBox>();
   const nodeCluster = new Map<string, ClusterBox>();
@@ -676,7 +957,7 @@ function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[];
         const size = sizes[index] ?? sizeFor(node.shape);
         const nodeX = x + ROW_PAD_X + index * ROW_SLOT + (ROW_SLOT - size.width) / 2;
         const nodeY = cursor + ROW_HEADER + ROW_PAD_Y;
-        nodes.push(placedNode(node, nodeX, nodeY, size, paint));
+        nodes.push(placedNode(node, nodeX, nodeY, size, paint, force));
         nodeCluster.set(node.id, cluster);
       });
     } else {
@@ -684,7 +965,7 @@ function drawRowLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[];
       group.nodes.forEach((node, index) => {
         const size = sizes[index] ?? sizeFor(node.shape);
         const nodeX = x + ROW_PAD_X + (ROW_SLOT - size.width) / 2;
-        nodes.push(placedNode(node, nodeX, nodeY, size, paint));
+        nodes.push(placedNode(node, nodeX, nodeY, size, paint, force));
         nodeCluster.set(node.id, cluster);
         nodeY += size.height + 36;
       });
@@ -715,6 +996,7 @@ function placedNode(
   y: number,
   size: { width: number; height: number },
   paint: PalettePaint,
+  force: boolean,
 ): Placed {
   return {
     id: node.id,
@@ -723,7 +1005,7 @@ function placedNode(
     y: Math.round(y),
     width: size.width,
     height: size.height,
-    style: nodeStyle(node.shape, paint, "node"),
+    style: nodeStyle(node.shape, nodePaint(node, paint, force), "node"),
   };
 }
 
@@ -832,7 +1114,7 @@ function routeLayerEdge(
   };
 }
 
-function drawStackedLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Placed[]; edges: DrawnEdge[] } {
+function drawStackedLayers(spec: LayerSpec, paint: PalettePaint, force: boolean): { nodes: Placed[]; edges: DrawnEdge[] } {
   const innerW = 188;
   const padX = 28;
   const header = 34;
@@ -870,7 +1152,7 @@ function drawStackedLayers(spec: LayerSpec, paint: PalettePaint): { nodes: Place
         y: nodeY,
         width: size.width,
         height: size.height,
-        style: nodeStyle(node.shape, paint, "node"),
+        style: nodeStyle(node.shape, nodePaint(node, paint, force), "node"),
       });
       nodeY += size.height + gap;
     });
