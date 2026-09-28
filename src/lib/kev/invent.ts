@@ -8,7 +8,9 @@ import { ideaSubject } from "@/lib/kev/scale";
  * The host invents roles from the idea's own words: who calls in, the front
  * door, control, the workers, and each thing named on the path.
  * A purpose, a manner compound, an absence, or an adjective and abstract
- * property is a quality of an edge, not a box. A leftover clause is not a box.
+ * property is a quality of an edge, not a box. A modifier in front of a
+ * path, route, or channel is that same quality, even when the modifier is
+ * a filler participle. A leftover clause is not a box.
  * The same rules apply to every idea.
  */
 
@@ -90,13 +92,49 @@ function isModifier(word: string): boolean {
 }
 
 /**
+ * A filler that still modifies a path: “sealed”, “shared”, or “stale”.
+ * “Regional” and “simple” only drop off a concrete part.
+ */
+function isMannerFiller(word: string): boolean {
+  return /^(?:sealed|shared|stale)$/i.test(word);
+}
+
+function isMannerLeadingModifier(word: string): boolean {
+  return isModifier(word) || isMannerFiller(word);
+}
+
+function contentTokens(raw: string): string[] {
+  return tokenize(raw).filter((word) => {
+    if (GLUE.test(word) || isClauseVerb(word)) return false;
+    // “routes” is also a verb. A trailing manner noun is still the path’s name.
+    if (LEADING_VERB.test(word) && !MANNER_NOUN.test(word)) return false;
+    return true;
+  });
+}
+
+/**
+ * “Sealed hood routes” names how something moves. The participle is stripped
+ * from a concrete part, and it still leads a path, route, or channel.
+ * “Sealed crates” names the crates. “Stone piers path” has no leading modifier,
+ * including after a trailing “Path” was appended to a bare part.
+ */
+function mannerLedByModifier(raw: string): boolean {
+  const words = contentTokens(raw);
+  if (!words.some((word) => MANNER_NOUN.test(word))) return false;
+  if (words.some((word) => ROLE_NOUN.test(word) && !MANNER_NOUN.test(word))) return false;
+  const head = words.find((word) => !MANNER_NOUN.test(word) && !GENERIC_WORD.test(word));
+  return Boolean(head && isMannerLeadingModifier(head));
+}
+
+/**
  * A property of how something moves, not a part you can draw as a peer box.
  * Hyphenated manner, an absence (“zero …”), or an adjective plus an abstract noun.
  * A trailing path, route, or channel is the manner, not a vertex.
+ * A filler participle in front of that manner is still the property.
  * Two bare nouns stay parts. A single bare noun stays a part.
  */
 function isQualityPhrase(raw: string): boolean {
-  if (isMannerCompound(raw)) return true;
+  if (isMannerCompound(raw) || mannerLedByModifier(raw)) return true;
   const parts = raw.split(/[-\s]+/).filter((part) => part && !MANNER_NOUN.test(part));
   if (raw.includes("-") && parts.length >= 2 && parts.every((part) => !ROLE_NOUN.test(part))) return true;
   const words = qualityWords(raw);
@@ -145,6 +183,7 @@ function tokenize(raw: string): string[] {
 }
 
 function cleanPhrase(raw: string): string | null {
+  if (isQualityPhrase(raw)) return null;
   const words = tokenize(raw);
   while (
     words.length > 0 &&
@@ -172,14 +211,23 @@ function hasRoleNoun(raw: string): boolean {
   return ROLE_NOUN.test(raw);
 }
 
+/** Edge text for a modifier-led path. The manner noun drops. The participle and the noun it modifies stay. */
+function mannerLabelWords(raw: string): string[] {
+  return contentTokens(raw).filter((word) => {
+    if (MANNER_NOUN.test(word)) return false;
+    if (FILLER.test(word) && !isMannerLeadingModifier(word)) return false;
+    return true;
+  });
+}
+
 function qualityText(raw: string): string | null {
   if (isMannerCompound(raw)) {
     const token = tokenize(raw).find((word) => word.includes("-"));
     return token ? displayWord(token) : null;
   }
-  const words = qualityWords(raw);
+  const words = (mannerLedByModifier(raw) ? mannerLabelWords(raw) : qualityWords(raw)).slice(0, 4);
   if (words.length === 0) return null;
-  const label = words.slice(0, 4).map(displayWord).join(" ");
+  const label = words.map(displayWord).join(" ");
   if (label.length < 2 || GENERIC_PHRASE.test(label)) return null;
   return label;
 }
@@ -380,8 +428,9 @@ function phraseNode(label: string, order: number): Draft {
   return draft(label, "compute", "rectangle", "Parts", 3, order);
 }
 
-/** A thing with no part-word of its own is a path. The words stay the user's. */
-function expandMechanism(label: string, order: number): Draft {
+/** A thing with no part-word of its own is a path. The words stay the user's. A property is not a path vertex. */
+function expandMechanism(label: string, order: number): Draft | null {
+  if (isQualityPhrase(label)) return null;
   if (ROLE_NOUN.test(label)) return phraseNode(label, order);
   if (/\bpaths?$/i.test(label)) return draft(label, "bus", "hexagon", "Path", 3, order);
   return draft(`${label} Path`, "bus", "hexagon", "Path", 3, order);
@@ -450,7 +499,8 @@ export function architectureFromIdea(message: string): InventedArchitecture | nu
   add(workerLabel(title), "compute", "rectangle", "Workers", 5);
 
   parsed.mechanisms.forEach((label, index) => {
-    absorb(nodes, expandMechanism(label, 100 + index));
+    const node = expandMechanism(label, 100 + index);
+    if (node) absorb(nodes, node);
   });
   parsed.sources.forEach((label, index) => {
     const name = /\borigins?\b/i.test(label) ? "Origin" : label;

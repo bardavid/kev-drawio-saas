@@ -1420,3 +1420,132 @@ describe("adjective properties stay off path vertices", { concurrency: 1 }, () =
     }
   });
 });
+
+const FOUNDRY_IDEAS = [
+  {
+    idea: "Draw a marble foundry that uses crucibles and a tap spout through sealed hood routes for zero spark loss so stokers see steady pours",
+    edge: /Sealed Hood/,
+  },
+  {
+    idea: "Draw a marble foundry that uses crucibles and a tap spout through shared intake paths for zero spark loss so stokers see steady pours",
+    edge: /Shared Intake/,
+  },
+  {
+    idea: "Draw a marble foundry that uses crucibles and a tap spout via stale feed channels for zero spark loss so stokers see steady pours",
+    edge: /Stale Feed/,
+  },
+];
+
+const FOUNDRY_NAMING = "Take the detailed route and pick each box name";
+
+describe("modifier-led routes stay on edges", { concurrency: 1 }, () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+  });
+
+  it("keeps a filler participle plus a path, route, or channel off path vertices", () => {
+    assert.equal(isScrapLabel("Sealed Hood Routes"), true);
+    assert.equal(isScrapLabel("Sealed Hood Routes Path"), true);
+    assert.equal(isScrapLabel("Shared Intake Paths"), true);
+    assert.equal(isScrapLabel("Stale Feed Channels Path"), true);
+    assert.equal(isScrapLabel("Tap Spout Path"), false);
+    assert.equal(isScrapLabel("Crucibles"), false);
+
+    for (const { idea, edge } of FOUNDRY_IDEAS) {
+      const roles = architectureFromIdea(idea);
+      const labels = roles?.nodes.map((node) => node.label) ?? [];
+      assert.ok(labels.length >= 4, `${idea}: ${labels.join(", ")}`);
+      for (const scrap of [
+        "Sealed Hood",
+        "Sealed Hood Routes",
+        "Sealed Hood Routes Path",
+        "Hood Routes",
+        "Hood Routes Path",
+        "Shared Intake",
+        "Shared Intake Paths",
+        "Shared Intake Paths Path",
+        "Intake Paths",
+        "Stale Feed",
+        "Stale Feed Channels",
+        "Stale Feed Channels Path",
+        "Feed Channels",
+        "Zero Spark Loss",
+        "Stokers See Steady",
+        "Marble Foundry",
+      ]) {
+        assert.equal(labels.includes(scrap), false, `${scrap} in ${labels.join(", ")}`);
+      }
+      assert.equal(
+        labels.some((label) => /\b(?:hood|intake|feed|routes?|channels?)\b/i.test(label)),
+        false,
+        labels.join(", "),
+      );
+      for (const label of labels) assert.equal(isScrapLabel(label), false, label);
+      assert.ok(labels.includes("Clients"), labels.join(", "));
+      assert.ok(labels.some((label) => /Foundry/.test(label)), labels.join(", "));
+      assert.ok(labels.some((label) => /Crucible/.test(label)), labels.join(", "));
+      assert.ok(labels.some((label) => /Spout/.test(label)), labels.join(", "));
+      const edges = roles?.edges.map((item) => item.label) ?? [];
+      const joined = edges.join(" | ");
+      assert.match(joined, edge);
+      assert.match(joined, /Zero Spark/);
+      const manner = edges.find((label) => edge.test(label)) ?? "";
+      assert.equal(/(?:Path|Route|Channel)$/i.test(manner), false, joined);
+      assert.ok(roles?.edges.every((item) => item.label.length > 0));
+    }
+  });
+
+  it("invents the prior idea when the naming reply itself says route", async () => {
+    assert.equal(depthFromOpenAnswer(FOUNDRY_NAMING), "many");
+    const idea = "Draw a marble foundry that uses crucibles and a tap spout for zero spark loss so stokers see steady pours";
+    assert.deepEqual(
+      openIdeaDepthFollowUp([
+        { role: "user", content: idea },
+        { role: "assistant", content: OPEN_IDEA_REPLY },
+        { role: "user", content: FOUNDRY_NAMING },
+      ]),
+      { idea, depth: "many" },
+    );
+    globalThis.fetch = (async () =>
+      Response.json({
+        extract: "Common loom reeds include maple dents, brass combs, and linen heddles.",
+      })) as typeof fetch;
+    const cases = [idea, FOUNDRY_IDEAS[0]!.idea];
+    for (const drawn of cases) {
+      const result = await runKevTurn({
+        messages: [
+          { role: "user", content: drawn },
+          { role: "assistant", content: OPEN_IDEA_REPLY },
+          { role: "user", content: FOUNDRY_NAMING },
+        ],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(result.intent, "add_shape", drawn);
+      assert.notEqual(result.reply, OPEN_IDEA_REPLY, drawn);
+      assert.doesNotMatch(result.reply, /Describe a diagram change|What should the new shape be called|Name the shape to edit/, drawn);
+      const report = assertClean(result.updatedXml);
+      const labels = content(report.nodes).map((node) => node.label);
+      const expected = architectureFromIdea(drawn)?.nodes.map((node) => node.label) ?? [];
+      assert.deepEqual([...labels].sort(), [...expected].sort(), drawn);
+      assert.equal(labels.some((label) => /\broutes?\b/i.test(label)), false, labels.join(", "));
+      assert.equal(labels.some((label) => /\bdetailed\b/i.test(label)), false, labels.join(", "));
+      assert.ok(labels.some((label) => /Crucible/.test(label)), labels.join(", "));
+      assert.ok(labels.some((label) => /Spout/.test(label)), labels.join(", "));
+      const edgeText = report.edges.map((edge) => edge.label).join(" | ");
+      assert.match(edgeText, /Zero Spark/);
+      if (drawn.includes("sealed hood routes")) {
+        assert.match(edgeText, /Sealed Hood/);
+        assert.equal(labels.some((label) => /Hood|Route/.test(label)), false, labels.join(", "));
+      }
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), drawn);
+      assert.ok(report.edges.length >= 3 && report.edges.every((edge) => edge.label.length > 0), drawn);
+      for (const node of content(report.nodes)) {
+        const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${drawn} ${node.label} ${fill}`);
+      }
+    }
+  });
+});
