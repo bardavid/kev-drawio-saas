@@ -228,4 +228,87 @@ describe("diagram depth", () => {
     assert.ok((ordered[0]?.x ?? 0) < (ordered[ordered.length - 1]?.x ?? 0));
     assert.equal(boxes.length >= 5, true);
   });
+
+  it("does not draw leftover clause crumbs for rich paraphrases", () => {
+    const prompts = [
+      "Walk through notification leaves and its interactions",
+      "Walk through how notification leaves get to workers in a delivery subsystem and its interactions",
+      "Picture a shared lookup of cached values beside services and its interactions",
+      "Trace the interacting parts of a general purpose key value cache",
+      "Describe how producers, a broker, workers, an inbox, and a push path interact in message delivery",
+    ];
+    for (const prompt of prompts) {
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "clarify", `${prompt} → ${drawn.decision.reply}`);
+      assert.equal(drawn.xml, STARTER_XML, prompt);
+      assert.match(drawn.decision.reply, /high-level|detailed|components/, prompt);
+      assert.deepEqual(content(assessDiagram(drawn.xml).nodes).map((node) => node.label), [], prompt);
+    }
+  });
+
+  it("keeps few-box paraphrases small and does not mint a limiter", () => {
+    const prompts = [
+      "Only draw Ingress and Egress",
+      "Draw only Ingress and Egress",
+      "two boxes: Ingress and Egress",
+      "Ingress → Egress",
+    ];
+    for (const prompt of prompts) {
+      const labels = content(assertClean(previewDemo(prompt, STARTER_XML).xml).nodes).map((node) => node.label);
+      assert.deepEqual(labels, ["Ingress", "Egress"], prompt);
+      assert.equal(labels.includes("Only"), false, prompt);
+    }
+  });
+
+  it("researches a rich paraphrase when depth is many and stays blank when depth is unknown", async () => {
+    const prompts = [
+      "Walk through notification leaves and its interactions",
+      "Picture how a shared lookup sits beside services and its interactions",
+    ];
+    const notes =
+      "Callers send to the hub. The hub delivers to handlers. Handlers write receipts. The hub persists to a log.";
+    for (const prompt of prompts) {
+      const blank = previewDemo(prompt, STARTER_XML);
+      assert.equal(blank.decision.intent, "clarify", prompt);
+      assert.equal(blank.xml, STARTER_XML, prompt);
+    }
+
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async () => {
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "add_shape", confidence: 0.84 },
+          needs_xml_edit: { type: "noul", noul: 0.91 },
+          depth: { type: "choice", choice: "many", confidence: 0.86 },
+          next: { type: "choice", choice: "apply", confidence: 0.8 },
+          confirm: { type: "noul", noul: 0.8 },
+          color: { type: "choice", choice: "none" },
+        },
+        extract: notes,
+      });
+    }) as typeof fetch;
+
+    for (const prompt of prompts) {
+      const result = await runKevTurn({
+        messages: [{ role: "user", content: prompt }],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(result.intent, "add_shape", prompt);
+      const report = assertClean(result.updatedXml);
+      const labels = content(report.nodes).map((node) => node.label);
+      assert.ok(labels.length >= 4, `${prompt} → ${labels.join(", ")}`);
+      assert.equal(labels.includes("Walk"), false, prompt);
+      assert.equal(labels.includes("Notification Leaves"), false, prompt);
+      assert.equal(labels.includes("Picture"), false, prompt);
+      assert.equal(labels.includes("General Purpose"), false, prompt);
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), prompt);
+      assert.ok(report.edges.length >= 3, prompt);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
+      for (const node of content(report.nodes)) {
+        const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${node.label} ${fill}`);
+      }
+    }
+  });
 });

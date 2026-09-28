@@ -1,4 +1,4 @@
-import { extractNamedEntities } from "@/lib/kev/entities";
+import { extractNamedEntities, isClauseVerb } from "@/lib/kev/entities";
 import { hasEnumeratedBoxes, isCanvasEdit } from "@/lib/kev/plan";
 
 /**
@@ -7,6 +7,10 @@ import { hasEnumeratedBoxes, isCanvasEdit } from "@/lib/kev/plan";
  */
 
 const PICTURE = /\b(draw|sketch|diagram|show|illustrate|map|build|create|architect)\b/i;
+/** "Walk through …" / "Picture a …" / "Trace the …" introduce an idea. The verb is not a box. */
+const OPENING =
+  /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how|why|where|whether|a|an|the)\b/i;
+const INTERACTIONS = /\binteract(?:ing|s|ed|ion|ions)?\b/i;
 const GLUE = /^(?:a|an|the|of|and|its|their|his|her|for|with|to|in|on|or)$/i;
 
 export const OPEN_IDEA_REPLY =
@@ -39,7 +43,8 @@ export function contentWords(message: string): string[] {
  */
 export function longUnlistedDescription(message: string): boolean {
   const text = message.trim();
-  if (!text || isCanvasEdit(text) || !PICTURE.test(text)) return false;
+  if (!text || isCanvasEdit(text)) return false;
+  if (!PICTURE.test(text) && !OPENING.test(text) && !INTERACTIONS.test(text)) return false;
   if (hasEnumeratedBoxes(text)) return false;
   // A name the user actually wrote counts. A title-cased scrap of a lowercase phrase does not.
   const named = extractNamedEntities(text).filter(
@@ -56,12 +61,19 @@ export function ideaSubject(message: string): string | null {
     /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
     "",
   );
+  text = text.replace(
+    /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how)\s+(?:a|an|the\s+)?/i,
+    "",
+  );
+  text = text.replace(/^(?:please\s+)?(?:picture|trace|follow|describe|explain)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "");
   text = text.replace(/\s+and\s+(?:its|their|his|her)\s+\S+\s*$/i, "");
   text = text.replace(/\b(?:horizontally|horizontal|vertically|vertical|left to right|top to bottom)\b/gi, " ");
   const words = text
     .replace(/[^A-Za-z0-9\s.+_-]/g, " ")
     .split(/\s+/)
-    .filter((word) => word && !/^(?:a|an|the|and|its|their|his|her)$/i.test(word));
+    .filter((word) => word && !/^(?:a|an|the|and|its|their|his|her|how)$/i.test(word));
+  while (words.length > 1 && isClauseVerb(words[0] ?? "")) words.shift();
+  while (words.length > 1 && isClauseVerb(words[words.length - 1] ?? "")) words.pop();
   if (words.length === 0) return null;
   const title = words.slice(0, 8).map(displayWord).join(" ");
   if (!/^[A-Za-z0-9]/.test(title)) return null;
@@ -143,9 +155,11 @@ function clipPhrase(raw: string): string | null {
     .replace(/[^A-Za-z0-9\s/+-]/g, " ")
     .split(/\s+/)
     .filter(Boolean);
-  while (words.length > 0 && GLUE.test(words[0] ?? "")) words.shift();
-  while (words.length > 0 && GLUE.test(words[words.length - 1] ?? "")) words.pop();
-  const kept = words.slice(0, 4);
+  while (words.length > 0 && (GLUE.test(words[0] ?? "") || isClauseVerb(words[0] ?? ""))) words.shift();
+  while (words.length > 0 && (GLUE.test(words[words.length - 1] ?? "") || isClauseVerb(words[words.length - 1] ?? ""))) {
+    words.pop();
+  }
+  const kept = words.filter((word) => !isClauseVerb(word)).slice(0, 4);
   if (kept.length === 0) return null;
   return kept.map(displayWord).join(" ");
 }

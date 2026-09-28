@@ -623,7 +623,8 @@ export function resolveComposition(
 
   // Scraps of a longer description are not the named boxes. Sequences and
   // workflows below still draw. A template already returned above.
-  if (!(longUnlistedDescription(text) && picture) && grounded && !namedDropsChain(text, labels)) {
+  // "Walk through …" never says draw, but it is still an unnamed idea.
+  if (!longUnlistedDescription(text) && grounded && !namedDropsChain(text, labels)) {
     const composed = compositionFromNamed(text);
     if (composed) {
       if (hints?.colorName && !composed.colorName) composed.colorName = hints.colorName;
