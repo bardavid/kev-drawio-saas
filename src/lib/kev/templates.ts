@@ -29,6 +29,9 @@ const TIER_RE = /\b(\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i;
 export function matchTemplate(message: string): TemplateMatch | null {
   const text = message.trim();
   if (!text) return null;
+  // A list of named states is a lifecycle chain. It is not a vendor sketch,
+  // an approval preset, or a flat architecture of the same words.
+  if (isStateMachine(text) && statesNamedIn(text).length >= 2) return stateMachine(text);
   // Named Azure services are not a generic Gateway → Service → Sql chain, and
   // "Azure cloud architecture" is not the AWS VPC sketch. This has to win
   // before the tier planner returns null and before isCloud.
@@ -182,8 +185,25 @@ function isApproval(text: string): boolean {
   return /\b(approval|approve|expense|purchase request|business process)\b/i.test(text);
 }
 
+const STATE_MACHINE_CUE = /\b(?:state\s+machines?|state\s+diagrams?|uml\s+states?|lifecycles?)\b/i;
+/** "as states", "as a list of stages", "states:", "stages:". Not a geographic "States" without that cue. */
+const STATE_LIST_CUE =
+  /\bas\s+(?:a\s+|an\s+)?(?:list\s+of\s+)?(?:states?|stages?)\b|\b(?:states|stages)\s*:/i;
+
+/**
+ * A lifecycle ask. A bare "state machine" still counts. "as states" / "states:"
+ * count only when the message actually lists the states, so a cue word alone
+ * does not steal an architecture or a flowchart.
+ */
 export function isStateMachineRequest(text: string): boolean {
-  return /\b(state machine|state diagram|lifecycle|uml state)\b/i.test(text);
+  if (STATE_MACHINE_CUE.test(text)) return true;
+  if (!STATE_LIST_CUE.test(text)) return false;
+  return namedStateLabels(text).length >= 2;
+}
+
+/** Ordered state names the user wrote. Empty when the message does not list them. */
+export function namedStateLabels(text: string): string[] {
+  return statesNamedIn(text);
 }
 
 function isStateMachine(text: string): boolean {
@@ -711,7 +731,9 @@ const STAGE_STOP = new Set([
 function stateMachineSubject(text: string): string {
   return text
     .replace(/^(?:please\s+)?(?:draw|sketch|diagram|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "")
-    .replace(/\b(?:as|into|like)\s+(?:a|an|the)\s+(?:state\s+machine|state\s+diagram|uml\s+state|lifecycle)\b/gi, " ")
+    .replace(/\b(?:as|into|like)\s+(?:a|an|the\s+)?(?:state\s+machine|state\s+diagram|uml\s+state|lifecycle)\b/gi, " ")
+    .replace(/\bas\s+(?:a\s+|an\s+)?(?:list\s+of\s+)?(?:states?|stages?)\b/gi, " ")
+    .replace(/\b(?:states?|stages?)\s*:/gi, " ")
     .replace(/\b(?:state\s+machine|state\s+diagram|uml\s+state|lifecycle|diagram)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -752,14 +774,16 @@ function genericFeeding(subject: string): TemplateMatch {
 }
 
 function statesNamedIn(text: string): string[] {
-  const arrows = text.split(/\s*(?:→|->|=>|—>|-->|–>)\s*/);
-  if (arrows.length >= 2) {
-    const labels = uniqueStateLabels(arrows.map(cleanStateFragment).filter(Boolean));
-    if (labels.length >= 2) return labels;
-  }
+  // "as states: Lodged → Screening → …" is the list after the cue.
+  // Splitting the whole sentence on arrows would swallow the topic into the first state.
   const listed = text.match(/\b(?:states|stages)\b\s*[:\-]?\s+(.+)$/i);
   if (listed?.[1]) {
     const labels = uniqueStateLabels(splitStateList(listed[1]));
+    if (labels.length >= 2) return labels;
+  }
+  const arrows = text.split(/\s*(?:→|->|=>|—>|-->|–>)\s*/);
+  if (arrows.length >= 2) {
+    const labels = uniqueStateLabels(arrows.map(cleanStateFragment).filter(Boolean));
     if (labels.length >= 2) return labels;
   }
   const colon = text.match(/:\s*(.+)$/);
@@ -845,7 +869,14 @@ function titleFor(subject: string, labels: string[]): string {
     .replace(/[→:>\-]+/g, " ")
     .split(/\s+/)
     .map((word) => word.replace(/[^a-z0-9']/gi, ""))
-    .filter((word) => word && !skip.has(word.toLowerCase()) && !/^(a|an|the|as|of|for|and|with|into|on|to|from)$/i.test(word));
+    .filter(
+      (word) =>
+        word &&
+        !skip.has(word.toLowerCase()) &&
+        !/^(a|an|the|as|of|for|and|with|into|on|to|from|state|states|stage|stages|machine|diagram|lifecycle|uml|list)$/i.test(
+          word,
+        ),
+    );
   const title = words.map(titleWord).join(" ").trim();
   if (title.length < 3) return "State machine";
   return title.length > 48 ? `${title.slice(0, 47).trim()}…` : title;

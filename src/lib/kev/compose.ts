@@ -52,7 +52,7 @@ import {
   pluralRoleOf,
   type BriefLink,
 } from "@/lib/kev/scale";
-import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
+import { composeFromBrief, isStateMachineRequest, matchTemplate, namedStateLabels } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
 
 type XmlElement = import("@xmldom/xmldom").Element;
@@ -609,21 +609,29 @@ export function resolveComposition(
   const labels = extractNamedEntities(text).map((entity) => entity.label);
   const grounded = labels.length >= 2;
   const picture = wantsPicture(text);
-  if (!picture && !grounded) return null;
+  const listedStates = namedStateLabels(text);
+  // "case as states: A, B, C, D" names the lifecycle and does not say "draw".
+  const stateList = isStateMachineRequest(text) && listedStates.length >= 2;
+  if (!picture && !grounded && !stateList) return null;
 
   if (isIoUring(text)) return packComposition(ioUringSpec(), text, hints, null, false);
 
   const matched = matchTemplate(text);
   // A typed template already knows its own stack. A single phrase match must
   // not discard the other services the user named.
+  // The topic in front of the list is not a state. A chain that already
+  // draws every named state stays a lifecycle instead of falling through.
+  const stateListKept =
+    stateList && matched?.spec.kind === "workflow" && specCovers(matched.spec, listedStates);
   const dropsNamed =
     matched != null &&
     grounded &&
+    !stateListKept &&
     (looseDropsPeers(matched.spec, labels) ||
       templateDropsNamedWork(matched.spec, labels) ||
       listedStepsUncovered(matched.spec, text));
   if (matched && !dropsNamed) {
-    return packComposition(matched.spec, text, hints, matched.context, grounded);
+    return packComposition(matched.spec, text, hints, matched.context, grounded || stateList);
   }
 
   if (isLoginSequence(text)) {
@@ -685,6 +693,11 @@ export function unresolvedOpenIdea(message: string): boolean {
  * the message, is one vertex each. Topic notes are not required for either.
  */
 export function hostPreparedComposition(message: string): Composition | null {
+  // Named states are already the diagram. Do not wait for a model to call them architecture.
+  if (isStateMachineRequest(message) && namedStateLabels(message).length >= 2) {
+    const composed = resolveComposition(message);
+    if (composed) return composed;
+  }
   if (labeledPlacement(message) || listedComponents(message)) {
     const composed = resolveComposition(message);
     return composed?.grounded ? composed : null;

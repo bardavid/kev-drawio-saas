@@ -4,7 +4,8 @@ import { assessDiagram, type QualityNode, type QualityReport } from "../src/lib/
 import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { describeComposition, renderComposition, resolveComposition } from "../src/lib/kev/compose";
 import { previewDemo } from "../src/lib/kev/demo";
-import { composeFromBrief, matchTemplate } from "../src/lib/kev/templates";
+import { composeFromBrief, isStateMachineRequest, matchTemplate } from "../src/lib/kev/templates";
+import { runKevTurn } from "../src/lib/kev/run";
 
 function content(nodes: QualityNode[]): QualityNode[] {
   return nodes.filter((node) => node.role !== "lifeline" && node.role !== "cluster" && node.role !== "anchor");
@@ -1345,6 +1346,125 @@ describe("popular diagram templates", () => {
     );
     assert.ok(order.includes("Placed"));
     assert.equal(order.includes("Browsing"), false);
+  });
+
+  it("connects a named lifecycle instead of drawing a flat architecture", async () => {
+    const prompts = [
+      {
+        text: "Immigration case as states: Lodged, Screening, Interview, Granted, Archived",
+        states: ["Lodged", "Screening", "Interview", "Granted", "Archived"],
+        absent: ["Immigration", "Architecture"],
+      },
+      {
+        text: "Warranty claim as states: Opened, Inspected, Approved, Paid, Closed",
+        states: ["Opened", "Inspected", "Approved", "Paid", "Closed"],
+        absent: ["Warranty"],
+      },
+      {
+        text: "Parcel handoff as states: Received → Scanned → Sorted → Loaded → Delivered",
+        states: ["Received", "Scanned", "Sorted", "Loaded", "Delivered"],
+        absent: ["Parcel"],
+      },
+      {
+        text: "Library book stages: Shelved, Loaned, Overdue, Returned",
+        states: ["Shelved", "Loaned", "Overdue", "Returned"],
+        absent: ["Library"],
+      },
+      {
+        text: "kettle schedule as states: heat, mash, boil, chill, ferment",
+        states: ["Heat", "Mash", "Boil", "Chill", "Ferment"],
+        absent: ["Kettle"],
+      },
+    ];
+    for (const prompt of prompts) {
+      assert.equal(isStateMachineRequest(prompt.text), true, prompt.text);
+      assert.equal(matchTemplate(prompt.text)?.spec.kind, "workflow", prompt.text);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /Architecture/, prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /Which nodes should I draw/, prompt.text);
+      assert.match(drawn.decision.reply, /state machine/i, prompt.text);
+      const report = assertClean(drawn.xml);
+      assert.deepEqual(
+        content(report.nodes).map((node) => node.label),
+        prompt.states,
+        prompt.text,
+      );
+      for (const extra of prompt.absent) {
+        assert.equal(
+          report.nodes.some((node) => node.label === extra),
+          false,
+          `${prompt.text} drew ${extra}`,
+        );
+      }
+      assert.equal(report.edges.length, prompt.states.length - 1, prompt.text);
+      for (let index = 1; index < prompt.states.length; index += 1) {
+        linked(report, prompt.states[index - 1]!, prompt.states[index]!);
+      }
+      sameRow(report, prompt.states);
+      assert.ok(
+        content(report.nodes).every((node) => {
+          const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+          return Boolean(fill && fill !== "#ffffff");
+        }),
+        prompt.text,
+      );
+    }
+
+    const architecturePrompt = "draw an architecture: Browser, Application, Database";
+    assert.equal(isStateMachineRequest(architecturePrompt), false);
+    const architecture = previewDemo(architecturePrompt, STARTER_XML);
+    const arch = assertClean(architecture.xml);
+    assert.deepEqual(content(arch.nodes).map((node) => node.label), ["Browser", "Application", "Database"]);
+    assert.ok(arch.edges.length >= 2);
+    assert.ok(arch.nodes.some((node) => node.role === "cluster"));
+    linked(arch, "Browser", "Application");
+    linked(arch, "Application", "Database");
+
+    const flowchart = previewDemo(
+      "Flowchart of boarding a train: show ticket, pass the gate, find the seat, then depart",
+      STARTER_XML,
+    );
+    assert.equal(isStateMachineRequest("Flowchart of boarding a train: show ticket, pass the gate, find the seat, then depart"), false);
+    assert.deepEqual(content(assertClean(flowchart.xml).nodes).map((node) => node.label), [
+      "Show Ticket",
+      "Pass The Gate",
+      "Find The Seat",
+      "Depart",
+    ]);
+
+    const previousKey = process.env.KEV_BASE_URL;
+    const previousFetch = globalThis.fetch;
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (() => {
+      throw new Error("named states must be drawn before a model reading");
+    }) as typeof fetch;
+    try {
+      const live = await runKevTurn({
+        messages: [
+          {
+            role: "user",
+            content: "Immigration case as states: Lodged, Screening, Interview, Granted, Archived",
+          },
+        ],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(live.intent, "add_shape");
+      assert.doesNotMatch(live.reply, /Architecture/);
+      const liveReport = assertClean(live.updatedXml ?? "");
+      assert.equal(liveReport.edges.length, 4);
+      assert.deepEqual(content(liveReport.nodes).map((node) => node.label), [
+        "Lodged",
+        "Screening",
+        "Interview",
+        "Granted",
+        "Archived",
+      ]);
+    } finally {
+      if (previousKey === undefined) delete process.env.KEV_BASE_URL;
+      else process.env.KEV_BASE_URL = previousKey;
+      globalThis.fetch = previousFetch;
+    }
   });
 
   it("draws Azure API Management, Functions, Cosmos DB, and Event Hubs", () => {
