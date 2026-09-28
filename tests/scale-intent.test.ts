@@ -13,6 +13,7 @@ import { isLimitInstruction, stripTrailingLimits } from "../src/lib/kev/plan";
 import { topicLookupCandidates } from "../src/lib/kev/research";
 import {
   componentsFromBrief,
+  componentsFromOpenIdea,
   depthFromOpenAnswer,
   ideaSubject,
   longUnlistedDescription,
@@ -499,6 +500,11 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     assert.equal(depthFromOpenAnswer(STORAGE_ANSWER), "many");
     assert.equal(depthFromOpenAnswer("you name the boxes"), "many");
     assert.equal(depthFromOpenAnswer("you give the names"), "many");
+    assert.equal(depthFromOpenAnswer("Detailed diagram — invent the component names yourself"), "many");
+    assert.equal(depthFromOpenAnswer("detailed, pick the boxes for me"), "many");
+    assert.equal(depthFromOpenAnswer("go detailed and name them"), "many");
+    assert.equal(depthFromOpenAnswer("invent the component names yourself"), "many");
+    assert.equal(depthFromOpenAnswer("pick the boxes for me"), "many");
     assert.equal(depthFromOpenAnswer("High-level sketch"), "few");
     assert.equal(depthFromOpenAnswer("High-level, you name the boxes"), "few");
     assert.equal(depthFromOpenAnswer("Draw it in detail"), "many");
@@ -507,6 +513,7 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     assert.equal(depthFromOpenAnswer("draw"), null);
     assert.equal(depthFromOpenAnswer("three tier web app"), null);
     assert.equal(depthFromOpenAnswer("redraw this from scratch and make it more complex"), null);
+    assert.equal(depthFromOpenAnswer("give the boxes a color"), null);
 
     const transcript = [
       { role: "user", content: STORAGE_IDEA },
@@ -518,6 +525,32 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     const alone = previewDemo(STORAGE_ANSWER, STARTER_XML);
     assert.equal(alone.decision.reply, "Describe a diagram change.");
     assert.equal(alone.xml, STARTER_XML);
+    const invented = "Detailed diagram — invent the component names yourself";
+    const inventedAlone = previewDemo(invented, STARTER_XML);
+    assert.equal(inventedAlone.decision.reply, "Describe a diagram change.");
+    assert.equal(inventedAlone.xml, STARTER_XML);
+    assert.equal(
+      openIdeaDepthFollowUp([
+        { role: "user", content: STORAGE_IDEA },
+        { role: "assistant", content: OPEN_IDEA_REPLY },
+        { role: "user", content: invented },
+      ])?.depth,
+      "many",
+    );
+
+    const clauses = componentsFromOpenIdea(STORAGE_IDEA);
+    assert.deepEqual(clauses?.nodes, [
+      "Distributed Storage System",
+      "Ibverbs",
+      "Io Uring",
+      "Zero Syscall",
+      "Zero Copy",
+      "Data Transfer",
+    ]);
+    const beacon = componentsFromOpenIdea(
+      "Draw a coastal beacon network that uses lanterns and tide bells for night harbor signals",
+    );
+    assert.deepEqual(beacon?.nodes, ["Coastal Beacon Network", "Lanterns", "Tide Bells", "Night Harbor Signals"]);
   });
 
   it("composes a detailed diagram when the user answers the open-idea question", async () => {
@@ -546,6 +579,8 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     const demoReport = assertClean(demo.updatedXml);
     const demoLabels = content(demoReport.nodes).map((node) => node.label);
     assert.ok(demoLabels.length >= 4, demoLabels.join(", "));
+    assert.ok(demoLabels.includes("Applications"), demoLabels.join(", "));
+    assert.ok(demoLabels.includes("Journal"), demoLabels.join(", "));
     assert.ok(demoReport.nodes.some((node) => node.role === "cluster"));
     assert.ok(demoReport.edges.length >= 3);
     assert.ok(demoReport.edges.every((edge) => edge.label.length > 0));
@@ -628,6 +663,50 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     const after = content(assessDiagram(replaced.updatedXml).nodes).map((node) => node.label);
     for (const kept of before) assert.ok(after.includes(kept), kept);
     assert.equal(summarizeDiagram(replaced.updatedXml).vertices.length >= summarizeDiagram(base.xml).vertices.length, true);
+  });
+
+  it("composes the earlier idea when a detailed naming paraphrase has no usable notes", async () => {
+    const answers = [
+      "Detailed diagram — invent the component names yourself",
+      "detailed, pick the boxes for me",
+      "go detailed and name them",
+    ];
+    globalThis.fetch = (async () =>
+      Response.json({
+        extract: "A clustered file system is a file system which is shared by being simultaneously mounted on multiple servers.",
+      })) as typeof fetch;
+
+    for (const answer of answers) {
+      const result = await runKevTurn({
+        messages: [
+          { role: "user", content: STORAGE_IDEA },
+          { role: "assistant", content: OPEN_IDEA_REPLY },
+          { role: "user", content: answer },
+        ],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(result.intent, "add_shape", answer);
+      assert.notEqual(result.reply, OPEN_IDEA_REPLY, answer);
+      assert.doesNotMatch(result.reply, /Describe a diagram change/, answer);
+      assert.notEqual(result.updatedXml, STARTER_XML, answer);
+      const report = assertClean(result.updatedXml);
+      const labels = content(report.nodes).map((node) => node.label);
+      assert.ok(labels.length >= 4, `${answer}: ${labels.join(", ")}`);
+      assert.match(labels.join(" "), /Storage/, answer);
+      assert.match(labels.join(" "), /Ibverbs/, answer);
+      assert.match(labels.join(" "), /Uring/, answer);
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), answer);
+      assert.ok(report.edges.length >= 3, answer);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), answer);
+      for (const node of content(report.nodes)) {
+        const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${answer} ${node.label} ${fill}`);
+      }
+    }
+
+    const head = topicLookupCandidates(ideaSubject(STORAGE_IDEA) ?? "");
+    assert.equal(head[0], "Distributed Storage System");
+    assert.equal(head.some((title) => /ibverbs/i.test(title)), false);
   });
 
   it("draws one subject box for a high-level answer and does not look up topic notes", async () => {

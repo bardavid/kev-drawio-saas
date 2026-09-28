@@ -6,6 +6,7 @@ import {
   describeComposition,
   CAPACITY_REPLY,
   composeDetailedFromBrief,
+  composeDetailedFromIdea,
   composeOnCanvas,
   compositionDecision,
   highLevelComposition,
@@ -594,6 +595,8 @@ export async function composeCommittedOpenIdea(
     const brief = await researchIdea(idea, { network: true });
     if (brief?.summary) composition = composeDetailedFromBrief(idea, brief.summary);
   }
+  // Notes that do not name parts are not another copy of the same question.
+  if (!composition) composition = composeDetailedFromIdea(idea);
   if (!composition) return openIdeaClarify(currentXml);
   return placeComposition(idea, currentXml, composition);
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { describeComposition, resolveComposition } from "../src/lib/kev/compose";
-import { REDIS_USAGE_BRIEF, researchTopic, wikipediaTitle } from "../src/lib/kev/research";
+import { REDIS_USAGE_BRIEF, researchIdea, researchTopic, wikipediaTitle } from "../src/lib/kev/research";
 
 const PROMPT = "Draw a redis diagram usage";
 
@@ -84,5 +84,23 @@ describe("topic research", () => {
     });
     assert.equal(live?.source, "web");
     assert.match(live?.summary ?? "", /memory caching/);
+  });
+
+  it("reads a search title that differs only by case", async () => {
+    const notes =
+      "Applications send to the storage nodes. The storage nodes replicate to the peers. The peers persist to the journal. The journal notifies the applications.";
+    const brief = await researchIdea("Draw io uring", {
+      network: true,
+      fetch: async (input) => {
+        const url = String(input);
+        if (url.includes("action=opensearch")) {
+          return Response.json(["Io Uring", ["Io uring"], [""], ["https://en.wikipedia.org/wiki/Io_uring"]]);
+        }
+        if (url.endsWith("/Io_uring")) return Response.json({ extract: notes });
+        return new Response("missing", { status: 404 });
+      },
+    });
+    assert.equal(brief?.topic, "Io Uring");
+    assert.match(brief?.summary ?? "", /storage nodes/);
   });
 });

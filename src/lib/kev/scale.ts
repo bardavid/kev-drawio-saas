@@ -21,14 +21,30 @@ export const OPEN_IDEA_REPLY =
 const FRESH_PICTURE = /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\b/i;
 const DETAILED_ANSWER = /\b(?:detailed|in detail|low[-\s]?level)\b/i;
 const HIGH_LEVEL_ANSWER = /\b(?:high[-\s]?level|bird(?:'s)?[-\s]?eye|few boxes|rough sketch)\b/i;
+/** Someone is handing the naming job back: “you”, “yourself”, or “for me”. */
+const NAMING_DELEGATE = /\b(?:you|yourself|for me)\b/i;
+/** The act of choosing labels, not a request to recolor boxes. */
+const NAMING_ACT = /\b(?:invent|choose|picks?|supply|decide|name|naming|names|come up with|make up)\b/i;
+const NAMING_TARGET = /\b(?:names?|boxes|components?|labels?|parts|nodes|them)\b/i;
+const NAMING_IMPERATIVE =
+  /^(?:please\s+)?(?:go ahead and\s+)?(?:invent|choose|pick|name)\b/i;
 
 /**
  * A reply to the open-idea question: detailed, high-level, or “you name the boxes”.
  * A fresh picture, a bare draw, or a wipe is not an answer to that question.
  * Detailed wins when both depths are named. High-level wins over a naming delegation.
+ * “Invent / pick / give the names” is the same delegation, whatever the wording.
  */
 const DEPTH_WORD =
   /^(?:detailed|detail|low(?:-level)?|level|high(?:-level)?|rough|sketch|diagram|it|this|that|one|more|in|very|just|please)$/i;
+
+function delegatesComponentNames(text: string): boolean {
+  if (NAMING_DELEGATE.test(text) && NAMING_ACT.test(text) && NAMING_TARGET.test(text)) return true;
+  // “You give the names” delegates. “Give the boxes a color” does not.
+  if (/\b(?:you|yourself)\b/i.test(text) && /\bgive\b/i.test(text) && /\b(?:names?|labels?)\b/i.test(text)) return true;
+  if (NAMING_IMPERATIVE.test(text) && NAMING_TARGET.test(text) && contentWords(text).length <= 8) return true;
+  return false;
+}
 
 export function depthFromOpenAnswer(message: string): "few" | "many" | null {
   const text = message.trim();
@@ -37,9 +53,7 @@ export function depthFromOpenAnswer(message: string): "few" | "many" | null {
   if (FRESH_PICTURE.test(text) && contentWords(text).some((word) => !DEPTH_WORD.test(word))) return null;
   if (DETAILED_ANSWER.test(text)) return "many";
   if (HIGH_LEVEL_ANSWER.test(text)) return "few";
-  const delegated =
-    /\b(?:you|yourself)\b/i.test(text) && /\b(?:name|names|boxes|components|labels)\b/i.test(text);
-  if (delegated) return "many";
+  if (delegatesComponentNames(text)) return "many";
   return null;
 }
 
@@ -201,24 +215,149 @@ export function componentsFromBrief(summary: string): { nodes: string[]; edges: 
     const listed = listLinks(sentence);
     if (listed) links.push(...listed);
   }
-  const nodes: string[] = [];
-  const seen = new Set<string>();
-  const add = (label: string) => {
-    const key = label.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    nodes.push(label);
+  const solidLinks = links.filter((link) => solidBriefLabel(link.from) && solidBriefLabel(link.to));
+  const solidNodes: string[] = [];
+  const solidSeen = new Set<string>();
+  for (const link of solidLinks) {
+    for (const label of [link.from, link.to]) {
+      const key = label.toLowerCase();
+      if (solidSeen.has(key)) continue;
+      solidSeen.add(key);
+      solidNodes.push(label);
+    }
+  }
+  if (solidNodes.length < 4) return null;
+  const kept = new Set(solidNodes.slice(0, 8).map((label) => label.toLowerCase()));
+  return {
+    nodes: solidNodes.slice(0, 8),
+    edges: solidLinks.filter((link) => kept.has(link.from.toLowerCase()) && kept.has(link.to.toLowerCase())),
   };
-  for (const link of links) {
-    add(link.from);
-    add(link.to);
+}
+
+/**
+ * A topic sentence that matched a verb by accident (“system call”, “it addresses”)
+ * is not a component list. Real names from a brief stay.
+ */
+function solidBriefLabel(label: string): boolean {
+  if (!/^[A-Za-z]/.test(label)) return false;
+  if (/\b(?:is|are|was|were)\b/i.test(label)) return false;
+  if (/^(?:it|this|there|they|which|that)\b/i.test(label)) return false;
+  return true;
+}
+
+const IDEA_CLAUSE =
+  /\s+(that|which|who|where|when|for|using|via|with|through|and|uses|use)\s+/i;
+const LEADING_USE = /^(?:use|uses|using|used)$/i;
+
+/**
+ * Components named by splitting the idea on its own clauses.
+ * Used only after the user asked for a detailed diagram and topic notes
+ * did not name the parts. The clauses are the user's words, not a template.
+ */
+export function componentsFromOpenIdea(message: string): { nodes: string[]; edges: BriefLink[] } | null {
+  const body = ideaRemainder(message);
+  if (!body.trim()) return null;
+  const pieces = body.split(IDEA_CLAUSE);
+  const nodes: string[] = [];
+  const edges: BriefLink[] = [];
+  const seen = new Set<string>();
+  let previous: string | null = null;
+  let marker: string | null = null;
+  for (let index = 0; index < pieces.length; index += 1) {
+    const piece = pieces[index] ?? "";
+    if (index % 2 === 1) {
+      marker = piece;
+      continue;
+    }
+    const cleaned = cleanIdeaPhrase(piece);
+    if (!cleaned) continue;
+    const chunks = splitLongPhrase(cleaned.label);
+    chunks.forEach((label, chunkIndex) => {
+      if (nodes.length >= 8) return;
+      const key = label.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (previous) {
+        const labelFor = chunkIndex === 0 ? (cleaned.verb ?? clauseEdgeLabel(marker)) : "Connects";
+        edges.push({ from: previous, to: label, label: labelFor });
+      }
+      nodes.push(label);
+      previous = label;
+    });
+    marker = null;
+    if (nodes.length >= 8) break;
   }
   if (nodes.length < 4) return null;
-  const kept = new Set(nodes.slice(0, 8).map((label) => label.toLowerCase()));
+  const kept = new Set(nodes.map((label) => label.toLowerCase()));
   return {
-    nodes: nodes.slice(0, 8),
-    edges: links.filter((link) => kept.has(link.from.toLowerCase()) && kept.has(link.to.toLowerCase())),
+    nodes,
+    edges: edges.filter((link) => kept.has(link.from.toLowerCase()) && kept.has(link.to.toLowerCase())),
   };
+}
+
+function ideaRemainder(message: string): string {
+  let text = message.trim();
+  text = text.replace(
+    /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
+    "",
+  );
+  text = text.replace(
+    /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how)\s+(?:a|an|the\s+)?/i,
+    "",
+  );
+  text = text.replace(/^(?:please\s+)?(?:picture|trace|follow|describe|explain)\s+(?:me\s+)?(?:a|an|the\s+)?/i, "");
+  text = text.replace(/\s+and\s+(?:its|their|his|her)\s+\S+\s*$/i, "");
+  return text;
+}
+
+function cleanIdeaPhrase(raw: string): { label: string; verb: string | null } | null {
+  const words = raw
+    .replace(/[^A-Za-z0-9\s.+_-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  let verb: string | null = null;
+  while (
+    words.length > 0 &&
+    (GLUE.test(words[0] ?? "") || isClauseVerb(words[0] ?? "") || LEADING_USE.test(words[0] ?? ""))
+  ) {
+    if (LEADING_USE.test(words[0] ?? "") || isClauseVerb(words[0] ?? "")) verb = displayWord(words[0] ?? "");
+    words.shift();
+  }
+  while (words.length > 0 && (GLUE.test(words[words.length - 1] ?? "") || isClauseVerb(words[words.length - 1] ?? ""))) {
+    words.pop();
+  }
+  if (words.length === 0 || words.length > 8) return null;
+  if (words.length === 1 && GENERIC_LABEL.test(words[0] ?? "")) return null;
+  if (words.every((word) => /^(?:interactions?|diagrams?|overviews?|sketches?|please)$/i.test(word))) return null;
+  const label = words.map(displayWord).join(" ");
+  if (label.length < 3 || /^(?:it|this|that|there|they)$/i.test(label)) return null;
+  return { label, verb };
+}
+
+/** A long clause is several names, not one box. Pairs keep each name readable. */
+function splitLongPhrase(label: string): string[] {
+  const words = label.split(/\s+/).filter(Boolean);
+  if (words.length <= 4) return [label];
+  const chunks: string[] = [];
+  for (let index = 0; index < words.length; index += 2) {
+    const slice = words.slice(index, index + 2);
+    if (slice.length === 1 && chunks.length > 0) {
+      chunks[chunks.length - 1] = `${chunks[chunks.length - 1]} ${slice[0]}`;
+      continue;
+    }
+    chunks.push(slice.join(" "));
+  }
+  return chunks;
+}
+
+function clauseEdgeLabel(marker: string | null): string {
+  const token = (marker ?? "").toLowerCase();
+  if (token === "for") return "For";
+  if (token === "with") return "With";
+  if (token === "via" || token === "through") return "Via";
+  if (token === "using" || token === "use" || token === "uses") return "Uses";
+  if (token === "that" || token === "which" || token === "who" || token === "where" || token === "when") return "Includes";
+  return "Connects";
 }
 
 function listLinks(sentence: string): BriefLink[] | null {
