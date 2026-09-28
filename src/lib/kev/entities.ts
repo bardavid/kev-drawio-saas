@@ -970,6 +970,49 @@ function inferRole(label: string): EntityRole {
   return "compute";
 }
 
+/**
+ * Role and shape of a name the user already wrote.
+ * A catalog phrase inside the name supplies them. The spoken label stays.
+ */
+function catalogForLabel(label: string, message: string): CatalogEntry | null {
+  const hay = label.toLowerCase();
+  let best: CatalogEntry | null = null;
+  let bestLength = -1;
+  const consider = (hit: PhraseHit) => {
+    if (hit.phrase.length <= bestLength) return;
+    if (hit.entry.when && !hit.entry.when(message)) return;
+    let from = 0;
+    while (from < hay.length) {
+      const at = hay.indexOf(hit.phrase, from);
+      if (at === -1) return;
+      if (bounded(hay, at, at + hit.phrase.length)) {
+        best = hit.entry;
+        bestLength = hit.phrase.length;
+        return;
+      }
+      from = at + 1;
+    }
+  };
+  for (const hit of PHRASES) consider(hit);
+  for (const hit of LISTED) consider(hit);
+  return best;
+}
+
+function draftsFromLabels(labels: string[], message: string): Draft[] {
+  return labels.map((label, index) => {
+    const known = catalogForLabel(label, message);
+    const role = known?.role ?? inferRole(label);
+    return {
+      id: known?.id ?? label.toLowerCase(),
+      label,
+      role,
+      shape: shapeFor(known ?? { role }, label),
+      order: index,
+      origin: "listed" as const,
+    };
+  });
+}
+
 function shapeFor(entry: { role: EntityRole; shape?: ShapeKind }, label: string): ShapeKind {
   if (entry.shape) return entry.shape;
   if (entry.role === "data") return "cylinder";
@@ -1864,21 +1907,7 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   if (!text) return [];
   const boxed = explicitLabeledBoxes(text);
   const listed = boxed ?? listedComponents(text);
-  if (listed) {
-    return entitiesFromDrafts(
-      listed.map((label, index) => {
-        const role = inferRole(label);
-        return {
-          id: label.toLowerCase(),
-          label,
-          role,
-          shape: shapeFor({ role }, label),
-          order: index,
-          origin: "listed" as const,
-        };
-      }),
-    );
-  }
+  if (listed) return entitiesFromDrafts(draftsFromLabels(listed, text));
   const spans = catalogSpans(text);
   const drafts: Draft[] = [];
   const seen = new Set<string>();
@@ -2319,8 +2348,13 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
         };
       });
   let edges = stacked ? stackNeighborEdges(ordered) : layerEdges(ordered);
-  // A same-role row has no tier boundary. Ordered stages still need a connector between neighbors.
-  if (!sequence && edges.length === 0 && nodes.length >= 2 && /\b(?:first|then|followed by)\b/i.test(text)) {
+  // A same-role row has no tier boundary. Ordered stages, and a list of named boxes, still need a connector between neighbors.
+  if (
+    !sequence &&
+    edges.length === 0 &&
+    nodes.length >= 2 &&
+    (/\b(?:first|then|followed by)\b/i.test(text) || labeledPlacement(text) || listedComponents(text))
+  ) {
     edges = chainInOrder(nodes);
   }
   const parsed = sequence ? exchangeMessages(text, nodes) : [];
