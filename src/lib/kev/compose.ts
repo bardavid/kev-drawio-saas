@@ -34,9 +34,11 @@ import {
   requestedLayout,
   resolvePlan,
   withPalette,
+  type PlanHints,
 } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
-import { componentsFromBrief, highLevelOverview, ideaSubject, longUnlistedDescription, overviewSubject } from "@/lib/kev/scale";
+import { routeEdges } from "@/lib/drawio/layout";
+import { componentsFromBrief, highLevelOverview, ideaSubject, isExpandFollowUp, longUnlistedDescription, overviewSubject, pluralRoleOf } from "@/lib/kev/scale";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
 
@@ -512,10 +514,10 @@ function compositionFromNamed(text: string): Composition | null {
  * and a label on every edge. A named color still replaces the pastel. A process
  * list of four or more steps is not an architecture chain.
  */
-export function blankArchitectureVisual(message: string): Composition | null {
+export function blankArchitectureVisual(message: string, hints?: PlanHints): Composition | null {
   const steps = listedProcessSteps(message);
   if (steps && steps.length >= 4) return null;
-  const plan = parseArchitecture(message);
+  const plan = parseArchitecture(message, hints);
   if (!plan || plan.nodes.length < 2) return null;
   const perRole = new Map<ReturnType<typeof chainRole>, number>();
   const nodes = plan.nodes.map((label, index) => {
@@ -567,10 +569,11 @@ export function blankArchitectureVisual(message: string): Composition | null {
 export function renderBlankArchitecture(
   message: string,
   xml: string,
+  hints?: PlanHints,
 ): { decision: KevDecision; xml: string } | null {
   if (!diagramIsBlank(xml)) return null;
-  const visual = blankArchitectureVisual(message);
-  const plan = resolvePlan(message);
+  const visual = blankArchitectureVisual(message, hints);
+  const plan = resolvePlan(message, hints);
   if (!visual || !plan) return null;
   const operations = operationsForPlan(plan, xml);
   if (operations.length === 0) return null;
@@ -804,6 +807,8 @@ export function isAdditiveExtension(text: string): boolean {
   if (/\b(?:instead|from scratch|start over|redraw|wipe|clear (?:it|the canvas|this|the diagram))\b/i.test(trimmed)) {
     return false;
   }
+  // Scale complaints and plural roles grow the open canvas instead of starting over.
+  if (isExpandFollowUp(trimmed) || pluralRoleOf(trimmed)) return true;
   if (/^(?:please\s+)?(?:also|additionally|furthermore)\b/i.test(trimmed)) return true;
   if (/\b(?:attach|extend|splice)\b/i.test(trimmed)) return true;
   if (/\b(?:add|include|put)\b/i.test(trimmed) && /\b(?:onto|on top of|as well|too|strip|alongside)\b/i.test(trimmed)) {
@@ -930,6 +935,66 @@ export function spliceDiagram(currentXml: string, rendered: string): string | nu
     model.setAttribute("pageHeight", String(Math.ceil(pageH / 10) * 10));
   }
   return serializeDiagram(host);
+}
+
+const ADD_EDGE_STYLE =
+  "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" +
+  "endArrow=classic;endFill=1;strokeColor=#64748b;fontColor=#334155;fontSize=12;labelBackgroundColor=#ffffff;";
+
+function contentVertexByLabel(doc: XmlDocument, label: string): XmlElement | null {
+  const want = label.trim().toLowerCase();
+  if (!want) return null;
+  for (const cell of listVertices(doc)) {
+    const style = cell.getAttribute("style") ?? "";
+    if (/(?:^|;)drawai=(?:cluster|lifeline|anchor)(?:;|$)/.test(style)) continue;
+    if (cellLabel(cell).trim().toLowerCase() === want) return cell;
+  }
+  return null;
+}
+
+/**
+ * Labeled edges from shapes already on the canvas to shapes just spliced on.
+ * Existing routed edges stay. New edges are routed around the open diagram.
+ */
+export function attachLabeledEdges(
+  xml: string,
+  links: Array<{ from: string; to: string; label: string }>,
+): string {
+  if (links.length === 0) return xml;
+  const doc = openDiagram(xml);
+  const root = getRoot(doc);
+  let next = Number(nextCellId(doc));
+  if (!Number.isFinite(next)) next = 2;
+  let added = false;
+  for (const link of links) {
+    const source = contentVertexByLabel(doc, link.from);
+    const target = contentVertexByLabel(doc, link.to);
+    const sourceId = source?.getAttribute("id");
+    const targetId = target?.getAttribute("id");
+    if (!sourceId || !targetId || sourceId === targetId) continue;
+    const duplicate = listEdges(doc).some(
+      (edge) => edge.getAttribute("source") === sourceId && edge.getAttribute("target") === targetId,
+    );
+    if (duplicate) continue;
+    const cell = doc.createElement("mxCell");
+    cell.setAttribute("id", String(next));
+    next += 1;
+    cell.setAttribute("value", link.label);
+    cell.setAttribute("style", ADD_EDGE_STYLE);
+    cell.setAttribute("edge", "1");
+    cell.setAttribute("parent", "1");
+    cell.setAttribute("source", sourceId);
+    cell.setAttribute("target", targetId);
+    const geometry = doc.createElement("mxGeometry");
+    geometry.setAttribute("relative", "1");
+    geometry.setAttribute("as", "geometry");
+    cell.appendChild(geometry);
+    root.appendChild(cell);
+    added = true;
+  }
+  if (!added) return xml;
+  routeEdges(doc);
+  return serializeDiagram(doc);
 }
 
 export function composeOnCanvas(

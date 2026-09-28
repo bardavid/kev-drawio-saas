@@ -16,6 +16,7 @@ import {
   overNamedCapacity,
 } from "@/lib/kev/compose";
 import { decideDemo, edgeRestyleDecision } from "@/lib/kev/demo";
+import { placeExpansion, placeResearchedExpansion } from "@/lib/kev/expand";
 import { DiagramXmlError, applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { maybeOrchestrate } from "@/lib/kev/orchestrate";
@@ -81,6 +82,17 @@ function editContext(currentXml: string, previousXml: string | null | undefined)
     previous = previousXml;
   }
   return { previousXml: previous, diagramDiff: formatDiagramDiff(diffDiagrams(previous, currentXml)) };
+}
+
+function barePluralAdd(operations: DiagramOperation[]): boolean {
+  return operations.some((operation) => {
+    if (operation.intent !== "add_shape") return false;
+    const label = operation.slots.label?.trim() ?? "";
+    return (
+      !label ||
+      /^(?:databases?|dbs?|caches?|workers?|services?|queues?|stores?|nodes?|boxes?|shapes?)$/i.test(label)
+    );
+  });
 }
 
 function operationsOf(decision: KevDecision): DiagramOperation[] {
@@ -310,6 +322,12 @@ function finish(
   }
 
   const operations = operationsOf(decision);
+  if (extra.userMessage && barePluralAdd(operations)) {
+    const expanded = placeExpansion(extra.userMessage, currentXml);
+    if (expanded && !sameMxfile(expanded.xml, originalXml)) {
+      return result(expanded.decision, mode, model, expanded.xml, false, extra);
+    }
+  }
   // Edge words are not vertices. Apply the mutator so a model mxfile cannot skip the stroke change or move nodes.
   const edgeRestyle = operations.some(isEdgeRestyle);
   let candidate: string | null = null;
@@ -357,6 +375,10 @@ function finish(
       // A blank add with no label is the mutator asking for a name.
       // A grounded composition, or an N-tier stack on a blank canvas, already answers it.
       if (error.message === "What should the new shape be called?" && extra.userMessage) {
+        const expanded = placeExpansion(extra.userMessage, currentXml);
+        if (expanded && !sameMxfile(expanded.xml, originalXml)) {
+          return result(expanded.decision, mode, model, expanded.xml, false, extra);
+        }
         const hosted =
           compositionTurn(extra.userMessage, currentXml, originalXml, mode, model, extra) ??
           blankArchitectureTurn(extra.userMessage, currentXml, originalXml, mode, model, extra);
@@ -382,6 +404,8 @@ function localDiagram(
   mode: KevMode,
   model?: string,
 ): KevTurnResult | null {
+  const expanded = placeExpansion(userMessage, currentXml);
+  if (expanded) return result(expanded.decision, mode, model, expanded.xml, false);
   if (overNamedCapacity(userMessage)) {
     return result(
       { intent: "clarify", slots: {}, operations: [], reply: CAPACITY_REPLY, updatedXml: null },
@@ -551,6 +575,8 @@ export async function runKevTurn(input: {
   }
   const prepared = hostPreparedTurn(userMessage, currentXml, input.currentXml, described.mode, described.model);
   if (prepared) return prepared;
+  const expanded = await placeResearchedExpansion(userMessage, currentXml, described.mode !== "demo");
+  if (expanded) return result(expanded.decision, described.mode, described.model, expanded.xml, false);
   const context = editContext(currentXml, input.previousXml);
   const request = {
     messages: input.messages,

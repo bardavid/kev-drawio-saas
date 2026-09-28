@@ -361,9 +361,11 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
   // Direction comes from the user's words, otherwise architecture runs left to right.
   // Live Jev reads "3 tier" as a column. That hint must not stack the chain.
   // "Vertically" still stacks it. The open canvas is edited, not replaced.
-  const plan = resolvePlan(input.userMessage, {
+  const hints = {
     colorName: input.reading.slots.colorName,
-  });
+    depth: input.reading.depth,
+  };
+  const plan = resolvePlan(input.userMessage, hints);
   if (!plan) {
     return turn(input, {
       reply: CLARIFY_NODES,
@@ -375,7 +377,7 @@ async function runArchitecture(input: OrchestratorContext): Promise<KevTurnResul
     });
   }
 
-  const visual = renderBlankArchitecture(input.userMessage, input.currentXml);
+  const visual = renderBlankArchitecture(input.userMessage, input.currentXml, hints);
   if (visual) {
     const operations = operationsForPlan(plan, input.currentXml);
     return turn(input, {

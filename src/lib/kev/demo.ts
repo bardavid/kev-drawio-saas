@@ -13,6 +13,7 @@ import {
   sameMxfile,
   overNamedCapacity,
 } from "@/lib/kev/compose";
+import { placeExpansion } from "@/lib/kev/expand";
 import { labeledPlacement } from "@/lib/kev/entities";
 import {
   architectureDecision,
@@ -865,6 +866,8 @@ export function previewDemo(message: string, xml: string): { decision: KevDecisi
       xml,
     };
   }
+  const expanded = placeExpansion(message, xml);
+  if (expanded) return { decision: expanded.decision, xml: expanded.xml };
   const prepared = hostPreparedComposition(message);
   if (prepared) {
     const placed = composeOnCanvas(message, xml, prepared, renderComposition(prepared));

@@ -1,5 +1,5 @@
 import { extractNamedEntities, isClauseVerb, listedComponents } from "@/lib/kev/entities";
-import { hasEnumeratedBoxes, isCanvasEdit } from "@/lib/kev/plan";
+import { hasEnumeratedBoxes, isBetweenEdit, isCanvasEdit } from "@/lib/kev/plan";
 
 /**
  * Depth of a drawing: a few boxes, or many components and their interactions.
@@ -204,4 +204,109 @@ function displayWord(word: string): string {
 function labelVerb(verb: string): string {
   const text = verb.toLowerCase().replace(/\s+/g, " ").trim();
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Words that ask for a richer drawing. A title adjective is included;
+ * "simple" / "plain" suppress it unless a scale word is also present.
+ * Depth from a reading wins: many grows the drawing, few keeps it short.
+ */
+const SCALE_TOKENS = new Set([
+  "many",
+  "multiple",
+  "several",
+  "numerous",
+  "plenty",
+  "lots",
+  "bunch",
+  "dozens",
+  "extra",
+  "additional",
+  "denser",
+  "richer",
+  "deeper",
+  "detailed",
+  "complex",
+]);
+
+const SCALE_PHRASE =
+  /\b(?:more\s+(?:complex|detailed|nodes?|boxes?|shapes?|services?|databases?|caches?|workers?|components?)|in\s+detail)\b/i;
+
+const QUIET_SCALE = /\b(?:simple|basic|plain|minimal|high[-\s]?level|rough)\b/i;
+
+const REPLACE_CANVAS =
+  /\b(?:instead|from scratch|start over|redraw|wipe|clear (?:it|the canvas|this|the diagram))\b/i;
+
+export type DepthReading = "few" | "many" | null;
+
+/** True when the idea should be more than the short default stack. */
+export function wantsRicherDiagram(message: string, depth?: DepthReading): boolean {
+  if (depth === "few") return false;
+  if (depth === "many") return true;
+  const text = message.trim();
+  if (!text || REPLACE_CANVAS.test(text)) return false;
+  const tokens = new Set(contentWords(text).map((word) => word.toLowerCase()));
+  const tokenHit = [...tokens].some((word) => SCALE_TOKENS.has(word));
+  const phrase = SCALE_PHRASE.test(text);
+  if (QUIET_SCALE.test(text) && !tokenHit && !phrase) return false;
+  return tokenHit || phrase;
+}
+
+const PICTURE_LEAD = /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\b/i;
+const TIER_COUNT = /\b(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i;
+
+/**
+ * A follow-up that asks to grow the open diagram.
+ * A draw-led N-tier sentence is a first picture, not this.
+ * Replacing the canvas (instead, from scratch, wipe) is not this.
+ */
+export function isExpandFollowUp(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || REPLACE_CANVAS.test(trimmed) || isBetweenEdit(trimmed)) return false;
+  const complaint =
+    /\b(?:i asked|asked for|not enough|too (?:few|simple|sparse|small)|make (?:it|this|the diagram|the stack|that) (?:more )?(?:complex|detailed|dense|rich)|more complex|more detailed)\b/i.test(
+      trimmed,
+    );
+  const quantity =
+    /\b(?:many|multiple|several|lots|bunch|extra|additional|denser|richer|deeper)\b/i.test(trimmed) &&
+    /\b(?:nodes?|boxes?|shapes?|services?|databases?|caches?|workers?|components?|detail|diagram|stack)\b/i.test(trimmed);
+  const moreOf =
+    /\b(?:more|extra|additional)\s+(?:\w+\s+){0,2}(?:nodes?|boxes?|shapes?|services?|databases?|caches?|workers?|queues?|stores?)\b/i.test(
+      trimmed,
+    );
+  if (!complaint && !quantity && !moreOf) return false;
+  if (PICTURE_LEAD.test(trimmed) && TIER_COUNT.test(trimmed) && !/\b(?:i asked|asked for|not enough|too few)\b/i.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
+export type PluralRole = "database" | "cache" | "worker" | "service" | "queue" | "storage";
+
+const PLURAL_ROLES: Array<{ role: PluralRole; pattern: RegExp }> = [
+  { role: "database", pattern: /\b(?:databases|dbs)\b/i },
+  { role: "cache", pattern: /\bcaches\b/i },
+  { role: "worker", pattern: /\bworkers\b/i },
+  { role: "service", pattern: /\bservices\b/i },
+  { role: "queue", pattern: /\bqueues\b/i },
+  { role: "storage", pattern: /\bstores\b/i },
+];
+
+const GENERIC_LABEL =
+  /^(?:databases?|dbs?|caches?|workers?|services?|queues?|stores?|nodes?|boxes?|shapes?|components?|tiers?|layers?|systems?|apps?|applications?|many|more|extra|additional|several|multiple|lots|some|new|other|another|please|add|ok|okay|but|asked|just|too|few|complex|detailed|dense|rich|richer)$/i;
+
+/**
+ * A plural role with no proper name ("databases", "caches", "workers").
+ * A named product beside the role is the user's label, not this.
+ */
+export function pluralRoleOf(message: string): PluralRole | null {
+  const text = message.trim();
+  if (!text || REPLACE_CANVAS.test(text) || isBetweenEdit(text)) return null;
+  // A long idea may mention workers or services in passing. That is not "add workers".
+  if (longUnlistedDescription(text)) return null;
+  const hit = PLURAL_ROLES.find((item) => item.pattern.test(text));
+  if (!hit) return null;
+  const proper = extractNamedEntities(text).some((entity) => !GENERIC_LABEL.test(entity.label));
+  if (proper) return null;
+  return hit.role;
 }

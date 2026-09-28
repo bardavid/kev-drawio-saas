@@ -1,5 +1,6 @@
 import { PALETTE, inferShape } from "@/lib/drawio/styles";
 import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
+import { wantsRicherDiagram } from "@/lib/kev/scale";
 import type { DiagramOperation, DiagramSlots, Intent, KevDecision } from "@/lib/kev/types";
 
 /**
@@ -38,6 +39,9 @@ const LEXICON: Record<string, string> = {
 };
 
 const GENERIC = new Set(["database", "db", "service", "server", "app", "web", "cache", "queue", "box", "node", "tier"]);
+/** Scraps of a scale phrase. They are not boxes the user named. */
+const FILLER_LABEL =
+  /^(?:nodes?|boxes?|shapes?|components?|architecture|architectures|diagram|diagrams|system|systems|lots|many|several|multiple|detailed|complex|web|application|apps?|tier|tiers|layer|layers)$/i;
 const WORD_NUM: Record<string, number> = { two: 2, three: 3, four: 4, five: 5, six: 6 };
 const COLOR_RE = new RegExp(`\\b(${Object.keys(PALETTE).join("|")})\\b`, "i");
 const DRAW_VERB = /\b(draw|sketch|build|create|architect)\b/i;
@@ -52,6 +56,8 @@ export interface ArchitecturePlan {
 export interface PlanHints {
   colorName?: string | null;
   layout?: "horizontal" | "vertical" | null;
+  /** From a depth reading. Many grows an unnamed stack. Few keeps it short. */
+  depth?: "few" | "many" | null;
 }
 
 /** “draw” / “draw a diagram” with no nodes, colors, or connections. */
@@ -186,7 +192,7 @@ export function isLimitInstruction(phrase: string): boolean {
   return stripTrailingLimits(`Anchor — ${text}`).toLowerCase() === "anchor";
 }
 
-export function parseArchitecture(message: string): ArchitecturePlan | null {
+export function parseArchitecture(message: string, hints?: PlanHints): ArchitecturePlan | null {
   const text = stripTrailingLimits(message).trim();
   if (!text || isBareDraw(text) || isBetweenEdit(text) || isColorRestyle(text)) return null;
   const hasVerb = DRAW_VERB.test(text);
@@ -206,7 +212,10 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
   const cleaned = stripModifiers(source);
   const chain = labelsFromChain(cleaned);
   let nodes = chain.length >= 2 ? chain : labelsFromList(cleaned);
-  nodes = expandTiers(nodes, tiers);
+  // "lots of nodes" is a scale phrase, not a pair of boxes. A named chain still wins.
+  const named = nodes.filter((node) => !FILLER_LABEL.test(node));
+  const rich = named.length === 0 && wantsRicherDiagram(text, hints?.depth);
+  nodes = expandTiers(rich ? [] : nodes, tiers, rich);
   if (aside) nodes = insertRedis(nodes);
   nodes = uniqueLabels(nodes).slice(0, 8);
   if (nodes.length < 2) return null;
@@ -234,7 +243,7 @@ export function layoutDefault(kind: "architecture" | "sequence" | "workflow" | "
 }
 
 export function resolvePlan(message: string, hints?: PlanHints): ArchitecturePlan | null {
-  const plan = parseArchitecture(message);
+  const plan = parseArchitecture(message, hints);
   if (!plan) return null;
   return {
     ...plan,
@@ -566,9 +575,9 @@ function insertRedis(nodes: string[]): string[] {
   return [...nodes.slice(0, index), "Redis", ...nodes.slice(index)];
 }
 
-function expandTiers(nodes: string[], tiers: number | null): string[] {
+function expandTiers(nodes: string[], tiers: number | null, rich = false): string[] {
   if (!tiers) return nodes;
-  if (nodes.length === 0) return defaultStack(tiers);
+  if (nodes.length === 0) return rich ? richStack(tiers) : defaultStack(tiers);
   if (nodes.length >= tiers) return nodes;
   if (nodes.length === 1) {
     const only = nodes[0] ?? "App";
@@ -592,6 +601,15 @@ function defaultStack(tiers: number): string[] {
   const middles = ["App"];
   for (let index = 1; index < tiers - 2; index += 1) middles.push(`Service ${index + 1}`);
   return ["Client", ...middles, "Postgres"];
+}
+
+/**
+ * Unnamed N-tier ask that also wants depth.
+ * Edge, client, app, cache, a worker, and more than one data store.
+ */
+function richStack(tiers: number): string[] {
+  if (tiers <= 2) return ["Client", "CDN", "App", "Cache", "Postgres"];
+  return ["Client", "CDN", "App", "Cache", "Worker", "Postgres", "Replica"];
 }
 
 function uniqueLabels(nodes: string[]): string[] {
