@@ -120,6 +120,8 @@ export interface EdgeRestyleRequest {
   word: string;
   colorName: string | null;
   fillColor: string | null;
+  /** Words the user said (“hot pink”), when they differ from the palette name. */
+  phrase: string | null;
   from: string | null;
   to: string | null;
 }
@@ -130,27 +132,175 @@ function restyleText(message: string): string {
   return (kept.length > 0 ? kept : sentences).join(" ").trim();
 }
 
-function findRestyleColor(text: string): { token: string; index: number; length: number } | null {
-  const named = text.match(COLOR_RE);
-  const hex = text.match(HEX_RE);
-  const namedAt = named?.index ?? -1;
-  const hexAt = hex?.index ?? -1;
-  if (namedAt === -1 && hexAt === -1) return null;
-  if (hexAt !== -1 && (namedAt === -1 || hexAt < namedAt)) {
-    return { token: `#${hex![1]!.toLowerCase()}`, index: hexAt, length: hex![0]!.length };
-  }
-  return { token: named![1]!.toLowerCase(), index: namedAt, length: named![0]!.length };
+/**
+ * Words that intensify a color. “hot pink” and “hot-pink” are the pink root,
+ * not a new palette key for every synonym.
+ */
+const COLOR_MODIFIERS = new Set([
+  "hot",
+  "light",
+  "dark",
+  "deep",
+  "bright",
+  "neon",
+  "vivid",
+  "electric",
+  "pale",
+  "soft",
+  "shocking",
+  "pure",
+  "true",
+  "baby",
+  "pastel",
+  "medium",
+  "ultra",
+  "extra",
+  "fluorescent",
+  "candy",
+  "bubblegum",
+  "shock",
+]);
+
+/**
+ * Pink, magenta, fuchsia, and hot-pink share one edge stroke.
+ * The band is hue 300±40. Palette magenta (~294) is inside it.
+ * Palette pink (~343) is outside, so an edge ask for pink uses the family stroke.
+ * Cyan and teal are not in this set and keep their own strokes.
+ */
+const MAGENTA_ROOTS = new Set(["pink", "magenta", "fuchsia", "hotpink", "rose", "cerise"]);
+const MAGENTA_HUE = { min: 260, max: 340 };
+
+function hexHue(hex: string): number {
+  const raw = hex.replace("#", "");
+  const red = parseInt(raw.slice(0, 2), 16) / 255;
+  const green = parseInt(raw.slice(2, 4), 16) / 255;
+  const blue = parseInt(raw.slice(4, 6), 16) / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  if (delta === 0) return 0;
+  let hue = 0;
+  if (max === red) hue = ((green - blue) / delta) % 6;
+  else if (max === green) hue = (blue - red) / delta + 2;
+  else hue = (red - green) / delta + 4;
+  hue *= 60;
+  if (hue < 0) hue += 360;
+  return hue;
 }
+
+function inMagentaBand(stroke: string): boolean {
+  const hue = hexHue(stroke);
+  return hue >= MAGENTA_HUE.min && hue <= MAGENTA_HUE.max;
+}
+
+interface ColorSpan {
+  token: string;
+  index: number;
+  length: number;
+  colorName: string | null;
+  phrase: string | null;
+}
+
+function resolveSpokenColor(rawParts: string[]): { colorName: string; phrase: string } | null {
+  const parts = rawParts.flatMap((part) => part.toLowerCase().split("-")).filter(Boolean);
+  if (parts.length === 0 || parts.length > 4) return null;
+  if (parts.length === 1) {
+    const word = parts[0] ?? "";
+    const name = canonicalColor(word);
+    const named = PALETTE[name];
+    if (named && !(MAGENTA_ROOTS.has(word) && !inMagentaBand(named.stroke))) {
+      return { colorName: name, phrase: name };
+    }
+    if (MAGENTA_ROOTS.has(word)) return { colorName: "magenta", phrase: word };
+    return null;
+  }
+  const compact = parts.join("");
+  const root = parts[parts.length - 1] ?? "";
+  const heads = parts.slice(0, -1);
+  const inFamily = MAGENTA_ROOTS.has(compact) || (MAGENTA_ROOTS.has(root) && heads.every((word) => COLOR_MODIFIERS.has(word)));
+  if (!inFamily) return null;
+  return { colorName: "magenta", phrase: rawParts.join(" ").toLowerCase() };
+}
+
+function findRestyleColor(text: string): ColorSpan | null {
+  const tokens = [...text.matchAll(/[A-Za-z]+(?:-[A-Za-z]+)*|#[0-9a-fA-F]{6}/g)];
+  let best: ColorSpan | null = null;
+  const consider = (hit: ColorSpan) => {
+    if (!best) {
+      best = hit;
+      return;
+    }
+    const bestHex = best.token.startsWith("#");
+    const hitHex = hit.token.startsWith("#");
+    if (bestHex !== hitHex) {
+      if (hit.index < best.index) best = hit;
+      return;
+    }
+    if (hit.length > best.length || (hit.length === best.length && hit.index < best.index)) best = hit;
+  };
+  for (let end = 0; end < tokens.length; end += 1) {
+    const last = tokens[end];
+    if (!last || last.index === undefined) continue;
+    if (last[0].startsWith("#")) {
+      consider({
+        token: `#${last[0].slice(1).toLowerCase()}`,
+        index: last.index,
+        length: last[0].length,
+        colorName: null,
+        phrase: null,
+      });
+      continue;
+    }
+    for (let start = end; start >= Math.max(0, end - 3); start -= 1) {
+      let contiguous = true;
+      for (let cursor = start; cursor < end; cursor += 1) {
+        const left = tokens[cursor];
+        const right = tokens[cursor + 1];
+        if (!left || !right || left.index === undefined || right.index === undefined) {
+          contiguous = false;
+          break;
+        }
+        const gap = text.slice(left.index + left[0].length, right.index);
+        if (!/^[\s-]+$/.test(gap)) {
+          contiguous = false;
+          break;
+        }
+      }
+      if (!contiguous) continue;
+      const slice = tokens.slice(start, end + 1);
+      const resolved = resolveSpokenColor(slice.map((token) => token[0]));
+      const first = slice[0];
+      if (!resolved || !first || first.index === undefined) continue;
+      const index = first.index;
+      const length = last.index + last[0].length - index;
+      consider({
+        token: text.slice(index, index + length),
+        index,
+        length,
+        colorName: resolved.colorName,
+        phrase: resolved.phrase,
+      });
+    }
+  }
+  return best;
+}
+
+const RESTYLE_LEAD =
+  /^(?:please\s+)?(?:change|make|turn|paint|tint|color|colour|recolor|recolour|restyle|style|set|wash|dye)\s+/i;
 
 function edgeSubject(text: string, color: { index: number; length: number }): string {
   const raw = `${text.slice(0, color.index)} ${text.slice(color.index + color.length)}`;
-  return raw
-    .replace(/^(?:please\s+)?(?:change|make|turn|paint|tint|color|colour|recolor|recolour|restyle|style|set)\s+/i, "")
+  let subject = raw
+    .replace(RESTYLE_LEAD, "")
     .replace(/\bplease\b/gi, " ")
     .replace(/\b(?:to|color|colour|in)\s*$/i, "")
     .replace(/[?.!,;:]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  // “edge stroke” names the connector stroke. The extra word is not an endpoint.
+  if (new RegExp(`\\b${EDGE_WORD}\\b`, "i").test(subject)) subject = subject.replace(/\bstrokes?\b/gi, " ");
+  else subject = subject.replace(/\bstrokes?\b/gi, "edges");
+  return subject.replace(/\s+/g, " ").trim();
 }
 
 function namedNode(value: string): string | null {
@@ -169,15 +319,15 @@ function namedNode(value: string): string | null {
  */
 export function parseEdgeRestyle(message: string): EdgeRestyleRequest | null {
   const text = restyleText(message);
-  if (!text || DRAW_COMMAND.test(text) || !new RegExp(`\\b${EDGE_WORD}\\b`, "i").test(text)) return null;
+  if (!text || DRAW_COMMAND.test(text) || !new RegExp(`\\b(?:${EDGE_WORD}|strokes?)\\b`, "i").test(text)) return null;
   const color = findRestyleColor(text);
   if (!color) return null;
   const subject = edgeSubject(text, color);
   const hex = color.token.startsWith("#") ? color.token : null;
-  const colorName = hex ? null : canonicalColor(color.token);
-  const scope = parseEdgeSubject(subject);
+  const colorName = hex ? null : color.colorName;
+  const scope = parseEdgeSubject(subject) ?? parseEdgeSubject(subject.replace(/^\S+\s+/, ""));
   if (!scope) return null;
-  return { word: scope.word, colorName, fillColor: hex, from: scope.from, to: scope.to };
+  return { word: scope.word, colorName, fillColor: hex, phrase: hex ? null : color.phrase, from: scope.from, to: scope.to };
 }
 
 function parseEdgeSubject(subject: string): { word: string; from: string | null; to: string | null } | null {
@@ -235,7 +385,7 @@ function parseEdgeSubject(subject: string): { word: string; from: string | null;
 }
 
 function edgeRestyleReply(parsed: EdgeRestyleRequest): string {
-  const color = parsed.colorName ?? parsed.fillColor ?? "the new color";
+  const color = parsed.phrase ?? parsed.colorName ?? parsed.fillColor ?? "the new color";
   if (parsed.from && parsed.to) return `Set the ${parsed.word} from ${parsed.from} to ${parsed.to} to ${color}.`;
   if (parsed.from) return `Set the ${parsed.word} from ${parsed.from} to ${color}.`;
   if (parsed.to) return `Set the ${parsed.word} into ${parsed.to} to ${color}.`;

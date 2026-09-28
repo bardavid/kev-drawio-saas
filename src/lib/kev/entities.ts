@@ -1094,15 +1094,22 @@ function phraseEntry(phrase: string, text: string): CatalogEntry | null {
   return null;
 }
 
+const ROLE_GLOSS_TAIL =
+  "(?:databases?|dbs?|caches?|datastores?|data(?:\\s+layers?)?|tiers?|layers?|services?|servers?|queues?|stores?|processes?)";
+const ROLE_GLOSS_PHRASE = `(?:(?:the|a|an|our|its|their)\\s+)?(?:[\\w-]+\\s+){0,3}?${ROLE_GLOSS_TAIL}`;
+
 /**
- * "Postgres is the database" names the product, then its role.
- * The words after the copula are the gloss. They are not a reason to drop the product.
+ * A role gloss sits on a product and must not replace it.
+ * Copula (“is the database”), em-dash / “which is the relational store”,
+ * and a parenthetical “(the relational store)” are the same kind of aside.
  */
 function copulaRoleGloss(text: string, end: number): boolean {
   const after = text.slice(end);
-  return /^\s+(?:is|are)\s+(?:(?:the|a|an|our|its|their)\s+)?(?:[\w-]+\s+){0,3}?(?:databases?|db|caches?|datastores?|data(?:\s+layers?)?|tiers?|layers?|services?|servers?|queues?|stores?)\b/i.test(
-    after,
-  );
+  const phrase = new RegExp(ROLE_GLOSS_PHRASE, "i");
+  if (new RegExp(`^\\s+(?:is|are)\\s+${phrase.source}\\b`, "i").test(after)) return true;
+  if (new RegExp(`^\\s*(?:,|;|—|–)?\\s*which\\s+(?:is|are|was|were)\\s+${phrase.source}\\b`, "i").test(after)) return true;
+  if (new RegExp(`^\\s*\\(\\s*${phrase.source}\\s*\\)`, "i").test(after)) return true;
+  return false;
 }
 
 /** A brand prefixed onto two different products is the vendor, not the product. */
@@ -1232,10 +1239,14 @@ function salvageBigrams(
     // on its own is still that tier.
     if (leftIsFragment && !actorPair) {
       const before = segment.text.slice(0, first.index);
-      const purpose = /\b(?:handling|handles|handle|for|as)\s+$/i.test(before);
-      const namesAProduct = spans.some(
-        (span) => segment.start <= span.start && span.end <= segment.end && (span.end <= start || span.start >= end),
+      // “Dynos run the web process” — the object of the verb is the job, not a second box.
+      const purpose = /\b(?:handling|handles|handle|for|as|runs?|running|hosts?|hosting)\s+(?:the\s+|a\s+|an\s+)?$/i.test(
+        before,
       );
+      const namesAProduct =
+        spans.some(
+          (span) => segment.start <= span.start && span.end <= segment.end && (span.end <= start || span.start >= end),
+        ) || wordsOf(before).some((token) => isUncommonBrand(token, segment.text));
       if (purpose && namesAProduct) continue;
     }
     const compound: Compound = {
@@ -1514,7 +1525,11 @@ function dropCoveredTitleHead(text: string, drafts: Draft[]): Draft[] {
     });
     if (!prefixed) return true;
     const escaped = head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return !new RegExp(`\\b${escaped}\\s+(?:sketch|diagram|architecture|stack|pipeline|system|layout)\\b`, "i").test(text);
+    // “On Heroku” / “Heroku with Dynos” / “Heroku sketch” name the vendor, not a second box.
+    return !new RegExp(
+      `\\b(?:on|onto)\\s+${escaped}\\b|\\b${escaped}\\s+(?:with|sketch|diagram|architecture|stack|pipeline|system|layout|cartoon)\\b`,
+      "i",
+    ).test(text);
   });
 }
 
@@ -1525,6 +1540,33 @@ function dropCoveredRoleGloss(drafts: Draft[]): Draft[] {
     if (!generic.test(draft.label)) return true;
     return !drafts.some((other) => other !== draft && other.role === draft.role && !generic.test(other.label));
   });
+}
+
+/**
+ * “first Bundle the artifact, then Release onto Fly.io”.
+ * The verbs are stages. The name after onto is the platform, not a stand-in for the verb.
+ * A gloss word such as “release” still counts when it is capitalized in that slot.
+ */
+function orderedStageHeads(text: string): Array<{ label: string; order: number }> {
+  if (!/\b(?:first|then)\b/i.test(text) || !/\bonto\b/i.test(text)) return [];
+  const found: Array<{ label: string; order: number }> = [];
+  const seen = new Set<string>();
+  const push = (raw: string, order: number) => {
+    const key = raw.toLowerCase();
+    if (seen.has(key) || key.length < 2) return;
+    seen.add(key);
+    found.push({ label: displayToken(raw), order });
+  };
+  for (const match of text.matchAll(/\bfirst\s+([A-Z][A-Za-z0-9]*)\b/g)) {
+    if (match[1] && match.index !== undefined) push(match[1], match.index + match[0].indexOf(match[1]));
+  }
+  for (const match of text.matchAll(/\b([A-Z][A-Za-z0-9]*)(?:\s+[a-z][a-z0-9]*){0,6}\s+first\b/g)) {
+    if (match[1] && match.index !== undefined) push(match[1], match.index);
+  }
+  for (const match of text.matchAll(/\b([A-Z][A-Za-z0-9]*)\s+onto\s+(?:the\s+)?[A-Z]/g)) {
+    if (match[1] && match.index !== undefined) push(match[1], match.index);
+  }
+  return found;
 }
 
 /** Concrete services, steps, actors, and states named in the message. */
@@ -1672,6 +1714,19 @@ export function extractNamedEntities(message: string): NamedEntity[] {
       order: span.start,
       origin: "catalog",
     });
+  }
+
+  if (!steps) {
+    for (const stage of orderedStageHeads(text)) {
+      pushDraft({
+        id: stage.label.toLowerCase(),
+        label: stage.label,
+        role: "compute",
+        shape: "rectangle",
+        order: stage.order,
+        origin: "listed",
+      });
+    }
   }
 
   const kept = dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts));

@@ -1380,7 +1380,7 @@ describe("named composition", () => {
       { text: "Paint every connector fuchsia", stroke: "#c026d3", hue: true },
       { text: "Paint every connector in fuchsia", stroke: "#c026d3", hue: true },
       { text: "Paint every connector magenta", stroke: "#c026d3", hue: true },
-      { text: "Paint every connector pink", stroke: "#c45c7a", hue: false },
+      { text: "Paint every connector pink", stroke: "#c026d3", hue: true },
       { text: "Recolor all arrows cyan", stroke: "#0c8599", hue: false },
       { text: "Tint every connector teal", stroke: "#0e8088", hue: false },
     ];
@@ -1489,6 +1489,179 @@ describe("named composition", () => {
       );
       assertPastel(content(report.nodes), prompt.text);
       assertContainerParents(drawn.xml, prompt.text);
+    }
+  });
+
+  it("paints hot-pink connector strokes from the magenta family and never asks the model to fill vertices", async () => {
+    const drawn = previewDemo("Client / API / Postgres", STARTER_XML);
+    const report = assertClean(drawn.xml);
+    assert.ok(report.edges.length >= 2);
+    const before = boxes(drawn.xml);
+    const fills = content(report.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const phrases = ["Wash every edge stroke hot pink", "Wash every edge stroke hot-pink", "Tint the arrows deep fuchsia"];
+    for (const phrase of phrases) {
+      const painted = previewDemo(phrase, drawn.xml);
+      assert.equal(painted.decision.intent, "style", phrase);
+      assert.equal(painted.decision.slots.colorName, "magenta", phrase);
+      assert.match(painted.decision.slots.target ?? "", /^(?:arrows?|edges?|connectors?|lines?)$/i, phrase);
+      assert.equal(painted.decision.slots.from ?? null, null, phrase);
+      assert.equal(painted.decision.slots.to ?? null, null, phrase);
+      assert.doesNotMatch(painted.decision.reply, /Restyled the diagram/i, phrase);
+      assert.deepEqual(boxes(painted.xml), before, phrase);
+      const after = assessDiagram(painted.xml);
+      assert.equal(after.edges.length, report.edges.length, phrase);
+      for (const edge of after.edges) {
+        const stroke = edge.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.ok(stroke, phrase);
+        const hue = hexHue(stroke ?? "");
+        assert.ok(hue >= 260 && hue <= 340, `${phrase} stroke ${stroke} hue ${hue}`);
+        assert.equal(stroke, "#c026d3", phrase);
+        assert.notEqual(stroke, "#64748b", phrase);
+        assert.notEqual(stroke, "#c45c7a", phrase);
+      }
+      assert.deepEqual(
+        content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+        fills,
+        phrase,
+      );
+      assert.ok(
+        content(after.nodes).every((node) => !node.style.includes("fillColor=#fad7e4")),
+        phrase,
+      );
+    }
+
+    const cyan = previewDemo("Recolor all arrows cyan", drawn.xml);
+    assert.equal(cyan.decision.slots.colorName, "cyan");
+    assert.ok(assessDiagram(cyan.xml).edges.every((edge) => edge.style.includes("strokeColor=#0c8599")));
+    const teal = previewDemo("Tint every connector teal", drawn.xml);
+    assert.equal(teal.decision.slots.colorName, "teal");
+    assert.ok(assessDiagram(teal.xml).edges.every((edge) => edge.style.includes("strokeColor=#0e8088")));
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "style", confidence: 0.92 },
+          needs_xml_edit: { type: "noul", noul: 0.9 },
+          color: { type: "choice", choice: "pink" },
+          anchor: { type: "choice", choice: "none" },
+          source: { type: "choice", choice: "none" },
+          target: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+    for (const phrase of ["Wash every edge stroke hot pink", "Wash every edge stroke hot-pink"]) {
+      const hosted = await runKevTurn({
+        messages: [{ role: "user", content: phrase }],
+        currentXml: drawn.xml,
+      });
+      assert.equal(called, 0, phrase);
+      assert.equal(hosted.intent, "style", phrase);
+      assert.doesNotMatch(hosted.reply, /Restyled the diagram/i, phrase);
+      const hostedReport = assessDiagram(hosted.updatedXml);
+      assert.deepEqual(boxes(hosted.updatedXml), before, phrase);
+      assert.ok(hostedReport.edges.every((edge) => edge.style.includes("strokeColor=#c026d3")), phrase);
+      assert.deepEqual(
+        content(hostedReport.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+        fills,
+        phrase,
+      );
+    }
+  });
+
+  it("keeps both stage verbs when the second is released onto a platform", () => {
+    const prompts = [
+      "Drone CI cartoon: first Bundle the artifact, then Release onto Fly.io",
+      "Jenkins cartoon: first Bundle the artifact, then Release onto Render",
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+      for (const label of ["Bundle", "Release"]) assert.ok(labels.includes(label), `${prompt} → ${labels.join(", ")}`);
+      assert.ok(labels.includes("Fly.io") || labels.includes("Render"), labels.join(", "));
+      assert.equal(labels.includes("Cartoon"), false, labels.join(", "));
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      for (const label of ["Bundle", "Release"]) assert.ok(drawnLabels.includes(label), drawnLabels.join(", "));
+      const platform = drawnLabels.includes("Fly.io") ? "Fly.io" : "Render";
+      assert.ok(drawnLabels.includes(platform), drawnLabels.join(", "));
+      const ordered = [...content(report.nodes)].sort((left, right) => left.x - right.x).map((node) => node.label);
+      const bundleAt = ordered.indexOf("Bundle");
+      const releaseAt = ordered.indexOf("Release");
+      const platformAt = ordered.indexOf(platform);
+      assert.ok(bundleAt >= 0 && releaseAt > bundleAt && platformAt > releaseAt, ordered.join(" → "));
+      assert.ok(report.edges.some((edge) => edge.from === "Bundle" && edge.to === "Release"), prompt);
+
+      const wedged = previewDemo("Wedge Acceptance Check after Bundle and before Release", drawn.xml);
+      assert.equal(wedged.decision.intent, "add_shape", prompt);
+      assert.equal(wedged.decision.slots.label, "Acceptance Check", prompt);
+      assert.equal(wedged.decision.slots.from, "Bundle", prompt);
+      assert.equal(wedged.decision.slots.to, "Release", prompt);
+      assert.doesNotMatch(wedged.decision.reply, /couldn't find a shape named/i, prompt);
+      const after = assertClean(wedged.xml);
+      const afterLabels = content(after.nodes).map((node) => node.label);
+      for (const label of ["Bundle", "Acceptance Check", "Release", platform]) {
+        assert.ok(afterLabels.includes(label), `${prompt} ${afterLabels.join(", ")}`);
+      }
+      assert.ok(after.edges.some((edge) => edge.from === "Bundle" && edge.to === "Acceptance Check"), prompt);
+      assert.ok(after.edges.some((edge) => edge.from === "Acceptance Check" && edge.to === "Release"), prompt);
+      assert.equal(
+        after.edges.some((edge) => edge.from === "Bundle" && edge.to === "Release"),
+        false,
+        prompt,
+      );
+      const xs = new Map(content(after.nodes).map((node) => [node.label, node.x]));
+      assert.ok((xs.get("Bundle") ?? 0) < (xs.get("Acceptance Check") ?? 0), prompt);
+      assert.ok((xs.get("Acceptance Check") ?? 0) < (xs.get("Release") ?? 0), prompt);
+    }
+  });
+
+  it("keeps the full product name through em-dash and parenthetical role glosses", () => {
+    const prompts = [
+      {
+        text: "On Heroku: Dynos run the web process; Heroku Postgres — which is the relational store — sits beside Redis Cloud for session keys",
+        labels: ["Dynos", "Heroku Postgres", "Redis Cloud"],
+        from: "Dynos",
+      },
+      {
+        text: "Heroku with Dynos, Heroku Postgres (the relational store), and Redis Cloud for session keys",
+        labels: ["Dynos", "Heroku Postgres", "Redis Cloud"],
+        from: "Dynos",
+      },
+      {
+        text: "On Crunchy: Runners run the web process; Crunchy Postgres — which is the relational store — sits beside Redis Cloud for session keys",
+        labels: ["Runners", "Crunchy Postgres", "Redis Cloud"],
+        from: "Runners",
+      },
+      {
+        text: "Crunchy with Runners, Crunchy Postgres (the relational store), and Redis Cloud for session keys",
+        labels: ["Runners", "Crunchy Postgres", "Redis Cloud"],
+        from: "Runners",
+      },
+    ];
+    const stolen = ["Web Process", "Relational Store", "Relational", "Postgres", "Data", "Stores Sessions", "Sessions", "Heroku", "Crunchy"];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      assert.deepEqual(labels, prompt.labels, prompt.text);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/, prompt.text);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      assert.deepEqual(drawnLabels, prompt.labels, prompt.text);
+      for (const label of stolen) assert.equal(drawnLabels.includes(label), false, `${prompt.text} stole ${label}`);
+      const postgres = content(report.nodes).find((node) => /Postgres$/.test(node.label));
+      const cache = content(report.nodes).find((node) => node.label === "Redis Cloud");
+      assert.ok(postgres?.style.includes("shape=cylinder3"), prompt.text);
+      assert.ok(cache?.style.includes("shape=cylinder3"), prompt.text);
+      assert.ok(report.edges.some((edge) => edge.from === prompt.from && edge.to === postgres?.label), prompt.text);
+      assert.ok(report.edges.some((edge) => edge.from === prompt.from && edge.to === "Redis Cloud"), prompt.text);
+      assertPastel(content(report.nodes), prompt.text);
     }
   });
 });
