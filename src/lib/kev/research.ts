@@ -123,7 +123,9 @@ const LEADING_TOPIC_WORD =
  * then a shorter trailing phrase is tried. The first title is the full subject.
  */
 export function topicLookupCandidates(subject: string): string[] {
-  const words = subject.split(/\s+/).filter(Boolean);
+  // A relative clause is a modifier, not part of the page title.
+  const head = subject.split(/\s+(?:that|which|who|where|when)\s+/i)[0]?.trim() || subject.trim();
+  const words = head.split(/\s+/).filter(Boolean);
   const candidates: string[] = [];
   const push = (slice: string[]) => {
     const title = slice.join(" ").trim();
@@ -151,7 +153,10 @@ async function usableTopicSummary(title: string, fetchImpl: typeof fetch): Promi
   const exact = await fetchTopicBrief(title, fetchImpl);
   if (exact) return componentsFromBrief(exact) ? exact : null;
   const found = await searchWikiTitle(title, fetchImpl);
-  if (!found || found.toLowerCase() === title.toLowerCase()) return null;
+  if (!found) return null;
+  // The caller's casing 404'd. Search often returns the same title with different case
+  // ("Io Uring" vs "Io uring"). That page has not been read yet.
+  if (found === title) return null;
   const live = await fetchTopicBrief(found, fetchImpl);
   if (!live || !componentsFromBrief(live)) return null;
   return live;

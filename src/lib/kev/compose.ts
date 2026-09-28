@@ -38,7 +38,18 @@ import {
 } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import { routeEdges } from "@/lib/drawio/layout";
-import { componentsFromBrief, highLevelOverview, ideaSubject, isExpandFollowUp, longUnlistedDescription, overviewSubject, pluralRoleOf } from "@/lib/kev/scale";
+import {
+  componentsFromBrief,
+  componentsFromOpenIdea,
+  depthFromOpenAnswer,
+  highLevelOverview,
+  ideaSubject,
+  isExpandFollowUp,
+  longUnlistedDescription,
+  overviewSubject,
+  pluralRoleOf,
+  type BriefLink,
+} from "@/lib/kev/scale";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
 
@@ -657,6 +668,8 @@ export function unresolvedOpenIdea(message: string): boolean {
   const text = message.trim();
   if (!longUnlistedDescription(text)) return false;
   if (listedComponents(text) || highLevelOverview(text)) return false;
+  // A depth answer names no new system. Without a prior question it is not drawn.
+  if (depthFromOpenAnswer(text)) return false;
   return resolveComposition(text) === null && parseArchitecture(text) === null;
 }
 
@@ -709,6 +722,24 @@ export function highLevelComposition(message: string): Composition | null {
 export function composeDetailedFromBrief(message: string, summary: string): Composition | null {
   const parts = componentsFromBrief(summary);
   if (!parts) return null;
+  return compositionFromParts(message, parts, summary);
+}
+
+/**
+ * The user already chose a detailed diagram and asked for the names.
+ * Topic notes did not supply them, so the idea's own clauses become the boxes.
+ */
+export function composeDetailedFromIdea(message: string): Composition | null {
+  const parts = componentsFromOpenIdea(message);
+  if (!parts) return null;
+  return compositionFromParts(message, parts, null);
+}
+
+function compositionFromParts(
+  message: string,
+  parts: { nodes: string[]; edges: BriefLink[] },
+  context: string | null,
+): Composition {
   const layout = requestedLayout(message) ?? layoutDefault("layers");
   const ids = new Map<string, string>();
   parts.nodes.forEach((label, index) => {
@@ -746,7 +777,7 @@ export function composeDetailedFromBrief(message: string, summary: string): Comp
   return {
     spec,
     colorName: null,
-    context: summary,
+    context,
     researchQuery: ideaSubject(message),
     layout,
     grounded: false,
