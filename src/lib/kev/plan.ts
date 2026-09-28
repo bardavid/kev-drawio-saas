@@ -132,13 +132,25 @@ function isColorRestyle(text: string): boolean {
   );
 }
 
+/**
+ * An edit of the open canvas. "Add a cache to the 3-tier app" names a tier count
+ * only as context. It is not a request for a new stack.
+ */
+function isLedByEdit(text: string): boolean {
+  return /^(?:please\s+)?(?:add|insert|place|put|drop|connect|delete|remove|rename|relabel|change|turn|paint|color|colour|recolor|recolour|restyle|style|lay|reflow|relayout|re-layout|arrange|organize|organise|move)\b/i.test(
+    text.trim(),
+  );
+}
+
 export function parseArchitecture(message: string): ArchitecturePlan | null {
   const text = message.trim();
   if (!text || isBareDraw(text) || isBetweenEdit(text) || isColorRestyle(text)) return null;
   const hasVerb = DRAW_VERB.test(text);
   const hasArrow = /→|->|=>|—>|-->|–>/.test(text);
   const tiers = tierCount(text);
-  if (!hasVerb && !hasArrow) return null;
+  // "3-tier web app" names a stack even when it never says draw and has no arrow.
+  const tierAsk = tiers !== null && !isLedByEdit(text);
+  if (!hasVerb && !hasArrow && !tierAsk) return null;
 
   // "with Redis cache" names a cache vertex. It is not part of the tier chain,
   // and the default Client → App → Postgres stack used to drop it.
@@ -151,7 +163,6 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
   if (aside) nodes = insertRedis(nodes);
   nodes = uniqueLabels(nodes).slice(0, 8);
   if (nodes.length < 2) return null;
-  if (!hasVerb && !hasArrow) return null;
 
   return {
     title: extractTitle(source, chain.length >= 2 ? chain : []),

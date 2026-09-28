@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { DRAWIO_EMBED_URL } from "../src/lib/drawio/protocol";
-import { SEEDED_XML } from "../src/lib/drawio/starter";
+import { SEEDED_XML, STARTER_XML } from "../src/lib/drawio/starter";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 import { decideDemo, previewDemo } from "../src/lib/kev/demo";
 import { KevError } from "../src/lib/kev/client";
@@ -706,5 +706,89 @@ describe("configured pipeline", { concurrency: 1 }, () => {
     assert.equal(appAfter.y, appBefore.y);
     assert.ok(summary.edges.some((edge) => edge.from === "App" && edge.to === "Redis"));
     assert.ok(summary.edges.some((edge) => edge.from === "Redis" && edge.to === "Postgres"));
+  });
+
+  it("draws a short N-tier ask on a blank canvas when the reading has no shape name", async () => {
+    const prompts = ["three tier web app", "just a simple three tier web app", "3-tier architecture"];
+    for (const prompt of prompts) {
+      blankEnv();
+      process.env.KEV_BASE_URL = "http://kev.local";
+      let calls = 0;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        calls += 1;
+        assert.equal(String(input).includes("/chat/completions"), false);
+        return jsonResponse({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "add_shape", confidence: 0.42 },
+            needs_xml_edit: { type: "noul", noul: 0.8 },
+            shape: { type: "choice", choice: "none" },
+          },
+        });
+      }) as typeof fetch;
+
+      const result = await runKevTurn({
+        messages: [{ role: "user", content: prompt }],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(calls, 1, prompt);
+      assert.equal(result.mode, "kev", prompt);
+      assert.equal(result.intent, "add_shape", prompt);
+      assert.doesNotMatch(result.reply, /What should the new shape be called/, prompt);
+      assert.match(result.reply, /Client → App → Postgres/, prompt);
+      const summary = summarizeDiagram(result.updatedXml);
+      const shapes = summary.vertices.filter((vertex) => !vertex.style.includes("drawai=cluster"));
+      assert.deepEqual(
+        shapes.map((vertex) => vertex.label),
+        ["Client", "App", "Postgres"],
+        prompt,
+      );
+      assert.ok(summary.edges.every((edge) => edge.label.length > 0), prompt);
+      assert.ok(summary.vertices.some((vertex) => vertex.style.includes("drawai=cluster")), prompt);
+      assert.ok(
+        shapes.every((vertex) => vertex.style.includes("fillColor=") && !vertex.style.includes("fillColor=#ffffff")),
+        prompt,
+      );
+    }
+  });
+
+  it("draws the N-tier stack when a nameless add_shape would otherwise ask for a label", async () => {
+    blankEnv();
+    process.env.OPENAI_API_KEY = "sk-test";
+    const emptyAdd = {
+      intent: "add_shape",
+      reply: "Adding a shape.",
+      updatedXml: "",
+      slots: {},
+      operations: [{ intent: "add_shape", slots: {} }],
+    };
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        choices: [{ message: { content: JSON.stringify(emptyAdd) } }],
+      })) as typeof fetch;
+
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: "just a simple three tier web app" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(drawn.mode, "openai");
+    assert.equal(drawn.intent, "add_shape");
+    assert.doesNotMatch(drawn.reply, /What should the new shape be called/);
+    assert.match(drawn.reply, /Client → App → Postgres/);
+    const shapes = summarizeDiagram(drawn.updatedXml).vertices.filter(
+      (vertex) => !vertex.style.includes("drawai=cluster"),
+    );
+    assert.deepEqual(
+      shapes.map((vertex) => vertex.label),
+      ["Client", "App", "Postgres"],
+    );
+
+    const asked = await runKevTurn({
+      messages: [{ role: "user", content: "hello" }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(asked.intent, "clarify");
+    assert.match(asked.reply, /What should the new shape be called/);
+    assert.equal(asked.updatedXml, STARTER_XML);
   });
 });
