@@ -173,7 +173,7 @@ function shiftRightOf(doc: XmlDocument, minX: number, dx: number) {
   if (moved) clearEdgeWaypoints(doc);
 }
 
-function connectCells(doc: XmlDocument, source: XmlElement, target: XmlElement, label: string) {
+function connectCells(doc: XmlDocument, source: XmlElement, target: XmlElement, label: string, style = EDGE_STYLE) {
   const sourceId = source.getAttribute("id");
   const targetId = target.getAttribute("id");
   if (!sourceId || !targetId) throw new DiagramXmlError("A shape is missing an id.");
@@ -187,7 +187,7 @@ function connectCells(doc: XmlDocument, source: XmlElement, target: XmlElement, 
   const cell = doc.createElement("mxCell");
   cell.setAttribute("id", nextCellId(doc));
   cell.setAttribute("value", label);
-  cell.setAttribute("style", EDGE_STYLE);
+  cell.setAttribute("style", style);
   cell.setAttribute("edge", "1");
   cell.setAttribute("parent", "1");
   cell.setAttribute("source", sourceId);
@@ -214,6 +214,31 @@ function shiftDownOf(doc: XmlDocument, minY: number, dy: number) {
   if (moved) clearEdgeWaypoints(doc);
 }
 
+/** Keep a restyle (blue arrows) when the edge between two stages is replaced. */
+function carriedEdgeStyle(edge: XmlElement | null): string {
+  if (!edge) return EDGE_STYLE;
+  const parsed = parseStyle(edge.getAttribute("style") ?? "");
+  let style = EDGE_STYLE;
+  const stroke = parsed.get("strokeColor");
+  const fill = parsed.get("fillColor");
+  if (stroke) style = setStyleProp(style, "strokeColor", stroke);
+  if (fill) style = setStyleProp(style, "fillColor", fill);
+  return style;
+}
+
+function findEdgeBetween(doc: XmlDocument, source: XmlElement, target: XmlElement): XmlElement | null {
+  const sourceId = source.getAttribute("id");
+  const targetId = target.getAttribute("id");
+  let reverse: XmlElement | null = null;
+  for (const edge of listEdges(doc)) {
+    const from = edge.getAttribute("source");
+    const to = edge.getAttribute("target");
+    if (from === sourceId && to === targetId) return edge;
+    if (from === targetId && to === sourceId) reverse = edge;
+  }
+  return reverse;
+}
+
 /** Splice one new vertex onto the edge between two shapes. Neighbors keep their place. */
 function insertBetween(
   doc: XmlDocument,
@@ -226,6 +251,9 @@ function insertBetween(
   const toQuery = slots.to ?? "";
   const fromNode = requireVertex(doc, fromQuery);
   const toNode = requireVertex(doc, toQuery);
+  if (fromNode === toNode) {
+    throw new DiagramXmlError(`“${fromQuery}” and “${toQuery}” name the same shape.`);
+  }
   const fromBox = geometryOf(fromNode);
   const toBox = geometryOf(toNode);
   const gap = 80;
@@ -241,10 +269,11 @@ function insertBetween(
     const need = y + size.height + gap;
     if (toBox.y < need) shiftDownOf(doc, toBox.y, need - toBox.y);
   }
+  const carried = carriedEdgeStyle(findEdgeBetween(doc, fromNode, toNode));
   const cell = createVertex(doc, label, style, x, y, size.width, size.height);
   removeEdgesBetween(doc, fromNode, toNode);
-  connectCells(doc, fromNode, cell, slots.edgeLabel ?? "");
-  connectCells(doc, cell, toNode, "");
+  connectCells(doc, fromNode, cell, slots.edgeLabel ?? "", carried);
+  connectCells(doc, cell, toNode, "", carried);
 }
 
 function removeEdgesBetween(doc: XmlDocument, source: XmlElement, target: XmlElement) {

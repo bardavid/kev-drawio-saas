@@ -1353,5 +1353,111 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       after.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
       false,
     );
+    assert.deepEqual(
+      [...content(after.nodes)].sort((a, b) => a.x - b.x).map((node) => node.label),
+      ["GitHub Actions", "Build", "Test", "Deploy to Vercel"],
+    );
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+    const testBox = content(after.nodes).find((node) => node.label === "Test");
+    const deployBox = content(after.nodes).find((node) => node.label === "Deploy to Vercel");
+    assert.ok(testBox && deployBox && buildAfter);
+    assert.ok(testBox.x > buildAfter.x);
+    assert.ok(testBox.x < deployBox.x);
+  });
+
+  it("splices Test between Build and Deploy when Kev would append it after Deploy", async () => {
+    installKev();
+    process.env.OPENAI_API_KEY = "sk-test";
+    const prompt = "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    const restyled = previewDemo("make the arrows blue", drawn.xml);
+    const before = geometrySignature(restyled.xml);
+    const appended = applyOperations(restyled.xml, [
+      {
+        intent: "add_shape",
+        slots: { label: "Test", shape: "rectangle", from: "Deploy to Vercel", place: "after" },
+      },
+    ]);
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/chat/completions")) {
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  intent: "add_shape",
+                  reply: "Added Test after Deploy.",
+                  updatedXml: appended,
+                  slots: { label: "Test", from: "Deploy to Vercel", place: "after" },
+                  operations: [
+                    {
+                      intent: "add_shape",
+                      slots: { label: "Test", from: "Deploy to Vercel", place: "after" },
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "add_shape", confidence: 0.91 },
+          needs_xml_edit: { type: "noul", noul: 0.96 },
+          place: { type: "choice", choice: "after" },
+          anchor: { type: "choice", choice: "Deploy to Vercel" },
+          source: { type: "choice", choice: "Deploy to Vercel" },
+          target: { type: "choice", choice: "none" },
+          shape: { type: "choice", choice: "rectangle" },
+          color: { type: "choice", choice: "none" },
+          layout: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+
+    const edited = await runKevTurn({
+      messages: [
+        { role: "user", content: prompt },
+        { role: "assistant", content: drawn.decision.reply },
+        { role: "user", content: "make the arrows blue" },
+        { role: "assistant", content: restyled.decision.reply },
+        { role: "user", content: "add a Test stage between build and deploy" },
+      ],
+      currentXml: restyled.xml,
+      previousXml: drawn.xml,
+    });
+    assert.equal(edited.intent, "add_shape");
+    assert.equal(edited.reply, "Added Test between Build and Deploy.");
+    assert.equal(edited.slots.label, "Test");
+    assert.equal(edited.slots.from, "Build");
+    assert.equal(edited.slots.to, "Deploy");
+    const after = assertClean(edited.updatedXml);
+    assert.deepEqual(
+      [...content(after.nodes)].sort((a, b) => a.x - b.x).map((node) => node.label),
+      ["GitHub Actions", "Build", "Test", "Deploy to Vercel"],
+    );
+    assert.deepEqual(
+      after.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["GitHub Actions->Build", "Build->Test", "Test->Deploy to Vercel"],
+    );
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+    const kept = geometrySignature(edited.updatedXml);
+    assert.deepEqual(
+      kept.nodes.find((node) => node.label === "GitHub Actions"),
+      before.nodes.find((node) => node.label === "GitHub Actions"),
+    );
+    assert.deepEqual(
+      kept.nodes.find((node) => node.label === "Build"),
+      before.nodes.find((node) => node.label === "Build"),
+    );
+    const testBox = content(after.nodes).find((node) => node.label === "Test");
+    const buildBox = content(after.nodes).find((node) => node.label === "Build");
+    const deployBox = content(after.nodes).find((node) => node.label === "Deploy to Vercel");
+    assert.ok(testBox && buildBox && deployBox);
+    assert.ok(testBox.x > buildBox.x);
+    assert.ok(testBox.x < deployBox.x);
   });
 });

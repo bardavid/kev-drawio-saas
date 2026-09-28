@@ -1207,6 +1207,11 @@ describe("popular diagram templates", () => {
       after.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
       false,
     );
+    assert.deepEqual(
+      [...content(after.nodes)].sort((a, b) => a.x - b.x).map((node) => node.label),
+      ["GitHub Actions", "Build", "Test", "Deploy to Vercel"],
+    );
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
     assert.equal(matchTemplate("draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery")?.spec.title, "GCP data pipeline");
   });
 

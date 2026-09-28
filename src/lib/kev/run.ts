@@ -148,6 +148,16 @@ function mergeSlots(primary: DiagramSlots, fallback: DiagramSlots): DiagramSlots
   };
 }
 
+/** "Add Test between Build and Deploy" names both ends. Place after/before must not append it. */
+function betweenAddDecision(message: string): KevDecision | null {
+  const demo = decideDemo(message);
+  if (demo.intent !== "add_shape") return null;
+  const slots = demo.operations[0]?.slots ?? demo.slots;
+  if (!slots.from || !slots.to) return null;
+  if (slots.place === "before" || slots.place === "after") return null;
+  return demo;
+}
+
 function replyFromReading(reading: KevReading, slots: DiagramSlots): string {
   switch (reading.intent) {
     case "add_shape":
@@ -174,6 +184,14 @@ function replyFromReading(reading: KevReading, slots: DiagramSlots): string {
 /** Kev owns the intent. Demo text fills labels Kev cannot emit. Kev's closed choices win when set. */
 export function mergeKevWithDemo(reading: KevReading, demo: KevDecision): KevDecision {
   const slots = mergeSlots(reading.slots, demo.slots);
+  const between = demo.intent === "add_shape" ? (demo.operations[0]?.slots ?? demo.slots) : null;
+  if (between?.from && between.to && between.place !== "before" && between.place !== "after") {
+    slots.from = between.from;
+    slots.to = between.to;
+    slots.label = between.label ?? slots.label;
+    slots.place = null;
+    slots.target = null;
+  }
   const matched = demo.intent === reading.intent;
   const reply = matched && demo.reply.trim() ? demo.reply : replyFromReading(reading, slots);
   if (reading.intent === "clarify" || reading.intent === "noop") {
@@ -232,6 +250,11 @@ function finish(
   if (extra.userMessage) {
     const uttered = edgeRestyleDecision(extra.userMessage);
     if (uttered) decision = uttered;
+    else {
+      const between = betweenAddDecision(extra.userMessage);
+      // A model mxfile that appends the stage is not the edit. The host splices the named edge.
+      if (between) decision = between;
+    }
   }
   if (decision.intent === "clarify" || decision.intent === "noop") {
     return result(decision, mode, model, originalXml, false, extra);
@@ -421,6 +444,10 @@ export async function runKevTurn(input: {
   if (utteredEdges) {
     return finish(utteredEdges, described.mode, described.model, input.currentXml, currentXml, { userMessage });
   }
+  const betweenAdd = betweenAddDecision(userMessage);
+  if (betweenAdd) {
+    return finish(betweenAdd, described.mode, described.model, input.currentXml, currentXml, { userMessage });
+  }
   const context = editContext(currentXml, input.previousXml);
   const request = {
     messages: input.messages,
@@ -551,7 +578,7 @@ export async function runKevTurn(input: {
         model,
         input.currentXml,
         currentXml,
-        { confidence: reading.confidence },
+        { confidence: reading.confidence, userMessage },
       );
     } catch (error) {
       if (!(error instanceof KevError)) throw error;
@@ -560,5 +587,6 @@ export async function runKevTurn(input: {
 
   return finish(mergeKevWithDemo(reading, demo), "kev", model, input.currentXml, currentXml, {
     confidence: reading.confidence,
+    userMessage,
   });
 }

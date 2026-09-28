@@ -173,6 +173,28 @@ describe("system one contract", () => {
     assert.equal(merged.slots.colorName, "red");
     assert.match(merged.reply, /Redis/);
   });
+
+  it("keeps a between-insert on the named stages when Kev appends after the later one", () => {
+    const reading: KevReading = {
+      intent: "add_shape",
+      needsXmlEdit: true,
+      confidence: 0.91,
+      disruption: 2,
+      disruptionLegend: null,
+      slots: { place: "after", from: "Deploy to Vercel", to: null, target: "Deploy to Vercel" },
+    };
+    const merged = mergeKevWithDemo(reading, decideDemo("add a Test stage between build and deploy"));
+    assert.equal(merged.intent, "add_shape");
+    assert.equal(merged.reply, "Added Test between Build and Deploy.");
+    assert.equal(merged.slots.label, "Test");
+    assert.equal(merged.slots.from, "Build");
+    assert.equal(merged.slots.to, "Deploy");
+    assert.equal(merged.slots.place, null);
+    assert.equal(merged.slots.target, null);
+    assert.equal(merged.operations[0]?.slots.from, "Build");
+    assert.equal(merged.operations[0]?.slots.to, "Deploy");
+    assert.equal(merged.operations[0]?.slots.place ?? null, null);
+  });
 });
 
 describe("configured pipeline", { concurrency: 1 }, () => {
