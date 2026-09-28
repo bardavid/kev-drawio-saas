@@ -242,6 +242,23 @@ const FIXTURES: Fixture[] = [
     above: [["Order", "Payment"]],
   },
   {
+    prompt: "draw an AWS architecture with API Gateway, Lambda, SQS, and SNS",
+    labels: ["Client", "API Gateway", "Lambda", "SQS", "SNS"],
+    edges: [
+      ["Client", "API Gateway", "HTTPS"],
+      ["API Gateway", "Lambda", "Invoke"],
+      ["Lambda", "SQS", "Send"],
+      ["Lambda", "SNS", "Publish"],
+    ],
+    above: [
+      ["Client", "API Gateway"],
+      ["API Gateway", "Lambda"],
+      ["Lambda", "SQS"],
+      ["SQS", "SNS"],
+    ],
+    clusters: ["Clients", "Edge", "Compute", "Messaging"],
+  },
+  {
     prompt: "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB",
     labels: ["Client", "API Gateway", "Lambda", "DynamoDB"],
     edges: [
@@ -1055,6 +1072,71 @@ describe("popular diagram templates", () => {
       (node) => node.label,
     );
     assert.deepEqual(plain, ["User", "Browser", "Checkout", "Payment", "Orders"]);
+  });
+
+  it("draws API Gateway, Lambda, SQS, and SNS instead of clarifying or stealing another AWS stack", () => {
+    const prompt = "draw an AWS architecture with API Gateway, Lambda, SQS, and SNS";
+    assert.equal(matchTemplate(prompt)?.spec.title, "AWS messaging");
+    const composition = resolveComposition(prompt);
+    assert.ok(composition);
+    const outline = describeComposition(composition);
+    assert.match(outline, /API Gateway/);
+    assert.match(outline, /Lambda/);
+    assert.match(outline, /\bSQS\b/);
+    assert.match(outline, /\bSNS\b/);
+    assert.doesNotMatch(outline, /DynamoDB/);
+    assert.doesNotMatch(outline, /CloudFront/);
+    assert.doesNotMatch(outline, /\bALB\b/);
+    assert.doesNotMatch(outline, /\bECS\b/);
+
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.match(drawn.decision.reply, /API Gateway/);
+    assert.match(drawn.decision.reply, /SQS/);
+    assert.match(drawn.decision.reply, /SNS/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["API Gateway", "Lambda", "SQS", "SNS"]) assert.ok(labels.includes(label), label);
+    for (const stolen of ["CloudFront", "S3", "DynamoDB", "ALB", "ECS", "ECS Fargate", "RDS", "ElastiCache"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    above(report, "API Gateway", "Lambda");
+    above(report, "Lambda", "SQS");
+    linked(report, "API Gateway", "Lambda", "Invoke");
+    linked(report, "Lambda", "SQS", "Send");
+    linked(report, "Lambda", "SNS", "Publish");
+
+    const synonym = "draw an AWS architecture with API Gateway, Lambda, Simple Queue Service, and Simple Notification Service";
+    assert.equal(matchTemplate(synonym)?.spec.title, "AWS messaging");
+    const synonymLabels = content(assertClean(previewDemo(synonym, STARTER_XML).xml).nodes).map((node) => node.label);
+    for (const label of ["API Gateway", "Lambda", "SQS", "SNS"]) assert.ok(synonymLabels.includes(label), label);
+    assert.equal(synonymLabels.includes("DynamoDB"), false);
+    assert.equal(synonymLabels.includes("CloudFront"), false);
+    assert.equal(synonymLabels.includes("ALB"), false);
+
+    const serverless = content(
+      assertClean(
+        previewDemo("draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB", STARTER_XML).xml,
+      ).nodes,
+    ).map((node) => node.label);
+    assert.ok(serverless.includes("DynamoDB"));
+    assert.equal(serverless.includes("SQS"), false);
+    assert.equal(serverless.includes("SNS"), false);
+    const cdn = content(
+      assertClean(previewDemo("draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB", STARTER_XML).xml).nodes,
+    ).map((node) => node.label);
+    assert.ok(cdn.includes("CloudFront"));
+    assert.ok(cdn.includes("S3"));
+    assert.equal(cdn.includes("SQS"), false);
+    assert.equal(cdn.includes("API Gateway"), false);
+    const vpc = content(
+      assertClean(previewDemo("draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache", STARTER_XML).xml).nodes,
+    ).map((node) => node.label);
+    assert.ok(vpc.includes("ALB"));
+    assert.ok(vpc.includes("ECS Fargate"));
+    assert.equal(vpc.includes("SQS"), false);
+    assert.equal(vpc.includes("API Gateway"), false);
   });
 
   it("keeps CloudFront and S3 on an AWS architecture that also names Lambda and DynamoDB", () => {
