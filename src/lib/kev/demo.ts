@@ -9,7 +9,15 @@ import {
   sameMxfile,
   overNamedCapacity,
 } from "@/lib/kev/compose";
-import { architectureDecision, isBareDraw, isBetweenEdit, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
+import {
+  architectureDecision,
+  isBareDraw,
+  isBetweenEdit,
+  operationsForPlan,
+  PLACEMENT_MANNER_TOKENS,
+  resolvePlan,
+  withPalette,
+} from "@/lib/kev/plan";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY } from "@/lib/kev/reply";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
@@ -442,10 +450,14 @@ const ANCHOR_FLUFF = new Set([
   "to",
 ]);
 
-/** Locatives after a new stage name ("into place", "here"). Trailing only, so a name may start with Place. */
-const PLACEMENT_FLUFF = new Set(["place", "here", "there", "somewhere", "anywhere", "midway", "halfway"]);
+/**
+ * Locatives after a new stage name ("into place", "here").
+ * "place" stays trailing-only so a name may start with Place ("Place Order").
+ * Midpoint and manner words are also stripped from any position via INTERNAL_FLUFF.
+ */
+const PLACEMENT_FLUFF = new Set(["place", "here", "there", "somewhere", "anywhere", ...PLACEMENT_MANNER_TOKENS]);
 
-/** Words that locate a stage. They are not part of its name, wherever they sit. */
+/** Words that locate a stage or describe the insert. They are not part of its name, wherever they sit. */
 const INTERNAL_FLUFF = new Set([
   "named",
   "called",
@@ -455,8 +467,7 @@ const INTERNAL_FLUFF = new Set([
   "sits",
   "sit",
   "sitting",
-  "midway",
-  "halfway",
+  ...PLACEMENT_MANNER_TOKENS,
 ]);
 
 function tokenKey(word: string): string {

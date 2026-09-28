@@ -1,4 +1,5 @@
 import { PALETTE, inferShape, type ShapeKind } from "@/lib/drawio/styles";
+import { PLACEMENT_MANNER_TOKENS } from "@/lib/kev/plan";
 
 /**
  * Named services, steps, actors, and states pulled from the words the user
@@ -653,8 +654,7 @@ const ORDINARY = new Set([
   "sits",
   "sit",
   "sitting",
-  "midway",
-  "halfway",
+  ...PLACEMENT_MANNER_TOKENS,
   "verifies",
   "verify",
   "verified",

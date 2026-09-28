@@ -70,8 +70,38 @@ export function isArchitectureRequest(message: string): boolean {
 const INSERT_VERB = /\b(?:add|insert|place|put|drop|splice|wedge|park|stick|tuck|slot|nest)\b/i;
 
 /**
+ * Placement locatives and manner adverbs. They say where or how an insert sits.
+ * They are not a stage name. Hyphenated forms ("mid-stream") count as the same word.
+ */
+export const PLACEMENT_MANNER_TOKENS = [
+  "midstream",
+  "midway",
+  "halfway",
+  "midst",
+  "midpoint",
+  "midcourse",
+  "midspan",
+  "midpath",
+  "midflow",
+  "partway",
+  "betwixt",
+  "amid",
+  "amidst",
+  "enroute",
+  "neatly",
+  "cleanly",
+  "directly",
+  "squarely",
+] as const;
+
+const PLACEMENT_MANNER_RE = new RegExp(
+  `\\b(?:${PLACEMENT_MANNER_TOKENS.map((token) => token.replace(/^(mid|half|part|en)(?=[a-z])/, "$1-?")).join("|")})\\b`,
+  "i",
+);
+
+/**
  * An insert onto an existing edge.
- * "between A and B", or "after A, before B" (midway and the same family).
+ * "between A and B", or "after A, before B" (midstream, midway, and the same family).
  * It is not a new architecture chain, even when a stage name such as Build looks like a draw verb.
  */
 export function isBetweenEdit(text: string): boolean {
@@ -79,7 +109,7 @@ export function isBetweenEdit(text: string): boolean {
   const between = /\bbetween\s+(?:the\s+)?.+\s+and\s+\S+/i.test(trimmed);
   const afterBefore = /\bafter\s+(?:the\s+)?\S+/i.test(trimmed) && /\bbefore\s+(?:the\s+)?\S+/i.test(trimmed);
   if (between && INSERT_VERB.test(trimmed)) return true;
-  return afterBefore && (INSERT_VERB.test(trimmed) || /\b(?:midway|halfway)\b/i.test(trimmed));
+  return afterBefore && (INSERT_VERB.test(trimmed) || PLACEMENT_MANNER_RE.test(trimmed));
 }
 
 /** "Rename X to Y" and "Change X's name to Y" edit a label. They are not a new diagram. */

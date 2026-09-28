@@ -18,6 +18,7 @@ Practice. If the canvas already has shapes → edit those shapes. If the user di
 If you are confirming a composed diagram and the user named no color → leave color as none. The host then uses pastel fills, labeled edges, and topic containers. You do not invent those.
 If a proper name sits beside a role word → the label is the proper name, and the role only picks the shape and the group. If only the role word is present → the label is the role.
 If an insert says “box”, “shape”, “node”, “stage”, “between”, “in front of”, or “after” → those words are placement, not part of the new label. Strip them.
+Midpoint and manner words (midstream, midway, halfway, and the same family) are placement too. Strip them wherever they sit in the new label.
 If the edit is only color or stroke → it is a restyle. Geometry stays. Do not move, reroute, or delete cells.
 Research runs only when a reading is unsure. The host already gates it.
 
