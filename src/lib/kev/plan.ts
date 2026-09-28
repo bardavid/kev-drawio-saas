@@ -67,9 +67,14 @@ export function isArchitectureRequest(message: string): boolean {
   return parseArchitecture(message) !== null;
 }
 
+/** "Add X between A and B" edits the open canvas. It is not a new architecture chain. */
+function isBetweenInsert(text: string): boolean {
+  return /^(?:please\s+)?(?:add|insert|place)\b/i.test(text.trim()) && /\bbetween\b/i.test(text);
+}
+
 export function parseArchitecture(message: string): ArchitecturePlan | null {
   const text = message.trim();
-  if (!text || isBareDraw(text)) return null;
+  if (!text || isBareDraw(text) || isBetweenInsert(text)) return null;
   const hasVerb = DRAW_VERB.test(text);
   const hasArrow = /→|->|=>|—>|-->|–>/.test(text);
   const tiers = tierCount(text);

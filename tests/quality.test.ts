@@ -1093,6 +1093,9 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw a checkout sequence diagram",
       "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database",
       "draw an OAuth login sequence",
+      "draw an OAuth login sequence with browser, authorization server, and resource server",
+      "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel",
+      "draw a state machine for a pizza order: browsing, cart, checkout, baking, delivered",
       "draw an API call sequence diagram",
       "draw an approval workflow",
       "draw an e-commerce data model",
@@ -1101,6 +1104,7 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw an AWS VPC architecture with an ALB, ECS, and RDS",
       "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache",
       "draw an Azure architecture with Application Gateway, App Service, Azure SQL, and Service Bus",
+      "draw an Azure architecture with API Management, Azure Functions, Cosmos DB, and Event Hubs",
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Memorystore",
       "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery",
@@ -1246,6 +1250,26 @@ describe("live kev architecture", { concurrency: 1 }, () => {
         labels: ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Memorystore"],
         absent: ["Pub/Sub", "Dataflow", "BigQuery", "Event broker"],
       },
+      {
+        prompt: "draw an OAuth login sequence with browser, authorization server, and resource server",
+        labels: ["Browser", "Authorization Server", "Resource Server"],
+        absent: ["App", "Payment", "Orders"],
+      },
+      {
+        prompt: "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel",
+        labels: ["GitHub Actions", "Build", "Deploy to Vercel"],
+        absent: ["App", "Postgres"],
+      },
+      {
+        prompt: "draw a state machine for a pizza order: browsing, cart, checkout, baking, delivered",
+        labels: ["Browsing", "Cart", "Checkout", "Baking", "Delivered"],
+        absent: ["User", "Browser", "Payment", "Orders", "Placed", "Shipped"],
+      },
+      {
+        prompt: "draw an Azure architecture with API Management, Azure Functions, Cosmos DB, and Event Hubs",
+        labels: ["API Management", "Azure Functions", "Cosmos DB", "Event Hubs"],
+        absent: ["ALB", "Lambda", "Cloud Run", "Application Gateway", "App Service"],
+      },
     ];
     for (const item of cases) {
       const result = await runKevTurn({
@@ -1267,5 +1291,67 @@ describe("live kev architecture", { concurrency: 1 }, () => {
         );
       }
     }
+  });
+
+  it("restyles a CI/CD pipeline in place, then inserts Test between Build and Deploy", async () => {
+    installKev();
+    const prompt = "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel";
+    const drawn = await runKevTurn({
+      messages: [{ role: "user", content: prompt }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(drawn.intent, "add_shape");
+    assert.equal(drawn.reply.includes("Which nodes should I draw"), false);
+    const report = assertClean(drawn.updatedXml);
+    assert.deepEqual(
+      content(report.nodes).map((node) => node.label),
+      ["GitHub Actions", "Build", "Deploy to Vercel"],
+    );
+    const before = geometrySignature(drawn.updatedXml);
+
+    const restyled = await runKevTurn({
+      messages: [
+        { role: "user", content: prompt },
+        { role: "assistant", content: drawn.reply },
+        { role: "user", content: "make the arrows blue" },
+      ],
+      currentXml: drawn.updatedXml,
+      previousXml: STARTER_XML,
+    });
+    assert.equal(restyled.intent, "style");
+    assert.deepEqual(geometrySignature(restyled.updatedXml), before);
+    assert.ok(assessDiagram(restyled.updatedXml).edges.every((edge) => edge.style.includes("strokeColor=#6c8ebf")));
+
+    const edited = await runKevTurn({
+      messages: [
+        { role: "user", content: prompt },
+        { role: "assistant", content: drawn.reply },
+        { role: "user", content: "make the arrows blue" },
+        { role: "assistant", content: restyled.reply },
+        { role: "user", content: "add a Test stage between build and deploy" },
+      ],
+      currentXml: restyled.updatedXml,
+      previousXml: drawn.updatedXml,
+    });
+    assert.equal(edited.intent, "add_shape");
+    assert.equal(edited.slots.label, "Test");
+    const after = assertClean(edited.updatedXml);
+    const labels = content(after.nodes).map((node) => node.label);
+    for (const label of ["GitHub Actions", "Build", "Test", "Deploy to Vercel"]) {
+      assert.ok(labels.includes(label), label);
+    }
+    const kept = geometrySignature(edited.updatedXml);
+    const actionsBefore = before.nodes.find((node) => node.label === "GitHub Actions");
+    const buildBefore = before.nodes.find((node) => node.label === "Build");
+    const actionsAfter = kept.nodes.find((node) => node.label === "GitHub Actions");
+    const buildAfter = kept.nodes.find((node) => node.label === "Build");
+    assert.deepEqual(actionsAfter, actionsBefore);
+    assert.deepEqual(buildAfter, buildBefore);
+    assert.ok(after.edges.some((edge) => edge.from === "Build" && edge.to === "Test"));
+    assert.ok(after.edges.some((edge) => edge.from === "Test" && edge.to === "Deploy to Vercel"));
+    assert.equal(
+      after.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
+      false,
+    );
   });
 });

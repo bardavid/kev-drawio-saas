@@ -34,7 +34,7 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isAzure(text)) return azureArchitecture(text);
   if (isRichWebTiers(text)) return richWebTiers();
   if (TIER_RE.test(text)) return null;
-  if (isOauth(text)) return oauthSequence();
+  if (isOauth(text)) return oauthSequence(text);
   // Stripe Checkout names the webhook and the database. The generic checkout
   // sketch (Payment, Orders) drops both.
   if (isStripeCheckout(text)) return stripeCheckoutSequence();
@@ -43,6 +43,8 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isApiSequence(text)) return apiSequence();
   if (isApproval(text)) return approvalWorkflow(text);
   if (isStateMachine(text)) return stateMachine(text);
+  // "deploy to Vercel" is one stage. It must not split the sentence and drop Build.
+  if (isCicd(text)) return cicdPipeline(text);
   if (isEr(text)) return erDiagram(text);
   if (isCqrs(text)) return cqrs();
   // Pub/Sub is also a generic bus. A GCP data pipeline or multi-service GCP ask has to win first.
@@ -142,6 +144,8 @@ function isOauth(text: string): boolean {
 }
 
 function isCheckout(text: string): boolean {
+  // "checkout" inside a state list is a state. The payment sequence is a different diagram.
+  if (isStateMachineRequest(text)) return false;
   if (/\b(checkout|shopping cart)\b/i.test(text)) return true;
   return /\bsequence\b/i.test(text) && /\b(place an order|payment)\b/i.test(text);
 }
@@ -298,7 +302,12 @@ function isSystemArchitecture(text: string): boolean {
   return /\b(system architecture|application architecture|web app architecture|api architecture|service architecture)\b/i.test(text);
 }
 
-function oauthSequence(): TemplateMatch {
+function mentionsResourceServer(text: string): boolean {
+  return /\bresource\s+(?:server|api)\b/i.test(text);
+}
+
+function oauthSequence(text: string): TemplateMatch {
+  if (mentionsResourceServer(text)) return oauthWithResourceServer(text);
   const participants: SequenceParticipant[] = [
     { id: "user", label: "User", shape: "actor" },
     { id: "browser", label: "Browser", shape: "rectangle" },
@@ -325,6 +334,77 @@ function oauthSequence(): TemplateMatch {
       participants,
       messages,
     ),
+  };
+}
+
+/** The resource server is a participant. The app does not stand in for it. */
+function oauthWithResourceServer(text: string): TemplateMatch {
+  const authLabel = /\bauthorization\s+server\b/i.test(text) ? "Authorization Server" : "Auth server";
+  const resourceLabel = /\bresource\s+api\b/i.test(text) ? "Resource API" : "Resource Server";
+  return {
+    context:
+      "OAuth authorization-code login: the browser gets a code from the authorization server, exchanges it for an access token, and calls the resource server. The app is not the resource server.",
+    spec: sequence(
+      "OAuth login",
+      `Drew an OAuth login sequence: User, Browser, ${authLabel}, and ${resourceLabel}.`,
+      [
+        { id: "user", label: "User", shape: "actor" },
+        { id: "browser", label: "Browser", shape: "rectangle" },
+        { id: "auth", label: authLabel, shape: "rectangle" },
+        { id: "resource", label: resourceLabel, shape: "rectangle" },
+      ],
+      [
+        { from: "user", to: "browser", label: "Click login" },
+        { from: "browser", to: "auth", label: "Authorize" },
+        { from: "auth", to: "browser", label: "Code", dashed: true },
+        { from: "browser", to: "auth", label: "Exchange code" },
+        { from: "auth", to: "browser", label: "Access token", dashed: true },
+        { from: "browser", to: "resource", label: "GET /resource" },
+        { from: "resource", to: "browser", label: "Protected resource", dashed: true },
+        { from: "browser", to: "user", label: "Logged in", dashed: true },
+      ],
+    ),
+  };
+}
+
+/**
+ * GitHub Actions, Build, and Deploy stay in that order.
+ * "deploy to Vercel" is the last stage. It is not a reason to drop Build.
+ */
+function isCicd(text: string): boolean {
+  if (isStateMachineRequest(text) || /\bsequence\b/i.test(text)) return false;
+  if (isGcp(text) || isAzure(text) || isGcpDataPipeline(text)) return false;
+  if (/\bci\s*\/\s*cd\b|\bcontinuous integration\b/i.test(text)) return true;
+  return /\bgithub\s+actions\b/i.test(text) && /\b(build|deploy|vercel)\b/i.test(text);
+}
+
+function cicdPipeline(text: string): TemplateMatch {
+  const actions = /\bgithub\s+actions\b/i.test(text) ? "GitHub Actions" : "Actions";
+  const deploy = /\bvercel\b/i.test(text) ? "Deploy to Vercel" : "Deploy";
+  const stages = [
+    { id: "actions", label: actions },
+    { id: "build", label: "Build" },
+    { id: "deploy", label: deploy },
+  ];
+  const chain = stages.map((stage) => stage.label).join(" → ");
+  return {
+    context: `A CI/CD pipeline runs in ${actions}, keeps a Build stage, then deploys. ${deploy} is the deploy stage. Build is not optional.`,
+    spec: {
+      kind: "workflow",
+      title: "CI/CD",
+      reply: `Drew a CI/CD pipeline: ${chain}.`,
+      nodes: stages.map((stage, index) => ({
+        id: stage.id,
+        label: stage.label,
+        shape: "rectangle" as const,
+        column: index,
+        row: 0,
+      })),
+      edges: [
+        { from: "actions", to: "build", label: "Build" },
+        { from: "build", to: "deploy", label: "Deploy" },
+      ],
+    },
   };
 }
 
@@ -485,6 +565,9 @@ function approvalWorkflow(text: string): TemplateMatch {
 }
 
 function stateMachine(text: string): TemplateMatch {
+  // Named states win over the login and order presets. "checkout" in that list is a state.
+  const named = statesNamedIn(text);
+  if (named.length >= 2) return chainStates(stateMachineSubject(text), named);
   if (/\b(login|session|auth)\b/i.test(text)) {
     return {
       context: "A session moves from logged out, through a challenge, to signed in, and can expire.",
@@ -532,9 +615,7 @@ function stateMachine(text: string): TemplateMatch {
     };
   }
   // Login and orders are presets. A bare or document lifecycle stays Draft/Review/Published.
-  // Any other topic is composed from named states or the subject, not forced onto documents.
-  const named = statesNamedIn(text);
-  if (named.length >= 2) return chainStates(stateMachineSubject(text), named);
+  // Any other topic is composed from the subject, not forced onto documents.
   const subject = stateMachineSubject(text);
   if (isDocumentSubject(subject)) return documentLifecycle();
   if (isStarterFeeding(subject)) return starterFeeding(subject);
@@ -869,6 +950,7 @@ const GCP_DEFAULT: GcpServiceId[] = ["lb", "run", "sql", "pubsub"];
 const GCP_TIER_ORDER: Array<GcpService["tier"]> = ["edge", "compute", "network", "data"];
 
 type AzureServiceId =
+  | "apim"
   | "gateway"
   | "appservice"
   | "functions"
@@ -888,6 +970,7 @@ interface AzureService {
 }
 
 const AZURE_SERVICES: Record<AzureServiceId, AzureService> = {
+  apim: { id: "apim", label: "API Management", shape: "hexagon", tier: "edge" },
   gateway: { id: "gateway", label: "Application Gateway", shape: "hexagon", tier: "edge" },
   appservice: { id: "appservice", label: "App Service", shape: "rectangle", tier: "compute" },
   functions: { id: "functions", label: "Azure Functions", shape: "rectangle", tier: "compute" },
@@ -909,9 +992,10 @@ function mentionsAzure(text: string): boolean {
 
 function namedAzureServices(text: string): AzureServiceId[] {
   const ids: AzureServiceId[] = [];
+  if (/\bapi\s+management\b|\bapim\b/i.test(text)) ids.push("apim");
   if (/\b(?:application|app)\s+gateway\b/i.test(text)) ids.push("gateway");
   if (/\bapp\s+service\b/i.test(text)) ids.push("appservice");
-  if (/\bazure\s+functions\b/i.test(text)) ids.push("functions");
+  if (/\bazure\s+functions\b/i.test(text) || (mentionsAzure(text) && /\bfunctions\b/i.test(text))) ids.push("functions");
   if (/\baks\b|\bazure\s+kubernetes(?:\s+service)?\b/i.test(text)) ids.push("aks");
   if (/\bazure\s+sql\b/i.test(text)) ids.push("sql");
   if (/\bcosmos\s*db\b|\bcosmosdb\b/i.test(text)) ids.push("cosmos");
@@ -944,8 +1028,8 @@ function azureEdgeLabel(from: string, to: AzureServiceId): string {
   if (to === "sql" || to === "cosmos") return "SQL";
   if (to === "bus" || to === "eventhubs") return "Publish";
   if (to === "storage" || to === "keyvault") return "Read / write";
-  if (to === "gateway" || from === "internet") return "HTTPS";
-  if (from === "gateway") return "HTTP";
+  if (to === "gateway" || to === "apim" || from === "internet") return "HTTPS";
+  if (from === "gateway" || from === "apim") return "HTTP";
   return "Call";
 }
 
@@ -994,8 +1078,9 @@ function azureArchitecture(text: string): TemplateMatch {
     names.includes("Azure SQL") &&
     names.includes("Service Bus");
   return {
-    context:
-      "On Azure, clients reach Application Gateway, App Service runs the workload, Azure SQL stores relational data, and Service Bus carries async messages.",
+    context: full
+      ? "On Azure, clients reach Application Gateway, App Service runs the workload, Azure SQL stores relational data, and Service Bus carries async messages."
+      : `On Azure, the named services are ${names.join(", ")}. This is not an AWS VPC and not a GCP web stack.`,
     spec: layers(
       "Azure",
       full
