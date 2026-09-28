@@ -57,15 +57,38 @@ function isDeverbal(word: string): boolean {
   return /(?:tion|sion|ment|ness|ance|ence|ing|ies)$/i.test(word) && !ROLE_NOUN.test(word);
 }
 
+/** Degree, absence, or pace. “Zero copy” and “low latency” are properties, not parts. */
+const DEGREE = /^(?:low|high|zero|no|non|fast|slow|even|full|half|extra|ultra|very|more|less|soft|hard|hot|cold|quiet|cool)$/i;
+
+function isAdjectiveForm(word: string): boolean {
+  if (ROLE_NOUN.test(word)) return false;
+  return /(?:ed|ing|al|ive|ous|ic|less|ful|able|ible|ary|ency|ity|ness|ance|ence)$/i.test(word);
+}
+
+/**
+ * A property of how something moves, not a part you can draw as a peer box.
+ * Hyphenated manner, an absence (“zero …”), or only adjectives and abstract nouns.
+ */
+function isQualityPhrase(raw: string): boolean {
+  if (isMannerCompound(raw)) return true;
+  if (hasRoleNoun(raw)) return false;
+  const parts = raw.split(/[-\s]+/).filter(Boolean);
+  if (raw.includes("-") && parts.length >= 2 && parts.every((part) => !ROLE_NOUN.test(part))) return true;
+  const words = tokenize(raw).filter((word) => !GLUE.test(word) && !FILLER.test(word) && !LEADING_VERB.test(word) && !isClauseVerb(word));
+  if (words.length === 0) return false;
+  if (/^(?:zero|no|non)$/i.test(words[0] ?? "") && words.slice(1).every((word) => !ROLE_NOUN.test(word))) return true;
+  return words.every((word) => DEGREE.test(word) || isAdjectiveForm(word) || isDeverbal(word) || GENERIC_WORD.test(word));
+}
+
 /**
  * A phrase that must not be a box: a leading preposition, a manner compound,
- * or only modifiers and deverbals. A named thing is not a scrap.
+ * or a property of the path. A named thing is not a scrap.
  */
 export function isScrapLabel(label: string): boolean {
   const text = label.trim();
   if (text.length < 2) return true;
   if (/^(?:from|to|into|onto|via|with|using|for|and)\b/i.test(text)) return true;
-  if (isMannerCompound(text)) return true;
+  if (isMannerCompound(text) || isQualityPhrase(text)) return true;
   const words = tokenize(text).filter((word) => !GLUE.test(word));
   if (words.length === 0) return true;
   if (words.some((word) => ROLE_NOUN.test(word))) return false;
@@ -131,12 +154,7 @@ function qualityText(raw: string): string | null {
 }
 
 function isWithAttribute(raw: string): boolean {
-  if (isMannerCompound(raw)) return true;
-  if (hasRoleNoun(raw)) return false;
-  const words = tokenize(raw).filter((word) => !GLUE.test(word) && !FILLER.test(word) && !LEADING_VERB.test(word));
-  if (words.length === 0) return true;
-  if (words.length === 1 && isDeverbal(words[0] ?? "")) return true;
-  return words.every((word) => isDeverbal(word) || GENERIC_WORD.test(word));
+  return isQualityPhrase(raw);
 }
 
 function remainder(message: string): string {
@@ -201,6 +219,11 @@ function slotFor(marker: string, current: Slot): Slot {
 }
 
 function takeThing(parsed: Parsed, piece: string) {
+  if (isQualityPhrase(piece)) {
+    const quality = qualityText(piece);
+    if (quality) parsed.qualities.push(quality);
+    return;
+  }
   if (!hasRoleNoun(piece)) {
     const label = cleanPhrase(piece);
     if (!label) return;

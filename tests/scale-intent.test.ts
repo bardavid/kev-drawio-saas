@@ -573,6 +573,9 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     assert.equal(isScrapLabel("Retries"), true);
     assert.equal(isScrapLabel("Baffles"), false);
     assert.equal(isScrapLabel("Flue"), false);
+    assert.equal(isScrapLabel("Encrypted"), true);
+    assert.equal(isScrapLabel("Latency"), true);
+    assert.equal(isScrapLabel("Zero Copy"), true);
 
     const kiln = architectureFromIdea("Draw a hillside kiln that uses baffles and a flue for slow even drying");
     const kilnLabels = kiln?.nodes.map((node) => node.label) ?? [];
@@ -584,6 +587,29 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     assert.ok(kilnLabels.some((label) => /Baffle/.test(label)), kilnLabels.join(", "));
     assert.ok(kilnLabels.some((label) => /Flue/.test(label)), kilnLabels.join(", "));
     assert.ok(kiln?.edges.some((edge) => /Slow|Drying|Even/.test(edge.label)), kiln?.edges.map((edge) => edge.label).join(", "));
+
+    const qualities = architectureFromIdea(
+      "Draw a hillside kiln that uses baffles and a flue with low latency and encrypted drying",
+    );
+    const qualityLabels = qualities?.nodes.map((node) => node.label) ?? [];
+    for (const scrap of ["Low Latency", "Latency", "Encrypted", "Encrypted Drying"]) {
+      assert.equal(qualityLabels.includes(scrap), false, scrap);
+    }
+    assert.ok(qualityLabels.some((label) => /Baffle/.test(label)), qualityLabels.join(", "));
+    assert.ok(qualityLabels.some((label) => /Flue/.test(label)), qualityLabels.join(", "));
+    const qualityEdges = qualities?.edges.map((edge) => edge.label).join(" | ") ?? "";
+    assert.match(qualityEdges, /Latency/i);
+    assert.match(qualityEdges, /Encrypted/i);
+
+    const absence = architectureFromIdea(
+      "Draw a hillside kiln that uses baffles and a flue with zero copy and zero syscalls",
+    );
+    const absenceLabels = absence?.nodes.map((node) => node.label) ?? [];
+    for (const scrap of ["Zero Copy", "Zero Syscall", "Zero Syscalls"]) {
+      assert.equal(absenceLabels.includes(scrap), false, scrap);
+    }
+    assert.ok(absenceLabels.some((label) => /Baffle/.test(label)), absenceLabels.join(", "));
+    assert.match(absence?.edges.map((edge) => edge.label).join(" | ") ?? "", /Zero Copy|Zero Syscall/i);
   });
 
   it("composes a detailed diagram when the user answers the open-idea question", async () => {
