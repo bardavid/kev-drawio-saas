@@ -148,8 +148,46 @@ export function isCanvasEdit(text: string): boolean {
   return isBetweenEdit(trimmed) || isRenameEdit(trimmed) || isLedByEdit(trimmed) || isColorRestyle(trimmed);
 }
 
+/**
+ * Trailing limits are instructions, not boxes.
+ * "add nothing beyond that pair", "just those two", "nothing else", and the same family.
+ * A stage such as "Place Order" does not match.
+ */
+const TRAILING_LIMITS: RegExp[] = [
+  /(?:\s*[,;:.!?]|\s*[—–]|\s+-\s+|\s+)\s*(?:(?:and|but|plus)\s+)?(?:please\s+)?(?:(?:do\s+not|don't|dont|never)\s+)?(?:add|draw|include|insert|put|place|create|sketch)\s+nothing(?:\s+(?:else|more|further|extra|beyond))?(?:\s+(?:that|this|the|those|these))?(?:\s+(?:pair|two|one|boxes|box|nodes|node|shapes|shape|ones|set|list))?\s*$/i,
+  /(?:\s*[,;:.!?]|\s*[—–]|\s+-\s+|\s+)\s*(?:(?:and|but|plus)\s+)?nothing(?:\s+(?:else|more|further|extra)|(?:\s+beyond(?:\s+(?:that|this|the|those|these))?(?:\s+(?:pair|two|one|boxes|box|nodes|node|shapes|shape|ones|set|list))?))?\s*$/i,
+  /(?:\s*[,;:.!?]|\s*[—–]|\s+-\s+|\s+)\s*(?:(?:and|but|plus)\s+)?(?:just|only)\s+(?:those|these|that|this)(?:\s+(?:two|three|four|five|six|pair|one|boxes|box|nodes|node|shapes|shape|ones))?\s*$/i,
+  /(?:\s*[,;:.!?]|\s*[—–]|\s+-\s+|\s+)\s*(?:(?:and|but|plus)\s+)?(?:no\s+more|no\s+others?|no\s+other\s+(?:boxes|nodes|shapes))\s*$/i,
+  /(?:\s*[,;:.!?]|\s*[—–]|\s+-\s+|\s+)\s*(?:(?:and|but|plus)\s+)?(?:do\s+not|don't|dont|never)\s+(?:add|draw|include|insert|put|place|create|sketch)\s+anything(?:\s+(?:else|more|beyond))?(?:\s+(?:that|this|those|these))?(?:\s+(?:pair|two))?\s*$/i,
+  /(?:\s*[,;:.!?]|\s*[—–]|\s+-\s+|\s+)\s*(?:(?:and|but|plus)\s+)?(?:that(?:'s|\s+is)\s+(?:all|it)|stop\s+there|leave\s+it\s+at\s+that)\s*$/i,
+];
+
+/** Drop a trailing limit clause. The names in front of it stay. */
+export function stripTrailingLimits(message: string): string {
+  let text = message.trim();
+  let previous = "";
+  while (text && text !== previous) {
+    previous = text;
+    for (const pattern of TRAILING_LIMITS) {
+      const next = text.replace(pattern, "").replace(/[\s,;:—–-]+$/g, "").trim();
+      if (next !== text) {
+        text = next;
+        break;
+      }
+    }
+  }
+  return text;
+}
+
+/** A title-cased limit such as "Add Nothing Beyond That Pair" is an instruction, not a node. */
+export function isLimitInstruction(phrase: string): boolean {
+  const text = phrase.replace(/^[—–,:;\s]+|[—–,:;.!?\s]+$/g, "").trim();
+  if (!text) return false;
+  return stripTrailingLimits(`Anchor — ${text}`).toLowerCase() === "anchor";
+}
+
 export function parseArchitecture(message: string): ArchitecturePlan | null {
-  const text = message.trim();
+  const text = stripTrailingLimits(message).trim();
   if (!text || isBareDraw(text) || isBetweenEdit(text) || isColorRestyle(text)) return null;
   const hasVerb = DRAW_VERB.test(text);
   const hasArrow = /→|->|=>|—>|-->|–>/.test(text);
@@ -416,7 +454,7 @@ function boxCount(text: string): number | null {
  * A long clause joined by "and" is a description, not that list.
  */
 export function hasEnumeratedBoxes(message: string): boolean {
-  const text = message.trim();
+  const text = stripTrailingLimits(message).trim();
   if (!text || isLedByEdit(text)) return false;
   if (tierCount(text) !== null || boxCount(text) !== null) return true;
   const cleaned = stripModifiers(text);

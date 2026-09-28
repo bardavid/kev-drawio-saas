@@ -8,7 +8,10 @@ import { parseArchitecture } from "../src/lib/kev/plan";
 import { DEPTH_INSTRUCTIONS, STRATEGY_BLOCK, compositionNextInstructions } from "../src/lib/kev/prompt-guide";
 import { buildSystemPrompt } from "../src/lib/kev/prompt";
 import { runKevTurn } from "../src/lib/kev/run";
-import { componentsFromBrief, ideaSubject, longUnlistedDescription } from "../src/lib/kev/scale";
+import { extractNamedEntities } from "../src/lib/kev/entities";
+import { isLimitInstruction, stripTrailingLimits } from "../src/lib/kev/plan";
+import { topicLookupCandidates } from "../src/lib/kev/research";
+import { componentsFromBrief, ideaSubject, longUnlistedDescription, OPEN_IDEA_REPLY } from "../src/lib/kev/scale";
 import { buildSystemOneRequest } from "../src/lib/kev/systemone";
 import { summarizeDiagram } from "../src/lib/drawio/xml";
 
@@ -310,5 +313,163 @@ describe("diagram depth", () => {
         assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${node.label} ${fill}`);
       }
     }
+  });
+
+  it("strips trailing limit phrases and does not mint them as boxes", () => {
+    const prompts: Array<[string, string[]]> = [
+      ["only draw Harbor and Pier — add nothing beyond that pair", ["Harbor", "Pier"]],
+      ["Only draw Harbor and Pier — Add Nothing Beyond That Pair", ["Harbor", "Pier"]],
+      ["Draw Harbor and Pier, Add Nothing Beyond That Pair", ["Harbor", "Pier"]],
+      ["Draw Harbor and Pier — just those two", ["Harbor", "Pier"]],
+      ["Draw Source and Sink — nothing else", ["Source", "Sink"]],
+      ["two boxes: Source and Sink, nothing else", ["Source", "Sink"]],
+      ["Source → Sink — add nothing beyond that pair", ["Source", "Sink"]],
+      ["Draw Source and Sink — Just Those Two", ["Source", "Sink"]],
+    ];
+    for (const [prompt, wanted] of prompts) {
+      assert.equal(isLimitInstruction("Add Nothing Beyond That Pair"), true, prompt);
+      assert.equal(isLimitInstruction("Place Order"), false, prompt);
+      assert.equal(stripTrailingLimits(prompt).toLowerCase().includes("nothing"), false, prompt);
+      const labels = content(assertClean(previewDemo(prompt, STARTER_XML).xml).nodes).map((node) => node.label);
+      assert.deepEqual(labels, wanted, prompt);
+      assert.equal(
+        labels.some((label) => /nothing|beyond|else|those|pair/i.test(label)),
+        false,
+        prompt,
+      );
+    }
+
+    const stages = "checkout workflow: Place Order, Pack Carton, Ship Parcel — Add Nothing Beyond That Pair";
+    const stageLabels = content(assertClean(previewDemo(stages, STARTER_XML).xml).nodes).map((node) => node.label);
+    assert.deepEqual(stageLabels, ["Place Order", "Pack Carton", "Ship Parcel"]);
+    assert.equal(extractNamedEntities(stages).some((entity) => entity.label === "Place Order"), true);
+    assert.equal(extractNamedEntities(stages).some((entity) => /nothing beyond/i.test(entity.label)), false);
+  });
+
+  it("asks for depth when every topic brief is unusable, and composes a shorter brief when one names parts", async () => {
+    const memo = "Walk through a hot-key memo fabric and its interactions";
+    const fabric = "Draw a subsystem of harbor pier delivery fabric and its interactions";
+    const blank = previewDemo(memo, STARTER_XML);
+    assert.equal(blank.decision.intent, "clarify");
+    assert.equal(blank.xml, STARTER_XML);
+    assert.equal(blank.decision.reply, OPEN_IDEA_REPLY);
+    assert.doesNotMatch(blank.decision.reply, /topic notes did not name/);
+
+    const subject = ideaSubject(fabric);
+    assert.ok(subject);
+    const candidates = topicLookupCandidates(subject ?? "");
+    assert.ok(candidates.length >= 2);
+    assert.ok((candidates[1]?.length ?? 0) < (candidates[0]?.length ?? 0));
+
+    const unusable = "A hot-key memo fabric is a single coastal metaphor with no listed machinery.";
+    const usable =
+      "Callers send to the memo. The memo delivers to the pier. The pier writes receipts. The memo persists to a log.";
+    assert.equal(componentsFromBrief(unusable), null);
+    assert.ok((componentsFromBrief(usable)?.nodes.length ?? 0) >= 4);
+
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const titles: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/page/summary/")) {
+        const title = decodeURIComponent(url.split("/page/summary/")[1] ?? "").replace(/_/g, " ");
+        titles.push(title);
+        const extract = title === candidates[0] ? unusable : usable;
+        return Response.json({ extract });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "add_shape", confidence: 0.84 },
+          needs_xml_edit: { type: "noul", noul: 0.91 },
+          depth: { type: "choice", choice: "many", confidence: 0.86 },
+          next: { type: "choice", choice: "apply", confidence: 0.8 },
+          confirm: { type: "noul", noul: 0.8 },
+          color: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+
+    const composed = await runKevTurn({
+      messages: [{ role: "user", content: fabric }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(titles[0], candidates[0]);
+    assert.ok(titles.length >= 2);
+    assert.notEqual(titles.at(-1), candidates[0]);
+    assert.equal(composed.intent, "add_shape");
+    assert.doesNotMatch(composed.reply, /topic notes did not name/);
+    const report = assertClean(composed.updatedXml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.ok(labels.length >= 4, labels.join(", "));
+    assert.equal(labels.includes("Add Nothing Beyond That Pair"), false);
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    assert.ok(report.edges.length >= 3);
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    for (const node of content(report.nodes)) {
+      const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+      assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${node.label} ${fill}`);
+    }
+
+    titles.length = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/page/summary/")) {
+        const title = decodeURIComponent(url.split("/page/summary/")[1] ?? "").replace(/_/g, " ");
+        titles.push(title);
+        return Response.json({ extract: unusable });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "add_shape", confidence: 0.84 },
+          needs_xml_edit: { type: "noul", noul: 0.91 },
+          depth: { type: "choice", choice: "many", confidence: 0.86 },
+          next: { type: "choice", choice: "apply", confidence: 0.8 },
+          confirm: { type: "noul", noul: 0.8 },
+          color: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+
+    const stalled = await runKevTurn({
+      messages: [{ role: "user", content: memo }],
+      currentXml: STARTER_XML,
+    });
+    assert.ok(titles.length >= 2);
+    assert.equal(stalled.intent, "clarify");
+    assert.equal(stalled.updatedXml, STARTER_XML);
+    assert.equal(stalled.reply, OPEN_IDEA_REPLY);
+    assert.doesNotMatch(stalled.reply, /topic notes did not name/);
+
+    titles.length = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("wikipedia.org")) {
+        titles.push(url);
+        return Response.json({ extract: usable });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "add_shape", confidence: 0.8 },
+          needs_xml_edit: { type: "noul", noul: 0.9 },
+          depth: { type: "choice", choice: "few", confidence: 0.8 },
+          next: { type: "choice", choice: "apply", confidence: 0.8 },
+          confirm: { type: "noul", noul: 0.8 },
+          color: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+    const high = await runKevTurn({
+      messages: [{ role: "user", content: memo }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(titles.length, 0);
+    assert.equal(high.intent, "add_shape");
+    const highLabels = content(assertClean(high.updatedXml).nodes).map((node) => node.label);
+    assert.equal(highLabels.length, 1);
+    assert.match(highLabels[0] ?? "", /Memo/);
+    assert.doesNotMatch(high.reply, /topic notes did not name/);
   });
 });

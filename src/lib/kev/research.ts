@@ -1,4 +1,4 @@
-import { ideaSubject } from "@/lib/kev/scale";
+import { componentsFromBrief, ideaSubject } from "@/lib/kev/scale";
 
 /**
  * Short factual notes for diagram topics the planner may not know.
@@ -114,27 +114,69 @@ export async function researchTopic(
   return builtin;
 }
 
+const LEADING_TOPIC_WORD =
+  /^(?:subsystem|system|service|platform|product|overview|diagram|architecture|design|model|flow|process|general|purpose|of|for|with|about)$/i;
+
+/**
+ * Lookup titles for one idea, longest first.
+ * A generic head ("subsystem of") is dropped, then words come off the end,
+ * then a shorter trailing phrase is tried. The first title is the full subject.
+ */
+export function topicLookupCandidates(subject: string): string[] {
+  const words = subject.split(/\s+/).filter(Boolean);
+  const candidates: string[] = [];
+  const push = (slice: string[]) => {
+    const title = slice.join(" ").trim();
+    if (title.length < 2) return;
+    if (candidates.some((item) => item.toLowerCase() === title.toLowerCase())) return;
+    candidates.push(title);
+  };
+  push(words);
+  let core = [...words];
+  while (core.length > 2 && LEADING_TOPIC_WORD.test(core[0] ?? "")) core = core.slice(1);
+  push(core);
+  if (core.length > 2) push(core.slice(0, -1));
+  if (core.length > 3) push(core.slice(0, -2));
+  if (core.length >= 3) push(core.slice(-3));
+  if (core.length >= 2) push(core.slice(-2));
+  return candidates.slice(0, 5);
+}
+
+/**
+ * One page summary. An exact page that does not name enough interacting parts
+ * is unusable, so the caller can try a shorter title. A missing page falls
+ * through to a public search title, and that summary must also name parts.
+ */
+async function usableTopicSummary(title: string, fetchImpl: typeof fetch): Promise<string | null> {
+  const exact = await fetchTopicBrief(title, fetchImpl);
+  if (exact) return componentsFromBrief(exact) ? exact : null;
+  const found = await searchWikiTitle(title, fetchImpl);
+  if (!found || found.toLowerCase() === title.toLowerCase()) return null;
+  const live = await fetchTopicBrief(found, fetchImpl);
+  if (!live || !componentsFromBrief(live)) return null;
+  return live;
+}
+
 /**
  * Topic notes for a detailed idea whose components were not named.
- * An exact summary is tried first. A public search title is the fallback.
- * Offline, or when the page has no summary, this returns null. There is no
- * built-in diagram for an unnamed topic.
+ * The full subject is looked up first. When that brief does not name enough
+ * interacting parts, shorter titles are tried. Offline, or when no brief
+ * names those parts, this returns null. There is no built-in diagram for an
+ * unnamed topic.
  */
 export async function researchIdea(
   message: string,
   options?: { network?: boolean; fetch?: typeof fetch },
 ): Promise<TopicBrief | null> {
   const topic = ideaSubject(message);
-  if (!topic || !wikiTitle(topic)) return null;
-  if (!options?.network) return null;
+  if (!topic || !options?.network) return null;
   const fetchImpl = options.fetch ?? fetch;
-  const exact = await fetchTopicBrief(topic, fetchImpl);
-  if (exact) return { topic, summary: exact, source: "web" };
-  const found = await searchWikiTitle(topic, fetchImpl);
-  if (!found || found.toLowerCase() === topic.toLowerCase()) return null;
-  const live = await fetchTopicBrief(found, fetchImpl);
-  if (!live) return null;
-  return { topic: found, summary: live, source: "web" };
+  for (const candidate of topicLookupCandidates(topic)) {
+    if (!wikiTitle(candidate)) continue;
+    const summary = await usableTopicSummary(candidate, fetchImpl);
+    if (summary) return { topic: candidate, summary, source: "web" };
+  }
+  return null;
 }
 
 function wikiTitle(title: string): boolean {
