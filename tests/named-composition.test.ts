@@ -1380,7 +1380,7 @@ describe("named composition", () => {
       { text: "Paint every connector fuchsia", stroke: "#c026d3", hue: true },
       { text: "Paint every connector in fuchsia", stroke: "#c026d3", hue: true },
       { text: "Paint every connector magenta", stroke: "#c026d3", hue: true },
-      { text: "Paint every connector pink", stroke: "#c45c7a", hue: false },
+      { text: "Paint every connector pink", stroke: "#c026d3", hue: true },
       { text: "Recolor all arrows cyan", stroke: "#0c8599", hue: false },
       { text: "Tint every connector teal", stroke: "#0e8088", hue: false },
     ];

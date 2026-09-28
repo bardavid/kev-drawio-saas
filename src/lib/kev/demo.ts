@@ -163,10 +163,35 @@ const COLOR_MODIFIERS = new Set([
 
 /**
  * Pink, magenta, fuchsia, and hot-pink share one edge stroke.
- * Hue sits near 300 (palette magenta is ~294), inside 300±40.
- * A bare palette word such as “pink” or “cyan” stays that palette entry.
+ * The band is hue 300±40. Palette magenta (~294) is inside it.
+ * Palette pink (~343) is outside, so an edge ask for pink uses the family stroke.
+ * Cyan and teal are not in this set and keep their own strokes.
  */
 const MAGENTA_ROOTS = new Set(["pink", "magenta", "fuchsia", "hotpink", "rose", "cerise"]);
+const MAGENTA_HUE = { min: 260, max: 340 };
+
+function hexHue(hex: string): number {
+  const raw = hex.replace("#", "");
+  const red = parseInt(raw.slice(0, 2), 16) / 255;
+  const green = parseInt(raw.slice(2, 4), 16) / 255;
+  const blue = parseInt(raw.slice(4, 6), 16) / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  if (delta === 0) return 0;
+  let hue = 0;
+  if (max === red) hue = ((green - blue) / delta) % 6;
+  else if (max === green) hue = (blue - red) / delta + 2;
+  else hue = (red - green) / delta + 4;
+  hue *= 60;
+  if (hue < 0) hue += 360;
+  return hue;
+}
+
+function inMagentaBand(stroke: string): boolean {
+  const hue = hexHue(stroke);
+  return hue >= MAGENTA_HUE.min && hue <= MAGENTA_HUE.max;
+}
 
 interface ColorSpan {
   token: string;
@@ -182,7 +207,10 @@ function resolveSpokenColor(rawParts: string[]): { colorName: string; phrase: st
   if (parts.length === 1) {
     const word = parts[0] ?? "";
     const name = canonicalColor(word);
-    if (PALETTE[name]) return { colorName: name, phrase: name };
+    const named = PALETTE[name];
+    if (named && !(MAGENTA_ROOTS.has(word) && !inMagentaBand(named.stroke))) {
+      return { colorName: name, phrase: name };
+    }
     if (MAGENTA_ROOTS.has(word)) return { colorName: "magenta", phrase: word };
     return null;
   }
