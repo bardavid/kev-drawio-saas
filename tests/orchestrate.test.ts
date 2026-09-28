@@ -71,6 +71,69 @@ describe("architecture plan", () => {
     assert.equal(parseArchitecture("draw a 3 tier web app vertically")?.layout, "vertical");
   });
 
+  it("draws a default stack for a short N-tier ask that never says draw", () => {
+    const prompts = [
+      "three tier web app",
+      "just a simple three tier web app",
+      "3-tier architecture",
+      "3 tier architecture",
+      "a three-tier web application",
+      "simple 3-tier system",
+    ];
+    for (const prompt of prompts) {
+      const plan = parseArchitecture(prompt);
+      assert.ok(plan, prompt);
+      assert.equal(isArchitectureRequest(prompt), true, prompt);
+      assert.deepEqual(plan.nodes, ["Client", "App", "Postgres"], prompt);
+      assert.equal(plan.layout, "horizontal", prompt);
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/, prompt);
+      assert.match(drawn.decision.reply, /Client → App → Postgres/, prompt);
+      const summary = summarizeDiagram(drawn.xml);
+      const shapes = summary.vertices.filter((vertex) => !vertex.style.includes("drawai=cluster"));
+      const clusters = summary.vertices.filter((vertex) => vertex.style.includes("drawai=cluster"));
+      assert.deepEqual(
+        shapes.map((vertex) => vertex.label),
+        ["Client", "App", "Postgres"],
+        prompt,
+      );
+      assert.deepEqual(
+        summary.edges.map((edge) => `${edge.from}->${edge.to}`),
+        ["Client->App", "App->Postgres"],
+        prompt,
+      );
+      assert.deepEqual(
+        summary.edges.map((edge) => edge.label),
+        ["HTTPS", "Query"],
+        prompt,
+      );
+      assert.deepEqual(
+        clusters.map((vertex) => vertex.label),
+        ["Clients", "Services", "Data"],
+        prompt,
+      );
+      assert.ok(
+        shapes.every((vertex) => /fillColor=#[0-9a-f]{6}/i.test(vertex.style) && !vertex.style.includes("fillColor=#ffffff")),
+        prompt,
+      );
+      const client = shapes.find((vertex) => vertex.label === "Client");
+      const app = shapes.find((vertex) => vertex.label === "App");
+      const postgres = shapes.find((vertex) => vertex.label === "Postgres");
+      assert.match(client?.style ?? "", /fillColor=#ffe6cc/, prompt);
+      assert.match(app?.style ?? "", /fillColor=#d5e8d4/, prompt);
+      assert.match(postgres?.style ?? "", /fillColor=#dae8fc/, prompt);
+      assert.match(postgres?.style ?? "", /cylinder3/, prompt);
+      assert.ok(client && app && postgres);
+      assert.ok(client.x < app.x && app.x < postgres.x, prompt);
+    }
+
+    assert.deepEqual(parseArchitecture("two tier web app")?.nodes, ["Client", "API"]);
+    assert.deepEqual(parseArchitecture("four tier architecture")?.nodes, ["Client", "App", "Service 2", "Postgres"]);
+    assert.equal(parseArchitecture("Add a cache to the 3-tier web app"), null);
+    assert.equal(isArchitectureRequest("Add a cache to the 3-tier web app"), false);
+  });
+
   it("keeps Redis on a 3-tier web app that asks for a Redis cache", () => {
     for (const prompt of [
       "draw a 3-tier web app with Redis cache",
