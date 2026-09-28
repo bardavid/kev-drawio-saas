@@ -1369,4 +1369,487 @@ describe("named composition", () => {
       assertContainerParents(drawn.xml, prompt);
     }
   });
+
+  it("paints every connector fuchsia on the stroke and does not pink-fill vertices", async () => {
+    const drawn = previewDemo("TeamCity sketch: first Assemble the release, then Push onto Railway", STARTER_XML);
+    const report = assertClean(drawn.xml);
+    assert.ok(report.edges.length >= 2);
+    const before = boxes(drawn.xml);
+    const fills = content(report.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const phrases = [
+      { text: "Paint every connector fuchsia", stroke: "#c026d3", hue: true },
+      { text: "Paint every connector in fuchsia", stroke: "#c026d3", hue: true },
+      { text: "Paint every connector magenta", stroke: "#c026d3", hue: true },
+      { text: "Paint every connector pink", stroke: "#c026d3", hue: true },
+      { text: "Recolor all arrows cyan", stroke: "#0c8599", hue: false },
+      { text: "Tint every connector teal", stroke: "#0e8088", hue: false },
+    ];
+    for (const phrase of phrases) {
+      const painted = previewDemo(phrase.text, drawn.xml);
+      assert.equal(painted.decision.intent, "style", phrase.text);
+      assert.match(painted.decision.slots.target ?? "", /^(?:arrows?|edges?|connectors?|lines?)$/i, phrase.text);
+      assert.equal(painted.decision.slots.from ?? null, null, phrase.text);
+      assert.equal(painted.decision.slots.to ?? null, null, phrase.text);
+      assert.doesNotMatch(painted.decision.reply, /Restyled the diagram/i, phrase.text);
+      assert.deepEqual(boxes(painted.xml), before, phrase.text);
+      const after = assessDiagram(painted.xml);
+      assert.equal(after.edges.length, report.edges.length, phrase.text);
+      for (const edge of after.edges) {
+        const stroke = edge.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.equal(stroke, phrase.stroke, phrase.text);
+        if (phrase.hue) {
+          const hue = hexHue(stroke ?? "");
+          assert.ok(hue >= 260 && hue <= 340, `${phrase.text} stroke ${stroke} hue ${hue}`);
+        }
+      }
+      assert.deepEqual(
+        content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+        fills,
+        phrase.text,
+      );
+    }
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "style", confidence: 0.92 },
+          needs_xml_edit: { type: "noul", noul: 0.9 },
+          color: { type: "choice", choice: "pink" },
+          anchor: { type: "choice", choice: "none" },
+          source: { type: "choice", choice: "none" },
+          target: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+    const hosted = await runKevTurn({
+      messages: [{ role: "user", content: "Paint every connector fuchsia" }],
+      currentXml: drawn.xml,
+    });
+    assert.equal(called, 0);
+    assert.equal(hosted.intent, "style");
+    assert.match(hosted.reply, /connector/i);
+    assert.doesNotMatch(hosted.reply, /Restyled the diagram/i);
+    assert.doesNotMatch(hosted.reply, /pink/i);
+    const hostedReport = assessDiagram(hosted.updatedXml);
+    assert.deepEqual(boxes(hosted.updatedXml), before);
+    assert.ok(hostedReport.edges.every((edge) => edge.style.includes("strokeColor=#c026d3")));
+    assert.deepEqual(
+      content(hostedReport.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+      fills,
+    );
+  });
+
+  it("keeps the database product when a role gloss follows a single vendor prefix", () => {
+    const prompts = [
+      {
+        text: "Heroku sketch: Dynos host the web tier, Heroku Postgres is the database, Redis Cloud stores sessions",
+        labels: ["Dynos", "Heroku Postgres", "Redis Cloud"],
+        from: "Dynos",
+      },
+      {
+        text: "A Dyno hosts the web tier, Heroku Postgres is the database, and Redis Cloud stores sessions",
+        labels: ["Dyno", "Heroku Postgres", "Redis Cloud"],
+        from: "Dyno",
+      },
+    ];
+    const stolen = ["Client", "App", "Redis", "Redis cache", "Stores Sessions", "Sessions", "Database", "Data", "Heroku", "Postgres"];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      assert.deepEqual(labels, prompt.labels, prompt.text);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /Redis cache usage/, prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /Client → App/, prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/, prompt.text);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      assert.deepEqual(drawnLabels, prompt.labels, prompt.text);
+      for (const label of stolen) assert.equal(drawnLabels.includes(label), false, `${prompt.text} stole ${label}`);
+      const postgres = content(report.nodes).find((node) => node.label === "Heroku Postgres");
+      const cache = content(report.nodes).find((node) => node.label === "Redis Cloud");
+      assert.ok(postgres?.style.includes("shape=cylinder3"), prompt.text);
+      assert.ok(cache?.style.includes("shape=cylinder3"), prompt.text);
+      const groups = report.nodes.filter((node) => node.role === "cluster").map((node) => node.label);
+      assert.ok(groups.includes("Services"), prompt.text);
+      assert.ok(groups.includes("Data"), prompt.text);
+      assert.ok(report.edges.length >= 2, prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt.text);
+      assert.ok(
+        report.edges.some((edge) => edge.from === prompt.from && edge.to === "Heroku Postgres"),
+        prompt.text,
+      );
+      assert.ok(
+        report.edges.some((edge) => edge.from === prompt.from && edge.to === "Redis Cloud"),
+        prompt.text,
+      );
+      assertPastel(content(report.nodes), prompt.text);
+      assertContainerParents(drawn.xml, prompt.text);
+    }
+  });
+
+  it("paints hot-pink connector strokes from the magenta family and never asks the model to fill vertices", async () => {
+    const drawn = previewDemo("Client / API / Postgres", STARTER_XML);
+    const report = assertClean(drawn.xml);
+    assert.ok(report.edges.length >= 2);
+    const before = boxes(drawn.xml);
+    const fills = content(report.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const phrases = ["Wash every edge stroke hot pink", "Wash every edge stroke hot-pink", "Tint the arrows deep fuchsia"];
+    for (const phrase of phrases) {
+      const painted = previewDemo(phrase, drawn.xml);
+      assert.equal(painted.decision.intent, "style", phrase);
+      assert.equal(painted.decision.slots.colorName, "magenta", phrase);
+      assert.match(painted.decision.slots.target ?? "", /^(?:arrows?|edges?|connectors?|lines?)$/i, phrase);
+      assert.equal(painted.decision.slots.from ?? null, null, phrase);
+      assert.equal(painted.decision.slots.to ?? null, null, phrase);
+      assert.doesNotMatch(painted.decision.reply, /Restyled the diagram/i, phrase);
+      assert.deepEqual(boxes(painted.xml), before, phrase);
+      const after = assessDiagram(painted.xml);
+      assert.equal(after.edges.length, report.edges.length, phrase);
+      for (const edge of after.edges) {
+        const stroke = edge.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.ok(stroke, phrase);
+        const hue = hexHue(stroke ?? "");
+        assert.ok(hue >= 260 && hue <= 340, `${phrase} stroke ${stroke} hue ${hue}`);
+        assert.equal(stroke, "#c026d3", phrase);
+        assert.notEqual(stroke, "#64748b", phrase);
+        assert.notEqual(stroke, "#c45c7a", phrase);
+      }
+      assert.deepEqual(
+        content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+        fills,
+        phrase,
+      );
+      assert.ok(
+        content(after.nodes).every((node) => !node.style.includes("fillColor=#fad7e4")),
+        phrase,
+      );
+    }
+
+    const cyan = previewDemo("Recolor all arrows cyan", drawn.xml);
+    assert.equal(cyan.decision.slots.colorName, "cyan");
+    assert.ok(assessDiagram(cyan.xml).edges.every((edge) => edge.style.includes("strokeColor=#0c8599")));
+    const teal = previewDemo("Tint every connector teal", drawn.xml);
+    assert.equal(teal.decision.slots.colorName, "teal");
+    assert.ok(assessDiagram(teal.xml).edges.every((edge) => edge.style.includes("strokeColor=#0e8088")));
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "style", confidence: 0.92 },
+          needs_xml_edit: { type: "noul", noul: 0.9 },
+          color: { type: "choice", choice: "pink" },
+          anchor: { type: "choice", choice: "none" },
+          source: { type: "choice", choice: "none" },
+          target: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+    for (const phrase of ["Wash every edge stroke hot pink", "Wash every edge stroke hot-pink"]) {
+      const hosted = await runKevTurn({
+        messages: [{ role: "user", content: phrase }],
+        currentXml: drawn.xml,
+      });
+      assert.equal(called, 0, phrase);
+      assert.equal(hosted.intent, "style", phrase);
+      assert.doesNotMatch(hosted.reply, /Restyled the diagram/i, phrase);
+      const hostedReport = assessDiagram(hosted.updatedXml);
+      assert.deepEqual(boxes(hosted.updatedXml), before, phrase);
+      assert.ok(hostedReport.edges.every((edge) => edge.style.includes("strokeColor=#c026d3")), phrase);
+      assert.deepEqual(
+        content(hostedReport.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+        fills,
+        phrase,
+      );
+    }
+  });
+
+  it("keeps both stage verbs when the second is released onto a platform", () => {
+    const prompts = [
+      "Drone CI cartoon: first Bundle the artifact, then Release onto Fly.io",
+      "Jenkins cartoon: first Bundle the artifact, then Release onto Render",
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+      for (const label of ["Bundle", "Release"]) assert.ok(labels.includes(label), `${prompt} → ${labels.join(", ")}`);
+      assert.ok(labels.includes("Fly.io") || labels.includes("Render"), labels.join(", "));
+      assert.equal(labels.includes("Cartoon"), false, labels.join(", "));
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      for (const label of ["Bundle", "Release"]) assert.ok(drawnLabels.includes(label), drawnLabels.join(", "));
+      const platform = drawnLabels.includes("Fly.io") ? "Fly.io" : "Render";
+      assert.ok(drawnLabels.includes(platform), drawnLabels.join(", "));
+      const ordered = [...content(report.nodes)].sort((left, right) => left.x - right.x).map((node) => node.label);
+      const bundleAt = ordered.indexOf("Bundle");
+      const releaseAt = ordered.indexOf("Release");
+      const platformAt = ordered.indexOf(platform);
+      assert.ok(bundleAt >= 0 && releaseAt > bundleAt && platformAt > releaseAt, ordered.join(" → "));
+      assert.ok(report.edges.some((edge) => edge.from === "Bundle" && edge.to === "Release"), prompt);
+
+      const wedged = previewDemo("Wedge Acceptance Check after Bundle and before Release", drawn.xml);
+      assert.equal(wedged.decision.intent, "add_shape", prompt);
+      assert.equal(wedged.decision.slots.label, "Acceptance Check", prompt);
+      assert.equal(wedged.decision.slots.from, "Bundle", prompt);
+      assert.equal(wedged.decision.slots.to, "Release", prompt);
+      assert.doesNotMatch(wedged.decision.reply, /couldn't find a shape named/i, prompt);
+      const after = assertClean(wedged.xml);
+      const afterLabels = content(after.nodes).map((node) => node.label);
+      for (const label of ["Bundle", "Acceptance Check", "Release", platform]) {
+        assert.ok(afterLabels.includes(label), `${prompt} ${afterLabels.join(", ")}`);
+      }
+      assert.ok(after.edges.some((edge) => edge.from === "Bundle" && edge.to === "Acceptance Check"), prompt);
+      assert.ok(after.edges.some((edge) => edge.from === "Acceptance Check" && edge.to === "Release"), prompt);
+      assert.equal(
+        after.edges.some((edge) => edge.from === "Bundle" && edge.to === "Release"),
+        false,
+        prompt,
+      );
+      const xs = new Map(content(after.nodes).map((node) => [node.label, node.x]));
+      assert.ok((xs.get("Bundle") ?? 0) < (xs.get("Acceptance Check") ?? 0), prompt);
+      assert.ok((xs.get("Acceptance Check") ?? 0) < (xs.get("Release") ?? 0), prompt);
+    }
+  });
+
+  it("keeps the full product name through em-dash and parenthetical role glosses", () => {
+    const prompts = [
+      {
+        text: "On Heroku: Dynos run the web process; Heroku Postgres — which is the relational store — sits beside Redis Cloud for session keys",
+        labels: ["Dynos", "Heroku Postgres", "Redis Cloud"],
+        from: "Dynos",
+      },
+      {
+        text: "Heroku with Dynos, Heroku Postgres (the relational store), and Redis Cloud for session keys",
+        labels: ["Dynos", "Heroku Postgres", "Redis Cloud"],
+        from: "Dynos",
+      },
+      {
+        text: "On Crunchy: Runners run the web process; Crunchy Postgres — which is the relational store — sits beside Redis Cloud for session keys",
+        labels: ["Runners", "Crunchy Postgres", "Redis Cloud"],
+        from: "Runners",
+      },
+      {
+        text: "Crunchy with Runners, Crunchy Postgres (the relational store), and Redis Cloud for session keys",
+        labels: ["Runners", "Crunchy Postgres", "Redis Cloud"],
+        from: "Runners",
+      },
+    ];
+    const stolen = ["Web Process", "Relational Store", "Relational", "Postgres", "Data", "Stores Sessions", "Sessions", "Heroku", "Crunchy"];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      assert.deepEqual(labels, prompt.labels, prompt.text);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/, prompt.text);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      assert.deepEqual(drawnLabels, prompt.labels, prompt.text);
+      for (const label of stolen) assert.equal(drawnLabels.includes(label), false, `${prompt.text} stole ${label}`);
+      const postgres = content(report.nodes).find((node) => /Postgres$/.test(node.label));
+      const cache = content(report.nodes).find((node) => node.label === "Redis Cloud");
+      assert.ok(postgres?.style.includes("shape=cylinder3"), prompt.text);
+      assert.ok(cache?.style.includes("shape=cylinder3"), prompt.text);
+      assert.ok(report.edges.some((edge) => edge.from === prompt.from && edge.to === postgres?.label), prompt.text);
+      assert.ok(report.edges.some((edge) => edge.from === prompt.from && edge.to === "Redis Cloud"), prompt.text);
+      assertPastel(content(report.nodes), prompt.text);
+    }
+  });
+
+  it("draws every named tier in a positional stack, including a generic client tier", () => {
+    const prompts = [
+      {
+        text: "Outline a media backend: browser clients on top, a media API tier in the middle, and Cassandra underneath for writes",
+        labels: ["Browser Clients", "Media API", "Cassandra"],
+        groups: ["Clients", "Services", "Data"],
+        absent: ["API", "Browser", "Outline", "Writes"],
+      },
+      {
+        text: "Describe a streaming backend with viewers at the top, an ingest API in the center, and Scylla below for persistence",
+        labels: ["Viewers", "Ingest API", "Scylla"],
+        groups: ["Services", "Data"],
+        absent: ["Describe", "Persistence", "API"],
+      },
+      {
+        text: "Sketch a checkout stack: shoppers above, a billing API in the middle, and Dynamo underneath",
+        labels: ["Shoppers", "Billing API", "Dynamo"],
+        groups: ["Clients", "Services", "Data"],
+        absent: ["Sketch", "API", "Checkout"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      assert.deepEqual(labels, prompt.labels, prompt.text);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/, prompt.text);
+      const report = assertClean(drawn.xml);
+      const nodes = content(report.nodes);
+      assert.deepEqual(
+        nodes.map((node) => node.label),
+        prompt.labels,
+        prompt.text,
+      );
+      for (const missing of prompt.absent) {
+        assert.equal(nodes.some((node) => node.label === missing), false, `${prompt.text} kept ${missing}`);
+      }
+      const groups = report.nodes.filter((node) => node.role === "cluster").map((node) => node.label);
+      for (const group of prompt.groups) assert.ok(groups.includes(group), `${prompt.text} ${group}`);
+      assert.ok(report.edges.length >= prompt.labels.length - 1, prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt.text);
+      assertPastel(nodes, prompt.text);
+      assertContainerParents(drawn.xml, prompt.text);
+      const ys = nodes.map((node) => node.y);
+      assert.deepEqual(ys, [...ys].sort((left, right) => left - right), prompt.text);
+    }
+  });
+
+  it("places one vertex per explicitly labeled box and does not drop cue-shaped names", async () => {
+    const prompts = [
+      {
+        text: "Place three boxes labeled Edge, Broker, and Sink",
+        labels: ["Edge", "Broker", "Sink"],
+      },
+      {
+        text: "Place three boxes labeled edge, broker, and sink",
+        labels: ["Edge", "Broker", "Sink"],
+      },
+      {
+        text: "Add four rectangles named Path, Flow, Broker, and Sink",
+        labels: ["Path", "Flow", "Broker", "Sink"],
+      },
+      {
+        text: "Put two nodes labeled Source and Drain",
+        labels: ["Source", "Drain"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      assert.deepEqual(labels, prompt.labels, prompt.text);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      const report = assertClean(drawn.xml);
+      assert.deepEqual(content(report.nodes).map((node) => node.label), prompt.labels, prompt.text);
+      assertPastel(content(report.nodes), prompt.text);
+    }
+
+    const drawn = previewDemo("Place three boxes labeled Edge, Broker, and Sink", STARTER_XML);
+    const renamed = previewDemo("Rename Broker to Message Hub", drawn.xml);
+    assert.equal(renamed.decision.intent, "edit_shape");
+    assert.match(renamed.decision.reply, /Renamed Broker to Message Hub/);
+    const renamedLabels = content(assertClean(renamed.xml).nodes).map((node) => node.label);
+    assert.deepEqual(renamedLabels, ["Edge", "Message Hub", "Sink"]);
+
+    const nonsense = previewDemo("zzzzzyx nonsense blobble wibble not a real request", renamed.xml);
+    assert.equal(nonsense.decision.intent, "clarify");
+    assert.equal(nonsense.xml, renamed.xml);
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = (async () => {
+      throw new Error("labeled boxes must not ask the model");
+    }) as typeof fetch;
+    const hosted = await runKevTurn({
+      messages: [{ role: "user", content: "Place three boxes labeled Edge, Broker, and Sink" }],
+      currentXml: STARTER_XML,
+    });
+    assert.deepEqual(content(assertClean(hosted.updatedXml).nodes).map((node) => node.label), ["Edge", "Broker", "Sink"]);
+  });
+
+  it("paints amber-family connector strokes and leaves fills and geometry alone", async () => {
+    const drawn = previewDemo("Client / API / Postgres", STARTER_XML);
+    const report = assertClean(drawn.xml);
+    assert.ok(report.edges.length >= 2);
+    const before = boxes(drawn.xml);
+    const fills = content(report.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const vertexStrokes = content(report.nodes).map((node) => node.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]);
+    const phrases = [
+      { text: "Paint every connector amber", reply: /amber/i },
+      { text: "Paint every connector in gold", reply: /gold/i },
+      { text: "Tint the arrows goldenrod", reply: /goldenrod/i },
+      { text: "Recolor every line dark orange", reply: /dark orange/i },
+      { text: "Paint every connector orange", reply: /orange/i },
+    ];
+    for (const phrase of phrases) {
+      const painted = previewDemo(phrase.text, drawn.xml);
+      assert.equal(painted.decision.intent, "style", phrase.text);
+      assert.match(painted.decision.slots.target ?? "", /^(?:arrows?|edges?|connectors?|lines?)$/i, phrase.text);
+      assert.equal(painted.decision.slots.from ?? null, null, phrase.text);
+      assert.equal(painted.decision.slots.to ?? null, null, phrase.text);
+      assert.match(painted.decision.reply, phrase.reply, phrase.text);
+      assert.doesNotMatch(painted.decision.reply, /Restyled the diagram/i, phrase.text);
+      assert.deepEqual(boxes(painted.xml), before, phrase.text);
+      const after = assessDiagram(painted.xml);
+      assert.equal(after.edges.length, report.edges.length, phrase.text);
+      for (const edge of after.edges) {
+        const stroke = edge.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.equal(stroke, "#d79b00", phrase.text);
+        const hue = hexHue(stroke ?? "");
+        assert.ok(hue >= 15 && hue <= 65, `${phrase.text} stroke ${stroke} hue ${hue}`);
+        assert.notEqual(stroke, "#64748b", phrase.text);
+      }
+      assert.deepEqual(
+        content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+        fills,
+        phrase.text,
+      );
+      assert.deepEqual(
+        content(after.nodes).map((node) => node.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]),
+        vertexStrokes,
+        phrase.text,
+      );
+    }
+
+    const cyan = previewDemo("Recolor all arrows cyan", drawn.xml);
+    assert.equal(cyan.decision.slots.colorName, "cyan");
+    assert.ok(assessDiagram(cyan.xml).edges.every((edge) => edge.style.includes("strokeColor=#0c8599")));
+    const teal = previewDemo("Tint every connector teal", drawn.xml);
+    assert.equal(teal.decision.slots.colorName, "teal");
+    assert.ok(assessDiagram(teal.xml).edges.every((edge) => edge.style.includes("strokeColor=#0e8088")));
+    const pink = previewDemo("Paint every connector pink", drawn.xml);
+    assert.equal(pink.decision.slots.colorName, "magenta");
+    assert.ok(assessDiagram(pink.xml).edges.every((edge) => edge.style.includes("strokeColor=#c026d3")));
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "style", confidence: 0.92 },
+          needs_xml_edit: { type: "noul", noul: 0.9 },
+          color: { type: "choice", choice: "orange" },
+          anchor: { type: "choice", choice: "none" },
+          source: { type: "choice", choice: "none" },
+          target: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+    const hosted = await runKevTurn({
+      messages: [{ role: "user", content: "Paint every connector amber" }],
+      currentXml: drawn.xml,
+    });
+    assert.equal(called, 0);
+    assert.equal(hosted.intent, "style");
+    assert.match(hosted.reply, /amber/i);
+    assert.doesNotMatch(hosted.reply, /Restyled the diagram/i);
+    assert.doesNotMatch(hosted.reply, /orange/i);
+    const hostedReport = assessDiagram(hosted.updatedXml);
+    assert.deepEqual(boxes(hosted.updatedXml), before);
+    assert.ok(hostedReport.edges.every((edge) => edge.style.includes("strokeColor=#d79b00")));
+    assert.deepEqual(
+      content(hostedReport.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+      fills,
+    );
+  });
 });

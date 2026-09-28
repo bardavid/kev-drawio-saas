@@ -221,7 +221,7 @@ const CUE = new Set([
   "azure", "aws", "amazon", "gcp", "google", "payment",
   "side", "also", "just", "me", "my", "our", "their", "shopper", "customer", "records", "record",
   "page", "call", "sits", "ahead", "behind", "hang", "off", "them", "tier", "web", "app",
-  "orange", "green", "blue", "purple", "yellow", "red", "teal", "cyan", "pink", "magenta", "gray", "grey", "black", "white",
+  "orange", "green", "blue", "purple", "yellow", "red", "teal", "cyan", "pink", "magenta", "fuchsia", "gray", "grey", "black", "white",
   "horizontal", "horizontally", "vertical", "vertically", "column", "columns", "row", "rows",
   "stacked", "stack", "left", "right", "top", "bottom", "down",
 ]);
@@ -1094,6 +1094,24 @@ function phraseEntry(phrase: string, text: string): CatalogEntry | null {
   return null;
 }
 
+const ROLE_GLOSS_TAIL =
+  "(?:databases?|dbs?|caches?|datastores?|data(?:\\s+layers?)?|tiers?|layers?|services?|servers?|queues?|stores?|processes?)";
+const ROLE_GLOSS_PHRASE = `(?:(?:the|a|an|our|its|their)\\s+)?(?:[\\w-]+\\s+){0,3}?${ROLE_GLOSS_TAIL}`;
+
+/**
+ * A role gloss sits on a product and must not replace it.
+ * Copula (“is the database”), em-dash / “which is the relational store”,
+ * and a parenthetical “(the relational store)” are the same kind of aside.
+ */
+function copulaRoleGloss(text: string, end: number): boolean {
+  const after = text.slice(end);
+  const phrase = new RegExp(ROLE_GLOSS_PHRASE, "i");
+  if (new RegExp(`^\\s+(?:is|are)\\s+${phrase.source}\\b`, "i").test(after)) return true;
+  if (new RegExp(`^\\s*(?:,|;|—|–)?\\s*which\\s+(?:is|are|was|were)\\s+${phrase.source}\\b`, "i").test(after)) return true;
+  if (new RegExp(`^\\s*\\(\\s*${phrase.source}\\s*\\)`, "i").test(after)) return true;
+  return false;
+}
+
 /** A brand prefixed onto two different products is the vendor, not the product. */
 function repeatedBrandHead(text: string, head: string): boolean {
   const tails = new Set<string>();
@@ -1123,12 +1141,16 @@ function compoundDraft(compound: Compound, span: Span | null, text: string): Dra
   const tailEntry = span && span.entry.phrases.some((item) => item.toLowerCase() === tail) ? span.entry : phraseEntry(tail, text);
   // "Upstash Redis" is the brand Upstash. "Managed Redis" keeps both words.
   // The same brand on two products keeps each full name. A listed stage is not a role word to strip.
+  // A single prefixed product keeps its tail when a copula gloss names the role
+  // ("Heroku Postgres is the database"). The tail is part of the name; the gloss is the role.
+  // Repeating the brand is not required for that shape.
   if (
     tailEntry &&
     !tailEntry.listed &&
     tailEntry.role !== "step" &&
     headIsUncommon(head) &&
-    !repeatedBrandHead(text, head)
+    !repeatedBrandHead(text, head) &&
+    !copulaRoleGloss(text, compound.end)
   ) {
     const label = displayToken(compound.rawWords[0] ?? head);
     return {
@@ -1192,6 +1214,9 @@ function salvageBigrams(
     const right = second[0].toLowerCase();
     if (blocked.has(left) || blocked.has(right)) continue;
     if (ORDINARY.has(left) || ORDINARY.has(right) || NAME_FILLER.has(right)) continue;
+    // "stores sessions" is what the product does. "store" is also a role noun, so the
+    // plural verb looks like a fragment and must not become a node.
+    if (/^(?:stores?|hosts?|holds?|keeps?|handles?|uses?|runs?|carries|carry|carrying)$/.test(left)) continue;
     // "app requests" is a verb, not a product. "app platform" still joins.
     if (/^(?:requests?|sends?|checks?|calls?|asks?|verifies?|validates?|talks?|speaks?|runs?|holds?|keeps?|stores?)$/.test(right)) {
       continue;
@@ -1214,10 +1239,14 @@ function salvageBigrams(
     // on its own is still that tier.
     if (leftIsFragment && !actorPair) {
       const before = segment.text.slice(0, first.index);
-      const purpose = /\b(?:handling|handles|handle|for|as)\s+$/i.test(before);
-      const namesAProduct = spans.some(
-        (span) => segment.start <= span.start && span.end <= segment.end && (span.end <= start || span.start >= end),
+      // “Dynos run the web process” — the object of the verb is the job, not a second box.
+      const purpose = /\b(?:handling|handles|handle|for|as|runs?|running|hosts?|hosting)\s+(?:the\s+|a\s+|an\s+)?$/i.test(
+        before,
       );
+      const namesAProduct =
+        spans.some(
+          (span) => segment.start <= span.start && span.end <= segment.end && (span.end <= start || span.start >= end),
+        ) || wordsOf(before).some((token) => isUncommonBrand(token, segment.text));
       if (purpose && namesAProduct) continue;
     }
     const compound: Compound = {
@@ -1239,7 +1268,21 @@ function salvageBigrams(
 }
 
 /** A drawing verb at the start of the request is not a tier. "Outline a stack" is not a node named Outline. */
-const DRAWING_VERBS = new Set(["outline", "outlining", "outlined", "depict", "depicting", "chart", "trace", "render", "rendering"]);
+const DRAWING_VERBS = new Set([
+  "outline",
+  "outlining",
+  "outlined",
+  "describe",
+  "describing",
+  "depict",
+  "depicting",
+  "chart",
+  "trace",
+  "render",
+  "rendering",
+  "map",
+  "mapping",
+]);
 
 const DIAGRAM_KIND = new Set([
   "sequence",
@@ -1481,6 +1524,29 @@ function draftsFromTierPhrase(
   return kept.map((item) => tierDraftFor(item.raw, item.token, segment.start));
 }
 
+/**
+ * "Heroku sketch" is the diagram title when "Heroku Postgres" is already a product.
+ * The bare head is not a second vertex. "TeamCity sketch" stays when TeamCity prefixes nothing else.
+ */
+function dropCoveredTitleHead(text: string, drafts: Draft[]): Draft[] {
+  return drafts.filter((draft) => {
+    if (/\s/.test(draft.label)) return true;
+    const head = draft.label.toLowerCase();
+    const prefixed = drafts.some((other) => {
+      if (other === draft) return false;
+      const parts = other.label.toLowerCase().split(/\s+/);
+      return parts.length >= 2 && parts[0] === head;
+    });
+    if (!prefixed) return true;
+    const escaped = head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // “On Heroku” / “Heroku with Dynos” / “Heroku sketch” name the vendor, not a second box.
+    return !new RegExp(
+      `\\b(?:on|onto)\\s+${escaped}\\b|\\b${escaped}\\s+(?:with|sketch|diagram|architecture|stack|pipeline|system|layout|cartoon)\\b`,
+      "i",
+    ).test(text);
+  });
+}
+
 /** "Sql" or "Object storage" beside a real product of that role is the role, not another vertex. */
 function dropCoveredRoleGloss(drafts: Draft[]): Draft[] {
   const generic = /^(?:sql|object storage|object store|data|data layer)$/i;
@@ -1490,10 +1556,286 @@ function dropCoveredRoleGloss(drafts: Draft[]): Draft[] {
   });
 }
 
+/**
+ * “first Bundle the artifact, then Release onto Fly.io”.
+ * The verbs are stages. The name after onto is the platform, not a stand-in for the verb.
+ * A gloss word such as “release” still counts when it is capitalized in that slot.
+ */
+function orderedStageHeads(text: string): Array<{ label: string; order: number }> {
+  if (!/\b(?:first|then)\b/i.test(text) || !/\bonto\b/i.test(text)) return [];
+  const found: Array<{ label: string; order: number }> = [];
+  const seen = new Set<string>();
+  const push = (raw: string, order: number) => {
+    const key = raw.toLowerCase();
+    if (seen.has(key) || key.length < 2) return;
+    seen.add(key);
+    found.push({ label: displayToken(raw), order });
+  };
+  for (const match of text.matchAll(/\bfirst\s+([A-Z][A-Za-z0-9]*)\b/g)) {
+    if (match[1] && match.index !== undefined) push(match[1], match.index + match[0].indexOf(match[1]));
+  }
+  for (const match of text.matchAll(/\b([A-Z][A-Za-z0-9]*)(?:\s+[a-z][a-z0-9]*){0,6}\s+first\b/g)) {
+    if (match[1] && match.index !== undefined) push(match[1], match.index);
+  }
+  for (const match of text.matchAll(/\b([A-Z][A-Za-z0-9]*)\s+onto\s+(?:the\s+)?[A-Z]/g)) {
+    if (match[1] && match.index !== undefined) push(match[1], match.index);
+  }
+  return found;
+}
+
+/**
+ * Vertical stack markers. "on top", "in the middle", and "underneath" name a
+ * position, not a different tier. "above" / "below" are the same kind of word.
+ */
+const STACK_POSITION =
+  /\b(?:on(?:\s+the)?\s+top|up top|at the top|in the middle|in the center|in the centre|in between|underneath|beneath|at the bottom|down below)\b|\b(?:above|below)\b/i;
+
+const STACK_HEADING =
+  /^(?:please\s+)?(?:outline|outlining|draw|sketch|describe|show|map|illustrate|diagram|build|create|architect|depict)\b/i;
+
+const STACK_SKIP = new Set([
+  "a",
+  "an",
+  "the",
+  "our",
+  "my",
+  "their",
+  "its",
+  "please",
+  "kindly",
+  "me",
+  "and",
+  "or",
+  "then",
+  "plus",
+  "also",
+  "just",
+]);
+
+/** A trailing role word that restates the product. "Postgres store" is Postgres. "Media API" keeps media. */
+const TRAILING_ROLE = new Set(["store", "stores", "database", "db", "datastore"]);
+
+const DATA_PURPOSE = /\b(?:writes?|reads?|persist\w*|stor(?:e|age|ing)|records?|queries|query|database|datastore)\b/i;
+
+interface StackTier {
+  label: string;
+  clause: string;
+  order: number;
+}
+
+function isStackHeading(clause: string): boolean {
+  if (STACK_POSITION.test(clause)) return false;
+  if (STACK_HEADING.test(clause)) return true;
+  return /\b(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i.test(clause);
+}
+
+function labelFromStackClause(clause: string): string | null {
+  let text = clause.replace(new RegExp(STACK_POSITION.source, "ig"), " ");
+  text = text.replace(/\s+\b(?:for|as)\b[\s\S]*$/i, " ");
+  text = text.replace(/\s+\b(?:handling|handles|handle)\b[\s\S]*$/i, " ");
+  text = text.replace(
+    /^(?:please\s+)?(?:outline|outlining|draw|sketch|describe|show|map|illustrate|diagram|build|create|architect|depict)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
+    "",
+  );
+  const words = text.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? [];
+  const kept: string[] = [];
+  for (const word of words) {
+    const token = word.toLowerCase();
+    if (STACK_SKIP.has(token) || TIER_GLUE.has(token) || /^\d+$/.test(token)) continue;
+    if (DRAWING_VERBS.has(token) || HARD_CUE.has(token) || FLUFF.has(token)) continue;
+    kept.push(word);
+  }
+  while (kept.length > 1) {
+    const tail = kept[kept.length - 1]?.toLowerCase() ?? "";
+    if (!TIER_GLUE.has(tail) && !TRAILING_ROLE.has(tail)) break;
+    kept.pop();
+  }
+  if (kept.length === 0 || kept.length > 6) return null;
+  if (kept.every((word) => FLUFF.has(word.toLowerCase()) || DIAGRAM_KIND.has(word.toLowerCase()))) return null;
+  return kept.map((word) => displayToken(word)).join(" ");
+}
+
+/**
+ * A vertical list of named tiers. One position word is enough: sibling clauses
+ * in the same list are tiers too. Generic role words ("browser clients") stay.
+ */
+function stackTiers(text: string): StackTier[] | null {
+  const segments = segmentsOf(text);
+  if (!segments.some((segment) => STACK_POSITION.test(segment.text))) return null;
+  const tiers: StackTier[] = [];
+  for (const segment of segments) {
+    if (isStackHeading(segment.text)) continue;
+    const label = labelFromStackClause(segment.text);
+    if (!label) continue;
+    tiers.push({ label, clause: segment.text, order: segment.start });
+  }
+  if (tiers.length < 2) return null;
+  if (!tiers.some((tier) => STACK_POSITION.test(tier.clause))) return null;
+  return tiers;
+}
+
+function roleForStack(label: string, clause: string): EntityRole {
+  const tokens = label.toLowerCase().split(/\s+/);
+  for (const token of tokens) {
+    const listed = tierRole(token);
+    if (listed) return listed;
+    const stem = token.length >= 4 && token.endsWith("s") ? token.slice(0, -1) : token;
+    const inferred = inferRole(stem);
+    if (inferred !== "compute") return inferred;
+  }
+  const whole = inferRole(label);
+  if (whole !== "compute") return whole;
+  if (DATA_PURPOSE.test(clause)) return "data";
+  return "compute";
+}
+
+function draftCoversTier(drafts: Draft[], label: string, text: string): Draft | null {
+  const key = label.toLowerCase();
+  const exact = drafts.find((draft) => draft.label.toLowerCase() === key);
+  if (exact) return exact;
+  const entry = phraseEntry(key, text);
+  if (!entry) return null;
+  return drafts.find((draft) => draft.id === entry.id || draft.label.toLowerCase() === entry.label.toLowerCase()) ?? null;
+}
+
+function narrowerDraft(drafts: Draft[], label: string): Draft | null {
+  const words = label.toLowerCase().split(/\s+/);
+  if (words.length < 2) return null;
+  const tail = words[words.length - 1] ?? "";
+  const hits = drafts.filter((draft) => !draft.label.includes(" ") && draft.label.toLowerCase() === tail);
+  return hits.length === 1 ? (hits[0] ?? null) : null;
+}
+
+function paintTier(draft: Draft, tier: StackTier, replaceLabel: boolean): Draft {
+  const label = replaceLabel ? tier.label : draft.label;
+  const role = draft.origin === "catalog" ? draft.role : roleForStack(replaceLabel ? tier.label : draft.label, tier.clause);
+  return {
+    ...draft,
+    id: label.toLowerCase(),
+    label,
+    role,
+    shape: shapeFor({ role }, label),
+    order: tier.order,
+    origin: draft.origin === "catalog" ? "catalog" : "listed",
+  };
+}
+
+/**
+ * Keep every tier in a positional stack. A generic client phrase is still a
+ * vertex. A qualifier in front of a role noun ("media API") stays on the label.
+ * A purpose such as "for writes" marks a data tier without renaming it.
+ */
+function applyStackTiers(text: string, drafts: Draft[]): Draft[] {
+  const tiers = stackTiers(text);
+  if (!tiers) return drafts;
+  // The stack is the whole diagram. A heading verb is not an extra vertex.
+  const next: Draft[] = [];
+  const used = new Set<Draft>();
+  for (const tier of tiers) {
+    const covered = draftCoversTier(
+      drafts.filter((draft) => !used.has(draft)),
+      tier.label,
+      text,
+    );
+    if (covered) {
+      used.add(covered);
+      const same = covered.label.toLowerCase() === tier.label.toLowerCase();
+      next.push(covered.origin !== "catalog" && same ? paintTier(covered, tier, false) : { ...covered, order: tier.order });
+      continue;
+    }
+    const narrow = narrowerDraft(
+      drafts.filter((draft) => !used.has(draft)),
+      tier.label,
+    );
+    if (narrow) {
+      used.add(narrow);
+      next.push(paintTier(narrow, tier, true));
+      continue;
+    }
+    const role = roleForStack(tier.label, tier.clause);
+    next.push({
+      id: tier.label.toLowerCase(),
+      label: tier.label,
+      role,
+      shape: shapeFor({ role }, tier.label),
+      order: tier.order,
+      origin: "listed",
+    });
+  }
+  return next;
+}
+
+const BOX_LABEL_CUE =
+  /\b(?:boxes|shapes|nodes|rectangles|vertices)\s+(?:labeled|labelled|called|named)\s+(.+)$/i;
+
+/**
+ * "Place three boxes labeled Edge, Broker, and Sink".
+ * Every listed name is a vertex, including words that usually name the diagram
+ * ("edge", "path", "flow") rather than a product.
+ */
+function explicitLabeledBoxes(text: string): string[] | null {
+  const match = text.match(BOX_LABEL_CUE);
+  if (!match?.[1]) return null;
+  if (!/\b(?:place|put|add|draw|sketch|create|insert|drop|show)\b/i.test(text)) return null;
+  const sentence = match[1].split(/(?<=[.!?])\s+/)[0] ?? match[1];
+  const body = sentence.replace(/[?.!]+$/g, "").trim();
+  if (!body) return null;
+  const parts = body
+    .replace(/\s+\band\b\s+/gi, ", ")
+    .split(/\s*[,;|/]\s*/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const labels: string[] = [];
+  for (const part of parts) {
+    const words = (part.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter(
+      (word) => !/^(?:box|boxes|shape|shapes|node|nodes|rectangle|rectangles)$/i.test(word),
+    );
+    if (words.length === 0 || words.length > 6) return null;
+    labels.push(words.map((word) => displayToken(word)).join(" "));
+  }
+  return labels.length >= 2 ? labels : null;
+}
+
+function entitiesFromDrafts(drafts: Draft[]): NamedEntity[] {
+  const sorted = [...drafts].sort((left, right) => left.order - right.order);
+  const used = new Set<string>();
+  const perRole = new Map<EntityRole, number>();
+  return sorted.map((draft) => {
+    const index = perRole.get(draft.role) ?? 0;
+    perRole.set(draft.role, index + 1);
+    const paint = pastel(draft.role, index);
+    return {
+      id: slug(draft.id, used),
+      label: draft.label,
+      role: draft.role,
+      shape: draft.shape,
+      fill: paint.fill,
+      stroke: paint.stroke,
+      origin: draft.origin,
+    };
+  });
+}
+
 /** Concrete services, steps, actors, and states named in the message. */
 export function extractNamedEntities(message: string): NamedEntity[] {
   const text = normalize(message);
   if (!text) return [];
+  const boxed = explicitLabeledBoxes(text);
+  if (boxed) {
+    return entitiesFromDrafts(
+      boxed.map((label, index) => {
+        const role = inferRole(label);
+        return {
+          id: label.toLowerCase(),
+          label,
+          role,
+          shape: shapeFor({ role }, label),
+          order: index,
+          origin: "listed" as const,
+        };
+      }),
+    );
+  }
   const spans = catalogSpans(text);
   const drafts: Draft[] = [];
   const seen = new Set<string>();
@@ -1637,26 +1979,21 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     });
   }
 
-  const kept = dropCoveredRoleGloss(drafts);
-  drafts.length = 0;
-  drafts.push(...kept);
-  drafts.sort((left, right) => left.order - right.order);
-  const used = new Set<string>();
-  const perRole = new Map<EntityRole, number>();
-  return drafts.map((draft) => {
-    const index = perRole.get(draft.role) ?? 0;
-    perRole.set(draft.role, index + 1);
-    const paint = pastel(draft.role, index);
-    return {
-      id: slug(draft.id, used),
-      label: draft.label,
-      role: draft.role,
-      shape: draft.shape,
-      fill: paint.fill,
-      stroke: paint.stroke,
-      origin: draft.origin,
-    };
-  });
+  if (!steps) {
+    for (const stage of orderedStageHeads(text)) {
+      pushDraft({
+        id: stage.label.toLowerCase(),
+        label: stage.label,
+        role: "compute",
+        shape: "rectangle",
+        order: stage.order,
+        origin: "listed",
+      });
+    }
+  }
+
+  const kept = applyStackTiers(text, dropCoveredTitleHead(text, dropCoveredRoleGloss(drafts)));
+  return entitiesFromDrafts(kept);
 }
 
 function linkLabel(from: NamedEntity, to: NamedEntity): string {
@@ -1878,6 +2215,16 @@ function exchangeMessages(text: string, nodes: NamedEntity[]): Array<{ from: str
   return messages;
 }
 
+function stackNeighborEdges(nodes: NamedEntity[]): DiagramEdge[] {
+  const edges: DiagramEdge[] = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    const from = nodes[index - 1];
+    const to = nodes[index];
+    if (from && to) pushEdge(edges, from, to);
+  }
+  return edges;
+}
+
 function chainInOrder(nodes: NamedEntity[]): DiagramEdge[] {
   const edges: DiagramEdge[] = [];
   for (let index = 1; index < nodes.length; index += 1) {
@@ -1895,25 +2242,40 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
   const nodes = entities ?? extractNamedEntities(text);
   if (nodes.length < 2) return null;
   const sequence = /\bsequence\b/i.test(text) || isExchange(text);
-  const labels = nodes.map((node) => node.label);
+  const stackLabels = sequence ? null : stackTiers(text)?.map((tier) => tier.label) ?? null;
+  const stacked =
+    stackLabels !== null &&
+    stackLabels.length === nodes.length &&
+    stackLabels.every((label) => nodes.some((node) => node.label.toLowerCase() === label.toLowerCase()));
+  const ordered = stacked
+    ? stackLabels.map((label) => nodes.find((node) => node.label.toLowerCase() === label.toLowerCase())!).filter(Boolean)
+    : nodes;
+  const labels = ordered.map((node) => node.label);
   const title = topicTitle(text) ?? (sequence ? "Sequence" : "Architecture");
   const reply = sequence ? `Drew a sequence with ${labels.join(", ")}.` : `Drew ${title} with ${labels.join(", ")}.`;
   const byRole = new Map<EntityRole, NamedEntity[]>();
-  for (const node of nodes) {
+  for (const node of ordered) {
     const list = byRole.get(node.role) ?? [];
     list.push(node);
     byRole.set(node.role, list);
   }
-  const groups = ROLE_ORDER.filter((role) => byRole.has(role)).map((role) => {
-    const groupNodes = byRole.get(role) ?? [];
-    return {
-      id: `group-${role}`,
-      label: GROUP_LABEL[role],
-      flow: groupNodes.length > 1 ? ("row" as const) : ("column" as const),
-      nodes: groupNodes,
-    };
-  });
-  let edges = layerEdges(nodes);
+  const groups = stacked
+    ? ordered.map((node) => ({
+        id: `group-${node.id}`,
+        label: GROUP_LABEL[node.role],
+        flow: "column" as const,
+        nodes: [node],
+      }))
+    : ROLE_ORDER.filter((role) => byRole.has(role)).map((role) => {
+        const groupNodes = byRole.get(role) ?? [];
+        return {
+          id: `group-${role}`,
+          label: GROUP_LABEL[role],
+          flow: groupNodes.length > 1 ? ("row" as const) : ("column" as const),
+          nodes: groupNodes,
+        };
+      });
+  let edges = stacked ? stackNeighborEdges(ordered) : layerEdges(ordered);
   // A same-role row has no tier boundary. Ordered stages still need a connector between neighbors.
   if (!sequence && edges.length === 0 && nodes.length >= 2 && /\b(?:first|then|followed by)\b/i.test(text)) {
     edges = chainInOrder(nodes);
@@ -1936,7 +2298,7 @@ export function composeNamedDiagram(message: string, entities?: NamedEntity[]): 
     kind: sequence ? "sequence" : "layers",
     groups,
     edges,
-    participants: nodes,
+    participants: ordered,
     messages,
   };
 }
