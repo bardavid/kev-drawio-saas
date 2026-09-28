@@ -12,9 +12,69 @@ const OPENING =
   /^(?:please\s+)?[a-z][a-z'-]*\s+(?:me\s+)?(?:through|across|over|along|around|about|how|why|where|whether|a|an|the)\b/i;
 const INTERACTIONS = /\binteract(?:ing|s|ed|ion|ions)?\b/i;
 const GLUE = /^(?:a|an|the|of|and|its|their|his|her|for|with|to|in|on|or)$/i;
+const REPLACE_CANVAS =
+  /\b(?:instead|from scratch|start over|redraw|wipe|clear (?:it|the canvas|this|the diagram))\b/i;
 
 export const OPEN_IDEA_REPLY =
   "That idea needs its own components. Name the boxes, or say whether you want a high-level sketch or a detailed diagram.";
+
+const FRESH_PICTURE = /^(?:please\s+)?(?:draw|sketch|build|create|architect|show|illustrate|map)\b/i;
+const DETAILED_ANSWER = /\b(?:detailed|in detail|low[-\s]?level)\b/i;
+const HIGH_LEVEL_ANSWER = /\b(?:high[-\s]?level|bird(?:'s)?[-\s]?eye|few boxes|rough sketch)\b/i;
+
+/**
+ * A reply to the open-idea question: detailed, high-level, or “you name the boxes”.
+ * A fresh picture, a bare draw, or a wipe is not an answer to that question.
+ * Detailed wins when both depths are named. High-level wins over a naming delegation.
+ */
+const DEPTH_WORD =
+  /^(?:detailed|detail|low(?:-level)?|level|high(?:-level)?|rough|sketch|diagram|it|this|that|one|more|in|very|just|please)$/i;
+
+export function depthFromOpenAnswer(message: string): "few" | "many" | null {
+  const text = message.trim();
+  if (!text || REPLACE_CANVAS.test(text)) return null;
+  // "Draw a detailed payment system" is a new picture. "Draw it in detail" is not.
+  if (FRESH_PICTURE.test(text) && contentWords(text).some((word) => !DEPTH_WORD.test(word))) return null;
+  if (DETAILED_ANSWER.test(text)) return "many";
+  if (HIGH_LEVEL_ANSWER.test(text)) return "few";
+  const delegated =
+    /\b(?:you|yourself)\b/i.test(text) && /\b(?:name|names|boxes|components|labels)\b/i.test(text);
+  if (delegated) return "many";
+  return null;
+}
+
+/**
+ * The previous assistant turn asked for components or depth, and the latest
+ * user line answers that question. The idea is the user turn before the ask.
+ * Returns null when the latest line is a new picture, a wipe, or anything else.
+ */
+export function openIdeaDepthFollowUp(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+): { idea: string; depth: "few" | "many" } | null {
+  if (messages.length < 3) return null;
+  const latest = messages[messages.length - 1];
+  if (!latest || latest.role !== "user") return null;
+  const depth = depthFromOpenAnswer(latest.content);
+  if (!depth) return null;
+  let assistantAt = -1;
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) continue;
+    if (message.role === "user") return null;
+    if (message.role === "assistant") {
+      assistantAt = index;
+      break;
+    }
+  }
+  if (assistantAt < 0 || messages[assistantAt]?.content.trim() !== OPEN_IDEA_REPLY) return null;
+  for (let index = assistantAt - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user" && message.content.trim()) {
+      return { idea: message.content.trim(), depth };
+    }
+  }
+  return null;
+}
 
 export interface BriefLink {
   from: string;
@@ -233,9 +293,6 @@ const SCALE_PHRASE =
   /\b(?:more\s+(?:complex|detailed|nodes?|boxes?|shapes?|services?|databases?|caches?|workers?|components?)|in\s+detail)\b/i;
 
 const QUIET_SCALE = /\b(?:simple|basic|plain|minimal|high[-\s]?level|rough)\b/i;
-
-const REPLACE_CANVAS =
-  /\b(?:instead|from scratch|start over|redraw|wipe|clear (?:it|the canvas|this|the diagram))\b/i;
 
 export type DepthReading = "few" | "many" | null;
 

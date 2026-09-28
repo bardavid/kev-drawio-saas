@@ -29,7 +29,7 @@ import {
   namedShapeCriterion,
   shapeKindCriterion,
 } from "@/lib/kev/prompt-guide";
-import { isIntent, type DiagramSlots, type Intent, type KevReading } from "@/lib/kev/types";
+import { isIntent, type ChatMessage, type DiagramSlots, type Intent, type KevReading } from "@/lib/kev/types";
 
 /** Jared Palmer's Kev. Local `python -m kev.serve` defaults to this name. */
 export const KEV_DEFAULT_MODEL = "kev-latest";
@@ -51,10 +51,71 @@ const NONE = "none";
 export const NOUL_YES = 0.5;
 
 export class KevUnreachableError extends KevError {
-  constructor(message: string) {
+  /** True when the call timed out. A long transcript retries once with a shorter history. */
+  readonly timedOut: boolean;
+
+  constructor(message: string, options?: { timedOut?: boolean }) {
     super(message, 502);
     this.name = "KevUnreachableError";
+    this.timedOut = options?.timedOut ?? false;
   }
+}
+
+/**
+ * Latest messages resent when System One rejects or times out on a transcript
+ * that is too large. The first call always sends the full history. This is the
+ * single retry, not a window applied on every turn.
+ * Twelve messages is about six turns: an open idea, the depth question, and
+ * the answer, plus a few earlier turns.
+ */
+export const SYSTEM_ONE_HISTORY_FALLBACK = 12;
+
+/** The payload was rejected because it was too large. Not a host outage. */
+export class SystemOnePayloadError extends KevError {
+  readonly oversized = true;
+
+  constructor(message: string) {
+    super(message, 502);
+    this.name = "SystemOnePayloadError";
+  }
+}
+
+const OVERSIZE_TEXT =
+  /payload|too large|entity too large|context length|maximum context|max(?:imum)? tokens|token limit|request size|body size|content[- ]length|too long|too big/i;
+
+function isOversizedRejection(status: number, message: string): boolean {
+  if (status === 413) return true;
+  if (!OVERSIZE_TEXT.test(message)) return false;
+  return status === 400 || status === 422 || status === 431 || status === 500 || status === 502 || status === 504;
+}
+
+function isRequestTimeout(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = "name" in error && typeof error.name === "string" ? error.name : "";
+  if (name === "TimeoutError") return true;
+  if (name !== "AbortError") return false;
+  const message = "message" in error && typeof error.message === "string" ? error.message : "";
+  return /timeout/i.test(message);
+}
+
+function shouldShrinkHistory(error: unknown): boolean {
+  if (error instanceof SystemOnePayloadError) return true;
+  return error instanceof KevUnreachableError && error.timedOut;
+}
+
+/** Oldest first. Blank lines are dropped. Null when there is nothing to show. */
+function formatConversation(messages: readonly ChatMessage[] | undefined): string | null {
+  if (!messages || messages.length === 0) return null;
+  const lines = messages
+    .map((message) => {
+      const content = message.content.trim();
+      if (!content) return "";
+      const speaker = message.role === "assistant" ? "Assistant" : "User";
+      return `${speaker}: ${content}`;
+    })
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  return lines.join("\n");
 }
 
 export interface SystemOneQuestion {
@@ -89,6 +150,13 @@ export function diagramState(
     currentXml?: string;
     topicContext?: string | null;
     templateReference?: string | null;
+    /** Full transcript, oldest first. The latest user line stays in User message. */
+    history?: string | null;
+    /**
+     * When false, the transcript is not cut by the 12k state cap.
+     * askKev uses this so a long history can be rejected and retried shorter.
+     */
+    clip?: boolean;
   },
 ): string {
   const vertices =
@@ -102,9 +170,11 @@ export function diagramState(
   const diff = notes?.diffText?.trim();
   const topic = notes?.topicContext?.trim();
   const reference = notes?.templateReference?.trim();
+  const history = notes?.history?.trim();
   const parts = [
     STRATEGY_BLOCK,
     `User message:\n${userMessage.trim()}`,
+    history ? `Conversation:\n${history}` : "",
     reference ? `Reference:\n${reference}` : "",
     topic ? `Topic context:\n${topic}` : "",
     diff ? `Diagram diff (added, removed, and changed cells):\n${diff}` : "",
@@ -114,7 +184,9 @@ export function diagramState(
     `Current diagram:\nVertices:\n${vertices}\nEdges:\n${edges}`,
     notes?.currentXml ? `Current diagram mxfile:\n${clip(notes.currentXml, 2500)}` : "",
   ].filter(Boolean);
-  return parts.join("\n\n").slice(0, 12_000);
+  const state = parts.join("\n\n");
+  if (notes?.clip === false) return state;
+  return state.slice(0, 12_000);
 }
 
 export function vertexLabels(summary: DiagramSummary): string[] {
@@ -156,6 +228,10 @@ export function buildSystemOneRequest(input: {
   diagramDiff?: string;
   topicContext?: string | null;
   templateReference?: string | null;
+  /** Full chat, including the latest user line. Omitted from older callers. */
+  messages?: readonly ChatMessage[];
+  /** False on the optimistic full-history call so the server can reject a large body. */
+  clip?: boolean;
 }): SystemOneRequest {
   const labels = vertexLabels(input.summary);
   const shapes: Record<string, string> = { [NONE]: SHAPE_NONE };
@@ -172,6 +248,8 @@ export function buildSystemOneRequest(input: {
       currentXml: input.currentXml,
       topicContext: input.topicContext,
       templateReference: input.templateReference,
+      history: formatConversation(input.messages),
+      clip: input.clip,
     }),
     model: input.model?.trim() || KEV_DEFAULT_MODEL,
     questions: {
@@ -309,18 +387,28 @@ export async function callSystemOne(body: SystemOneRequest, timeoutMs = 50_000):
       headers,
       body: JSON.stringify(body),
     });
-  } catch {
+  } catch (error) {
+    if (isRequestTimeout(error)) {
+      throw new KevUnreachableError("Kev is unreachable.", { timedOut: true });
+    }
     throw new KevUnreachableError("Kev is unreachable.");
   }
 
-  if (UNREACHABLE.has(response.status)) {
-    throw new KevUnreachableError(`Kev is unreachable (${response.status}).`);
+  if (response.status === 408) {
+    throw new KevUnreachableError("Kev is unreachable (408).", { timedOut: true });
+  }
+
+  if (!response.ok) {
+    const failed: unknown = await response.json().catch(() => null);
+    const message = payloadMessage(failed, `Kev failed (${response.status}).`);
+    if (isOversizedRejection(response.status, message)) throw new SystemOnePayloadError(message);
+    if (UNREACHABLE.has(response.status)) {
+      throw new KevUnreachableError(`Kev is unreachable (${response.status}).`);
+    }
+    throw new KevError(message, 502);
   }
 
   const payload: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new KevError(payloadMessage(payload, `Kev failed (${response.status}).`), 502);
-  }
   return payload;
 }
 
@@ -333,8 +421,31 @@ export async function askKev(
     diagramDiff?: string;
     topicContext?: string | null;
     templateReference?: string | null;
+    /** Full chat. The first call sends every message; a size failure retries the latest few. */
+    messages?: readonly ChatMessage[];
   },
   options?: { timeoutMs?: number },
+): Promise<KevReading> {
+  const history = input.messages ?? [];
+  try {
+    return await askKevOnce(input, history, options?.timeoutMs);
+  } catch (error) {
+    if (history.length <= SYSTEM_ONE_HISTORY_FALLBACK || !shouldShrinkHistory(error)) throw error;
+    return askKevOnce(input, history.slice(-SYSTEM_ONE_HISTORY_FALLBACK), options?.timeoutMs);
+  }
+}
+
+async function askKevOnce(
+  input: {
+    userMessage: string;
+    currentXml: string;
+    previousXml?: string | null;
+    diagramDiff?: string;
+    topicContext?: string | null;
+    templateReference?: string | null;
+  },
+  messages: readonly ChatMessage[],
+  timeoutMs?: number,
 ): Promise<KevReading> {
   let summary: DiagramSummary = { vertices: [], edges: [] };
   try {
@@ -343,6 +454,8 @@ export async function askKev(
     summary = { vertices: [], edges: [] };
   }
   const model = env("KEV_MODEL") ?? KEV_DEFAULT_MODEL;
+  // Leave the state unclipped so a long transcript reaches System One intact.
+  // A size rejection or timeout retries once with SYSTEM_ONE_HISTORY_FALLBACK.
   const body = buildSystemOneRequest({
     userMessage: input.userMessage,
     summary,
@@ -352,9 +465,11 @@ export async function askKev(
     diagramDiff: input.diagramDiff,
     topicContext: input.topicContext,
     templateReference: input.templateReference,
+    messages,
+    clip: false,
   });
 
-  const payload = await callSystemOne(body, options?.timeoutMs ?? 50_000);
+  const payload = await callSystemOne(body, timeoutMs ?? 50_000);
   try {
     const reading = parseSystemOneResponse(payload, vertexLabels(summary));
     if (!reading.model) reading.model = model;
