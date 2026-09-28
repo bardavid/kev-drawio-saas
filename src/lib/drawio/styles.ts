@@ -59,6 +59,8 @@ export const PALETTE: Record<string, PaletteColor> = {
   pink: { fill: "#fad7e4", stroke: "#c45c7a" },
   // Hue ~294, inside the magenta band. Pink (~343) is a different color.
   magenta: { fill: "#f8e1f8", stroke: "#c026d3" },
+  // Same stroke as magenta. "Paint the connectors fuchsia" is that stroke, not a pink vertex fill.
+  fuchsia: { fill: "#f8e1f8", stroke: "#c026d3" },
   black: { fill: "#1f2937", stroke: "#111827", font: "#ffffff" },
   white: { fill: "#ffffff", stroke: "#94a3b8" },
 };

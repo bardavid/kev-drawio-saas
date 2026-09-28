@@ -507,6 +507,8 @@ export async function runKevTurn(input: {
 
   const described = describeMode();
   const userMessage = latestUser(input.messages);
+  // Connector colors are a host stroke edit, applied before any model fill.
+  // Fuchsia uses the magenta stroke.
   const utteredEdges = edgeRestyleDecision(userMessage);
   if (utteredEdges) {
     return finish(utteredEdges, described.mode, described.model, input.currentXml, currentXml, { userMessage });
