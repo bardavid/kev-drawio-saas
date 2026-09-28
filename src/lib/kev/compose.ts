@@ -1,9 +1,9 @@
 import { PALETTE, SHAPE_STYLE, applyColors, inferShape, type ShapeKind } from "@/lib/drawio/styles";
 import {
+  absoluteGeometry,
   cellLabel,
   diagramIsBlank,
   firstChildTag,
-  geometryOf,
   getRoot,
   listEdges,
   listVertices,
@@ -178,6 +178,8 @@ interface Placed {
   width: number;
   height: number;
   style: string;
+  /** Index into the placed list of the container. Unset for the page layer. */
+  parentIndex?: number;
 }
 
 interface DrawnEdge {
@@ -265,6 +267,26 @@ function specLabels(spec: CompositionSpec): string[] {
   ];
 }
 
+const ROLE_GLOSS = new Set([
+  "browser",
+  "browsers",
+  "client",
+  "clients",
+  "frontend",
+  "backend",
+  "server",
+  "servers",
+  "service",
+  "services",
+  "app",
+  "application",
+  "web",
+  "tier",
+  "tiers",
+  "layer",
+  "layers",
+]);
+
 function labelCovered(have: Set<string>, label: string): boolean {
   const key = label.toLowerCase();
   if (have.has(key)) return true;
@@ -282,6 +304,13 @@ function labelCovered(have: Set<string>, label: string): boolean {
     for (const item of have) {
       if (item.endsWith(` ${key}`)) return true;
     }
+  }
+  // "Browser Clients" is the client tier a template already draws as "Browser".
+  const words = key.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    const hit = words.some((word) => have.has(word) || (word.endsWith("s") && have.has(word.slice(0, -1))));
+    const gloss = words.filter((word) => !have.has(word) && !(word.endsWith("s") && have.has(word.slice(0, -1))));
+    if (hit && gloss.every((word) => ROLE_GLOSS.has(word))) return true;
   }
   return false;
 }
@@ -337,6 +366,26 @@ function architectureOwns(text: string, labels: string[]): boolean {
   if (labels.length < 2) return true;
   const nodes = new Set(plan.nodes.map((node) => node.toLowerCase()));
   return labels.every((label) => nodes.has(label.toLowerCase()));
+}
+
+function chainCovers(node: string, label: string): boolean {
+  const planNode = node.toLowerCase();
+  const named = label.toLowerCase();
+  return planNode === named || named.includes(planNode) || planNode.includes(named);
+}
+
+/**
+ * Named composition kept the app and the database and dropped another tier
+ * the architecture chain already named. That chain draws every tier.
+ * A richer list (extra products the chain cannot spell) stays on named composition.
+ */
+function namedDropsChain(text: string, labels: string[]): boolean {
+  const plan = parseArchitecture(text);
+  if (!plan || plan.nodes.length < 2 || labels.length < 2) return false;
+  const missing = plan.nodes.filter((node) => !labels.some((label) => chainCovers(node, label)));
+  if (missing.length === 0) return false;
+  const extra = labels.filter((label) => !plan.nodes.some((node) => chainCovers(node, label)));
+  return extra.length === 0;
 }
 
 function tintSpec(spec: CompositionSpec): CompositionSpec {
@@ -567,7 +616,7 @@ export function resolveComposition(
 
   if (architectureOwns(text, labels)) return null;
 
-  if (grounded) {
+  if (grounded && !namedDropsChain(text, labels)) {
     const composed = compositionFromNamed(text);
     if (composed) {
       if (hints?.colorName && !composed.colorName) composed.colorName = hints.colorName;
@@ -680,7 +729,7 @@ export function spliceDiagram(currentXml: string, rendered: string): string | nu
   let minY = 40;
   let seenY = false;
   for (const cell of existing) {
-    const box = geometryOf(cell);
+    const box = absoluteGeometry(cell);
     maxX = Math.max(maxX, box.x + box.width);
     if (!seenY || box.y < minY) minY = box.y;
     seenY = true;
@@ -695,7 +744,7 @@ export function spliceDiagram(currentXml: string, rendered: string): string | nu
   let minX = Infinity;
   let incomingMinY = Infinity;
   for (const cell of fresh) {
-    const box = geometryOf(cell);
+    const box = absoluteGeometry(cell);
     minX = Math.min(minX, box.x);
     incomingMinY = Math.min(incomingMinY, box.y);
   }
@@ -712,11 +761,18 @@ export function spliceDiagram(currentXml: string, rendered: string): string | nu
     next += 1;
     idMap.set(oldId, id);
     copy.setAttribute("id", id);
-    copy.setAttribute("parent", "1");
+    const oldParent = cell.getAttribute("parent") ?? "1";
+    const mappedParent = idMap.get(oldParent);
     const geometry = firstChildTag(copy, "mxGeometry");
-    if (geometry) {
-      geometry.setAttribute("x", String(Math.round(numberAttr(geometry, "x", 0) + dx)));
-      geometry.setAttribute("y", String(Math.round(numberAttr(geometry, "y", 0) + dy)));
+    if (mappedParent) {
+      copy.setAttribute("parent", mappedParent);
+    } else if (geometry) {
+      copy.setAttribute("parent", "1");
+      const abs = absoluteGeometry(cell);
+      geometry.setAttribute("x", String(Math.round(abs.x + dx)));
+      geometry.setAttribute("y", String(Math.round(abs.y + dy)));
+    } else {
+      copy.setAttribute("parent", "1");
     }
     hostRoot.appendChild(copy);
   }
@@ -748,7 +804,7 @@ export function spliceDiagram(currentXml: string, rendered: string): string | nu
     let pageW = numberAttr(model, "pageWidth", 1169);
     let pageH = numberAttr(model, "pageHeight", 827);
     for (const cell of listVertices(host)) {
-      const box = geometryOf(cell);
+      const box = absoluteGeometry(cell);
       pageW = Math.max(pageW, box.x + box.width + 80);
       pageH = Math.max(pageH, box.y + box.height + 80);
     }
@@ -1659,6 +1715,55 @@ function edgeStyle(): string {
   );
 }
 
+function boxHolds(
+  outer: { x: number; y: number; width: number; height: number },
+  inner: { x: number; y: number; width: number; height: number },
+  slop = 2,
+): boolean {
+  return (
+    inner.x >= outer.x - slop &&
+    inner.y >= outer.y - slop &&
+    inner.x + inner.width <= outer.x + outer.width + slop &&
+    inner.y + inner.height <= outer.y + outer.height + slop
+  );
+}
+
+/**
+ * Children of a topic container are parented to it, with geometry relative to that cell.
+ * Group ids can match a child id ("igw" cluster and "igw" node), so parenting is by index.
+ */
+function nestInContainers(nodes: Placed[]) {
+  const origin = nodes.map((node) => ({ x: node.x, y: node.y, width: node.width, height: node.height }));
+  const parentOf = nodes.map(() => -1);
+  nodes.forEach((node, index) => {
+    const box = origin[index];
+    if (!box) return;
+    let parent = -1;
+    let area = Infinity;
+    for (let clusterIndex = 0; clusterIndex < nodes.length; clusterIndex += 1) {
+      const cluster = nodes[clusterIndex];
+      if (!cluster || cluster === node || !cluster.style.includes("drawai=cluster")) continue;
+      const frame = origin[clusterIndex];
+      if (!frame || !boxHolds(frame, box)) continue;
+      const next = frame.width * frame.height;
+      if (next < area) {
+        parent = clusterIndex;
+        area = next;
+      }
+    }
+    parentOf[index] = parent;
+  });
+  nodes.forEach((node, index) => {
+    const parent = parentOf[index] ?? -1;
+    const at = parent >= 0 ? origin[parent] : undefined;
+    const box = origin[index];
+    if (!at || !box || parent < 0) return;
+    node.parentIndex = parent;
+    node.x = box.x - at.x;
+    node.y = box.y - at.y;
+  });
+}
+
 function xmlFor(nodes: Placed[], edges: DrawnEdge[], title: string): string {
   const doc = openDiagram(BLANK);
   const model = doc.getElementsByTagName("mxGraphModel")[0];
@@ -1674,13 +1779,25 @@ function xmlFor(nodes: Placed[], edges: DrawnEdge[], title: string): string {
   let maxX = 1169;
   let maxY = 827;
   for (const node of nodes) {
-    const id = String(next);
-    next += 1;
-    ids.set(node.id, id);
-    root.appendChild(vertex(doc, id, node));
     maxX = Math.max(maxX, node.x + node.width + 80);
     maxY = Math.max(maxY, node.y + node.height + 80);
   }
+  nestInContainers(nodes);
+  const mxIds: string[] = [];
+  for (const node of nodes) {
+    const id = String(next);
+    next += 1;
+    mxIds.push(id);
+    // Edges address the content id. A later child with the same id wins over its frame.
+    ids.set(node.id, id);
+  }
+  nodes.forEach((node, index) => {
+    const id = mxIds[index];
+    if (!id) return;
+    const parentIndex = node.parentIndex;
+    const parent = parentIndex === undefined ? "1" : (mxIds[parentIndex] ?? "1");
+    root.appendChild(vertex(doc, id, node, parent));
+  });
   for (const edge of edges) {
     const source = ids.get(edge.from);
     const target = ids.get(edge.to);
@@ -1699,13 +1816,13 @@ function xmlFor(nodes: Placed[], edges: DrawnEdge[], title: string): string {
   return serializeDiagram(doc);
 }
 
-function vertex(doc: XmlDocument, id: string, node: Placed): XmlElement {
+function vertex(doc: XmlDocument, id: string, node: Placed, parent = "1"): XmlElement {
   const cell = doc.createElement("mxCell");
   cell.setAttribute("id", id);
   cell.setAttribute("value", node.label);
   cell.setAttribute("style", node.style);
   cell.setAttribute("vertex", "1");
-  cell.setAttribute("parent", "1");
+  cell.setAttribute("parent", parent);
   const geometry = doc.createElement("mxGeometry");
   geometry.setAttribute("x", String(Math.round(node.x)));
   geometry.setAttribute("y", String(Math.round(node.y)));

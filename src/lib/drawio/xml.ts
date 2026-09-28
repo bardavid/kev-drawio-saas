@@ -223,6 +223,30 @@ export function geometryOf(cell: XmlElement): Geometry {
   };
 }
 
+/**
+ * Page position. A cell inside a container stores x/y relative to that parent,
+ * so overlap and layout checks walk the parent chain.
+ */
+export function absoluteGeometry(cell: XmlElement): Geometry {
+  const box = geometryOf(cell);
+  const doc = cell.ownerDocument;
+  if (!doc) return box;
+  let x = box.x;
+  let y = box.y;
+  const seen = new Set<string>();
+  let parentId = cell.getAttribute("parent");
+  while (parentId && parentId !== "0" && parentId !== "1" && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = findCellById(doc, parentId);
+    if (!parent || parent.getAttribute("vertex") !== "1") break;
+    const origin = geometryOf(parent);
+    x += origin.x;
+    y += origin.y;
+    parentId = parent.getAttribute("parent");
+  }
+  return { x, y, width: box.width, height: box.height };
+}
+
 export function nextCellId(doc: XmlDocument): string {
   const cells = doc.getElementsByTagName("mxCell");
   let max = 1;
@@ -249,7 +273,7 @@ export function summarizeDiagram(xml: string): DiagramSummary {
     const id = cell.getAttribute("id") ?? "";
     const label = cellLabel(cell);
     labels.set(id, label);
-    const geometry = geometryOf(cell);
+    const geometry = absoluteGeometry(cell);
     return {
       id,
       label,
