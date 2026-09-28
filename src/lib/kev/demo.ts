@@ -424,16 +424,36 @@ const ANCHOR_FLUFF = new Set([
   "to",
 ]);
 
+/** Locatives after a new stage name ("into place", "here"). Trailing only, so a name may start with Place. */
+const PLACEMENT_FLUFF = new Set(["place", "here", "there", "somewhere", "anywhere"]);
+
+function tokenKey(word: string): string {
+  return word.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 function fluffToken(word: string): boolean {
-  return ANCHOR_FLUFF.has(word.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  return ANCHOR_FLUFF.has(tokenKey(word));
+}
+
+function placementToken(word: string): boolean {
+  return PLACEMENT_FLUFF.has(tokenKey(word));
 }
 
 /** Drop trailing "stages / pipeline / flow / step / of the …" so they are not a new shape. */
 function anchorLabel(value: string): string {
+  return titleLabel(trimmedWords(value, fluffToken).join(" "));
+}
+
+/** Stage name for a between-insert: anchor fluff plus trailing placement adverbs. */
+function insertedLabel(value: string): string {
+  return titleLabel(trimmedWords(value, (word) => fluffToken(word) || placementToken(word)).join(" "));
+}
+
+function trimmedWords(value: string, trailing: (word: string) => boolean): string[] {
   const words = cleanNoun(value).split(/\s+/).filter(Boolean);
-  while (words.length > 1 && fluffToken(words[words.length - 1] ?? "")) words.pop();
+  while (words.length > 1 && trailing(words[words.length - 1] ?? "")) words.pop();
   while (words.length > 1 && fluffToken(words[0] ?? "")) words.shift();
-  return titleLabel(words.join(" "));
+  return words;
 }
 
 function insertionRest(text: string): string {
@@ -449,7 +469,7 @@ function parseAdd(text: string): KevDecision {
 
   const between = rest.match(/^(.+?)\s+between\s+(?:the\s+)?(.+?)\s+and\s+(?:the\s+)?(.+)$/i);
   if (between?.[1] && between[2] && between[3]) {
-    const label = anchorLabel(between[1]);
+    const label = insertedLabel(between[1]);
     const from = anchorLabel(between[2]);
     const to = anchorLabel(between[3]);
     if (!label) {
