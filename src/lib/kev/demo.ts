@@ -1,7 +1,14 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
 import type { KevClient } from "@/lib/kev/client";
 import { applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
-import { compositionDecision, renderComposition, resolveComposition, sameMxfile, templateCanvasPlan } from "@/lib/kev/compose";
+import {
+  CAPACITY_REPLY,
+  composeOnCanvas,
+  renderComposition,
+  resolveComposition,
+  sameMxfile,
+  overNamedCapacity,
+} from "@/lib/kev/compose";
 import { architectureDecision, isBareDraw, isBetweenEdit, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY } from "@/lib/kev/reply";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
@@ -542,13 +549,18 @@ function unchanged(xml: string, reply = UNCHANGED_DIAGRAM_REPLY): { decision: Ke
 }
 
 export function previewDemo(message: string, xml: string): { decision: KevDecision; xml: string } {
+  if (overNamedCapacity(message)) {
+    return {
+      decision: { intent: "clarify", reply: CAPACITY_REPLY, slots: {}, operations: [], updatedXml: null },
+      xml,
+    };
+  }
   const composed = resolveComposition(message);
   if (composed) {
-    const rendered = renderComposition(composed);
-    const canvas = templateCanvasPlan(xml, rendered);
-    if (canvas === "unchanged") return unchanged(xml);
-    if (canvas === "keep") return unchanged(xml, KEPT_CANVAS_REPLY);
-    return { decision: compositionDecision(composed, rendered), xml: rendered };
+    const placed = composeOnCanvas(message, xml, composed, renderComposition(composed));
+    if (placed === "unchanged") return unchanged(xml);
+    if (placed === "keep") return unchanged(xml, KEPT_CANVAS_REPLY);
+    return { decision: placed.decision, xml: placed.xml };
   }
   const plan = resolvePlan(message);
   if (plan) {

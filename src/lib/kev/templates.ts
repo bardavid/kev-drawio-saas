@@ -412,9 +412,15 @@ function cicdPipeline(text: string): TemplateMatch {
   const stages = [
     { id: "actions", label: actions },
     { id: "build", label: "Build" },
-    { id: "deploy", label: deploy },
   ];
+  if (/\btests?\b/i.test(text)) stages.push({ id: "test", label: "Test" });
+  stages.push({ id: "deploy", label: deploy });
   const chain = stages.map((stage) => stage.label).join(" → ");
+  const links = stages.slice(1).map((stage, index) => {
+    const from = stages[index]!;
+    const label = stage.label === "Test" ? "Test" : stage.id === "deploy" ? "Deploy" : "Build";
+    return edge(from.id, stage.id, label);
+  });
   return {
     context: `A CI/CD pipeline runs in ${actions}, keeps a Build stage, then deploys. ${deploy} is the deploy stage. Build is not optional.`,
     spec: layers(
@@ -436,7 +442,7 @@ function cicdPipeline(text: string): TemplateMatch {
           }),
         ),
       ],
-      [edge("actions", "build", "Build"), edge("build", "deploy", "Deploy")],
+      links,
     ),
   };
 }

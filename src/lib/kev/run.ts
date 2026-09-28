@@ -4,12 +4,13 @@ import { env } from "@/lib/env";
 import { KevError } from "@/lib/kev/client";
 import {
   colorInMessage,
-  compositionDecision,
+  CAPACITY_REPLY,
+  composeOnCanvas,
   renderComposition,
   resolveComposition,
   sameMxfile,
-  templateCanvasPlan,
   templateReferenceFor,
+  overNamedCapacity,
 } from "@/lib/kev/compose";
 import { decideDemo, edgeRestyleDecision } from "@/lib/kev/demo";
 import { DiagramXmlError, applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
@@ -326,11 +327,19 @@ function localDiagram(
   mode: KevMode,
   model?: string,
 ): KevTurnResult | null {
+  if (overNamedCapacity(userMessage)) {
+    return result(
+      { intent: "clarify", slots: {}, operations: [], reply: CAPACITY_REPLY, updatedXml: null },
+      mode,
+      model,
+      originalXml,
+      false,
+    );
+  }
   const composed = resolveComposition(userMessage);
   if (composed) {
-    const xml = renderComposition(composed);
-    const canvas = templateCanvasPlan(currentXml, xml);
-    if (canvas === "unchanged" || sameMxfile(xml, originalXml)) {
+    const placed = composeOnCanvas(userMessage, currentXml, composed, renderComposition(composed));
+    if (placed === "unchanged" || (placed !== "keep" && sameMxfile(placed.xml, originalXml))) {
       return result(
         { intent: "noop", slots: {}, operations: [], reply: UNCHANGED_DIAGRAM_REPLY, updatedXml: null },
         mode,
@@ -339,7 +348,7 @@ function localDiagram(
         false,
       );
     }
-    if (canvas === "keep") {
+    if (placed === "keep") {
       return result(
         { intent: "noop", slots: {}, operations: [], reply: KEPT_CANVAS_REPLY, updatedXml: null },
         mode,
@@ -348,7 +357,7 @@ function localDiagram(
         false,
       );
     }
-    return result(compositionDecision(composed, xml), mode, model, xml, false);
+    return result(placed.decision, mode, model, placed.xml, false);
   }
   const plan = resolvePlan(userMessage);
   if (!plan) return null;
@@ -398,9 +407,9 @@ async function runOpenAITurn(input: {
   ) {
     const composed = resolveComposition(input.userMessage);
     if (composed) {
-      const xml = renderComposition(composed);
-      if (templateCanvasPlan(input.currentXml, xml) === "draw") {
-        return result(compositionDecision(composed, xml), "openai", client.model, xml, false, {
+      const placed = composeOnCanvas(input.userMessage, input.currentXml, composed, renderComposition(composed));
+      if (placed !== "keep" && placed !== "unchanged") {
+        return result(placed.decision, "openai", client.model, placed.xml, false, {
           fallback: input.fallback,
         });
       }
@@ -411,9 +420,9 @@ async function runOpenAITurn(input: {
     const researched = topicContext ? composeFromBrief(input.userMessage, topicContext) : null;
     if (researched) {
       if (!researched.colorName) researched.colorName = colorInMessage(input.userMessage);
-      const xml = renderComposition(researched);
-      if (templateCanvasPlan(input.currentXml, xml) === "draw") {
-        return result(compositionDecision(researched, xml), "openai", client.model, xml, false, {
+      const placed = composeOnCanvas(input.userMessage, input.currentXml, researched, renderComposition(researched));
+      if (placed !== "keep" && placed !== "unchanged") {
+        return result(placed.decision, "openai", client.model, placed.xml, false, {
           fallback: input.fallback,
         });
       }
