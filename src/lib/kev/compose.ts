@@ -33,6 +33,7 @@ import {
   resolvePlan,
   withPalette,
 } from "@/lib/kev/plan";
+import { expandOpenSystem, shouldExpandSystem } from "@/lib/kev/expand";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
@@ -438,7 +439,7 @@ function packComposition(
     spec: painted,
     colorName: named ?? hints?.colorName ?? null,
     context: hints?.context ?? brief?.summary ?? context,
-    researchQuery: brief ? "Redis" : null,
+    researchQuery: brief?.topic ?? null,
     layout: requestedLayout(text) ?? layoutDefault(painted.kind),
     grounded,
   };
@@ -584,7 +585,7 @@ export function resolveComposition(
   const labels = extractNamedEntities(text).map((entity) => entity.label);
   const grounded = labels.length >= 2;
   const picture = wantsPicture(text);
-  if (!picture && !grounded) return null;
+  if (!picture && !grounded && !shouldExpandSystem(text)) return null;
 
   if (isIoUring(text)) return packComposition(ioUringSpec(), text, hints, null, false);
 
@@ -619,6 +620,29 @@ export function resolveComposition(
   if (flowchart) return packComposition(flowchart, text, hints, null, true);
 
   if (architectureOwns(text, labels)) return null;
+
+  const opened = expandOpenSystem(text);
+  if (opened) {
+    return packComposition(
+      {
+        kind: "layers",
+        title: opened.title,
+        reply: opened.reply,
+        axis: opened.axis,
+        groups: opened.groups.map((group) => ({
+          id: group.id,
+          label: group.label,
+          flow: "column" as const,
+          nodes: group.nodes,
+        })),
+        edges: opened.edges,
+      },
+      text,
+      hints,
+      opened.context,
+      true,
+    );
+  }
 
   if (grounded && !namedDropsChain(text, labels)) {
     const composed = compositionFromNamed(text);

@@ -1,3 +1,5 @@
+import { openSystemBrief } from "@/lib/kev/expand";
+
 /**
  * Short factual notes for diagram topics the planner may not know.
  * Wikipedia's public summary API needs no key. Failures fall back to a
@@ -26,9 +28,7 @@ export function redisDiagramRequest(message: string): boolean {
   return /\b(usage|diagram|architecture)\b/i.test(message);
 }
 
-/** Wikipedia page title for a draw-a-topic-diagram request, or null when research should not run. */
-export function wikipediaTitle(message: string): string | null {
-  if (redisDiagramRequest(message)) return "Redis";
+function classicUsageTitle(message: string): string | null {
   if (!/\b(draw|sketch)\b/i.test(message) || !/\bdiagram\b/i.test(message)) return null;
   if (!/\b(usage|architecture)\b/i.test(message)) return null;
   if (/\bsequence\b/i.test(message) || /\b(workflow|flowchart)\b/i.test(message)) return null;
@@ -47,9 +47,24 @@ export function wikipediaTitle(message: string): string | null {
     .join(" ");
 }
 
+/** Wikipedia page title for a draw-a-topic-diagram request, or null when research should not run. */
+export function wikipediaTitle(message: string): string | null {
+  if (redisDiagramRequest(message)) return "Redis";
+  const classic = classicUsageTitle(message);
+  if (classic) return classic;
+  const open = openSystemBrief(message);
+  if (!open) return null;
+  const title = open.topic.trim();
+  if (title.length < 2 || title.length > 80) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9 .()+_-]{0,80}$/.test(title)) return null;
+  return title;
+}
+
 export function builtinBrief(message: string): TopicBrief | null {
-  if (!redisDiagramRequest(message)) return null;
-  return { topic: "Redis", summary: REDIS_USAGE_BRIEF, source: "builtin" };
+  if (redisDiagramRequest(message)) return { topic: "Redis", summary: REDIS_USAGE_BRIEF, source: "builtin" };
+  const open = openSystemBrief(message);
+  if (!open) return null;
+  return { topic: open.topic, summary: open.summary, source: "builtin" };
 }
 
 function clipBrief(text: string): string {

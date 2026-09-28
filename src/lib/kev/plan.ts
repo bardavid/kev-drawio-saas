@@ -1,5 +1,6 @@
 import { PALETTE, inferShape } from "@/lib/drawio/styles";
 import { summarizeDiagram, type DiagramSummary } from "@/lib/drawio/xml";
+import { isInteractionAsk, planNodeIsAskFragment } from "@/lib/kev/system-ask";
 import type { DiagramOperation, DiagramSlots, Intent, KevDecision } from "@/lib/kev/types";
 
 /**
@@ -163,6 +164,13 @@ export function parseArchitecture(message: string): ArchitecturePlan | null {
   nodes = expandTiers(nodes, tiers);
   if (aside) nodes = insertRedis(nodes);
   nodes = uniqueLabels(nodes).slice(0, 8);
+  // "storage and its interactions" is the topic, not two vertices.
+  // A chain the user drew with arrows, or real names beside the ask, stays.
+  if (isInteractionAsk(text) && !hasArrow) {
+    const kept = nodes.filter((node) => !planNodeIsAskFragment(node));
+    if (kept.length >= 2) nodes = kept;
+    else return null;
+  }
   if (nodes.length < 2) return null;
 
   return {
