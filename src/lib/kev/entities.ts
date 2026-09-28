@@ -1095,7 +1095,7 @@ function compoundsIn(text: string, keepClosedHeads = false): Compound[] {
     // "Later Housekeeping Crew" — the sentence adverb is not part of the name.
     while (
       words.length >= 2 &&
-      /^(?:please|draw|sketch|diagram|show|illustrate|map|build|create|architect|outline|later|afterward|afterwards|then)$/.test(
+      /^(?:please|draw|sketch|diagram|show|illustrate|map|build|create|architect|outline|later|afterward|afterwards|then|finally)$/.test(
         words[0] ?? "",
       )
     ) {
@@ -1114,13 +1114,16 @@ function compoundsIn(text: string, keepClosedHeads = false): Compound[] {
     const closedHead =
       (CUE.has(head) || HARD_CUE.has(head) || ORDINARY.has(head)) && !ROLE_WORDS.has(head) && !MODIFIER.has(head);
     if (closedHead && !keepClosedHeads) continue;
-    if (
-      words.every(
-        (word) => ORDINARY.has(word) || DIAGRAM_KIND.has(word) || (rejectedToken(word) && !ROLE_WORDS.has(word)),
-      )
-    ) {
-      continue;
-    }
+    // A name made only of gloss, cue, or ordinary words is not a product title.
+    // In a message exchange it is still a participant: the actor after a semicolon
+    // ("Search Worker") must not disappear once the ask already has a payload.
+    // A diagram-kind tail ("Login Sequence") stays a heading, not a lifeline.
+    const glossClosed = words.every(
+      (word) => ORDINARY.has(word) || DIAGRAM_KIND.has(word) || (rejectedToken(word) && !ROLE_WORDS.has(word)),
+    );
+    const tail = words[words.length - 1] ?? "";
+    const diagramTail = DIAGRAM_KIND.has(tail) || HARD_CUE.has(tail);
+    if (glossClosed && (!keepClosedHeads || diagramTail)) continue;
     const start = (match.index ?? 0) + cursor;
     found.push({
       start,
@@ -1191,7 +1194,7 @@ function repeatedBrandHead(text: string, head: string): boolean {
   return tails.size >= 2;
 }
 
-function compoundDraft(compound: Compound, span: Span | null, text: string): Draft | null {
+function compoundDraft(compound: Compound, span: Span | null, text: string, preserveGloss = false): Draft | null {
   const phrase = compound.words.join(" ");
   const exact = phraseEntry(phrase, text) ?? (span && span.entry.phrases.some((item) => item.toLowerCase() === phrase) ? span.entry : null);
   if (exact) {
@@ -1231,7 +1234,9 @@ function compoundDraft(compound: Compound, span: Span | null, text: string): Dra
     };
   }
   const label = compound.rawWords.map((word) => displayToken(word)).join(" ");
-  if (junkLabel(label)) return null;
+  // Gloss on every word ("return" + "worker") is still the name the user wrote.
+  // Only an exchange keeps it. Elsewhere those words describe a product.
+  if (junkLabel(label) && !(preserveGloss && /\s/.test(label))) return null;
   const role = tailEntry?.role ?? span?.entry.role ?? inferRole(label);
   return {
     id: label.toLowerCase(),
@@ -2063,9 +2068,12 @@ export function extractNamedEntities(message: string): NamedEntity[] {
 
   function pushDraft(draft: Draft) {
     if (isLimitInstruction(draft.label)) return;
+    // A multi-word Title Case name in a hop or sequence is an actor, even when
+    // every word is gloss. A one-word gloss ("release" on a pipeline) stays out.
+    const titledExchange = isMessageExchange(text) && draft.origin === "adhoc" && /\s/.test(draft.label);
     if (
       draft.origin === "adhoc" &&
-      (junkLabel(draft.label) ||
+      ((!titledExchange && junkLabel(draft.label)) ||
         leadingImperative(draft.label, text) ||
         diagramAdjective(draft.label, text) ||
         clauseCrumb(draft.label, text))
@@ -2120,7 +2128,7 @@ export function extractNamedEntities(message: string): NamedEntity[] {
         end: segment.start + local.end,
       };
       const span = overlappingSpan(compound, overlapping.filter((item) => !consumed.has(item)));
-      const draft = compoundDraft(compound, span, text);
+      const draft = compoundDraft(compound, span, text, isMessageExchange(text));
       if (!draft) continue;
       if (span) consumed.add(span);
       for (const word of compound.words) blocked.add(word);
@@ -2490,10 +2498,14 @@ function namedPayload(clause: string, verb: RegExpMatchArray): string | null {
     .join(" ");
 }
 
-/** One message per clause that names an actor and a verb. A lone check lands on the previous actor. */
+/**
+ * One message per clause that names an actor and a verb. A lone check lands on the previous actor.
+ * A trailing actor ("finally the night crew opens the gate") is its own clause, not a leftover
+ * of the ask that already named an asker, an askee, and a payload.
+ */
 function exchangeMessages(text: string, nodes: NamedEntity[]): Array<{ from: string; to: string; label: string }> {
   const clauses = text
-    .split(/\s*(?:;|\.\s+)\s*|\s+\b(?:later|then|afterward|afterwards)\b\s*/i)
+    .split(/\s*(?:;|\.\s+)\s*|\s+\b(?:and\s+then|later|then|afterward|afterwards|finally)\b\s*/i)
     .map((clause) => clause.trim())
     .filter(Boolean);
   const messages: Array<{ from: string; to: string; label: string }> = [];
