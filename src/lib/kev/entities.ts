@@ -221,7 +221,7 @@ const CUE = new Set([
   "azure", "aws", "amazon", "gcp", "google", "payment",
   "side", "also", "just", "me", "my", "our", "their", "shopper", "customer", "records", "record",
   "page", "call", "sits", "ahead", "behind", "hang", "off", "them", "tier", "web", "app",
-  "orange", "green", "blue", "purple", "yellow", "red", "teal", "pink", "gray", "grey", "black", "white",
+  "orange", "green", "blue", "purple", "yellow", "red", "teal", "cyan", "pink", "magenta", "gray", "grey", "black", "white",
   "horizontal", "horizontally", "vertical", "vertically", "column", "columns", "row", "rows",
   "stacked", "stack", "left", "right", "top", "bottom", "down",
 ]);
@@ -1032,18 +1032,31 @@ function compoundsIn(text: string): Compound[] {
   const found: Compound[] = [];
   const pattern = /\b[A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)+\b/g;
   for (const match of text.matchAll(pattern)) {
-    const rawWords = match[0].split(/\s+/);
-    const words = rawWords.map((word) => word.toLowerCase());
+    const full = match[0];
+    let rawWords = full.split(/\s+/);
+    let words = rawWords.map((word) => word.toLowerCase());
+    let cursor = 0;
+    // "Draw Fly" is a verb plus a name. "Diagram Heroku Dyno" keeps the product after the verb.
+    // Other cue heads ("Tier Web App") still drop the whole span.
+    while (words.length >= 2 && /^(?:please|draw|sketch|diagram|show|illustrate|map|build|create|architect|outline)$/.test(words[0] ?? "")) {
+      const word = rawWords[0] ?? "";
+      const at = full.indexOf(word, cursor);
+      cursor = at + word.length;
+      while (full[cursor] === " " || full[cursor] === "\t") cursor += 1;
+      rawWords = rawWords.slice(1);
+      words = words.slice(1);
+    }
     if (words.length < 2) continue;
     const head = words[0] ?? "";
-    // "Draw Fly" is a verb plus a name. "App Platform" keeps the role word that is part of the product.
+    // "App Platform" keeps the role word that is part of the product.
     if ((CUE.has(head) || HARD_CUE.has(head) || ORDINARY.has(head)) && !ROLE_WORDS.has(head) && !MODIFIER.has(head)) {
       continue;
     }
     if (words.every((word) => ORDINARY.has(word) || (rejectedToken(word) && !ROLE_WORDS.has(word)))) continue;
+    const start = (match.index ?? 0) + cursor;
     found.push({
-      start: match.index ?? 0,
-      end: (match.index ?? 0) + match[0].length,
+      start,
+      end: (match.index ?? 0) + full.length,
       words,
       rawWords,
     });
@@ -1081,6 +1094,17 @@ function phraseEntry(phrase: string, text: string): CatalogEntry | null {
   return null;
 }
 
+/** A brand prefixed onto two different products is the vendor, not the product. */
+function repeatedBrandHead(text: string, head: string): boolean {
+  const tails = new Set<string>();
+  for (const compound of compoundsIn(text)) {
+    if ((compound.words[0] ?? "") !== head) continue;
+    const tail = compound.words.slice(1).join(" ");
+    if (tail) tails.add(tail);
+  }
+  return tails.size >= 2;
+}
+
 function compoundDraft(compound: Compound, span: Span | null, text: string): Draft | null {
   const phrase = compound.words.join(" ");
   const exact = phraseEntry(phrase, text) ?? (span && span.entry.phrases.some((item) => item.toLowerCase() === phrase) ? span.entry : null);
@@ -1098,8 +1122,14 @@ function compoundDraft(compound: Compound, span: Span | null, text: string): Dra
   const tail = compound.words.slice(1).join(" ");
   const tailEntry = span && span.entry.phrases.some((item) => item.toLowerCase() === tail) ? span.entry : phraseEntry(tail, text);
   // "Upstash Redis" is the brand Upstash. "Managed Redis" keeps both words.
-  // A listed stage ("Smoke Test") is not a role word to strip.
-  if (tailEntry && !tailEntry.listed && tailEntry.role !== "step" && headIsUncommon(head)) {
+  // The same brand on two products keeps each full name. A listed stage is not a role word to strip.
+  if (
+    tailEntry &&
+    !tailEntry.listed &&
+    tailEntry.role !== "step" &&
+    headIsUncommon(head) &&
+    !repeatedBrandHead(text, head)
+  ) {
     const label = displayToken(compound.rawWords[0] ?? head);
     return {
       id: label.toLowerCase(),
