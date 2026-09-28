@@ -252,6 +252,52 @@ function shapeSlots(label: string, text: string): DiagramSlots {
   };
 }
 
+/** Host-owned fill change. Null when the message is not recoloring shapes. */
+export function shapeRestyleDecision(message: string): KevDecision | null {
+  const text = message.trim();
+  const lower = text.toLowerCase();
+  if (!text) return null;
+  const colorCommand = text.match(
+    new RegExp(
+      `\\b(?:change|make|turn|paint|color|colour|recolor|recolour|style|set)\\s+(?:the\\s+)?(.+?)\\s+(?:(?:to|(?:color|colour))\\s+)?(${COLOR_NAMES}|#[0-9a-fA-F]{6})\\b`,
+      "i",
+    ),
+  );
+  if (!colorCommand?.[1] || !colorCommand[2] || /\b(add|create|insert|draw)\b/.test(lower)) return null;
+  const rawTarget = colorCommand[1].trim();
+  const edges = edgeQuery(rawTarget);
+  if (edges) {
+    const colorToken = colorCommand[2].toLowerCase();
+    const hex = colorToken.startsWith("#") ? colorToken : null;
+    const slots = withPalette({
+      target: edges,
+      colorName: hex ? null : colorToken,
+      fillColor: hex,
+    });
+    return decision("style", `Set the ${edges} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
+  }
+  if (isAllTarget(rawTarget)) {
+    const colorToken = colorCommand[2].toLowerCase();
+    const hex = colorToken.startsWith("#") ? colorToken : null;
+    const slots = withPalette({ target: null, colorName: hex ? null : colorToken, fillColor: hex });
+    return decision("style", `Set every shape to ${colorToken}.`, slots, [{ intent: "style", slots }]);
+  }
+  const namedTarget = titleLabel(rawTarget);
+  const colorToken = colorCommand[2].toLowerCase();
+  const hex = colorToken.startsWith("#") ? colorToken : null;
+  const colorName = hex ? null : colorToken;
+  if (isVagueTarget(namedTarget)) {
+    return decision("clarify", `Which shape should be ${colorToken}? Name it, for example “Make the API red.”`);
+  }
+  const slots = withPalette({
+    target: isAllTarget(namedTarget) ? null : namedTarget,
+    colorName,
+    fillColor: hex,
+  });
+  const subject = slots.target ?? "every shape";
+  return decision("style", `Set ${subject} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
+}
+
 export function decideDemo(message: string): KevDecision {
   const text = message.trim();
   const lower = text.toLowerCase();
@@ -308,46 +354,8 @@ export function decideDemo(message: string): KevDecision {
     ]);
   }
 
-  const colorCommand = text.match(
-    new RegExp(
-      `\\b(?:change|make|turn|paint|color|colour|recolor|recolour|style|set)\\s+(?:the\\s+)?(.+?)\\s+(?:(?:to|(?:color|colour))\\s+)?(${COLOR_NAMES}|#[0-9a-fA-F]{6})\\b`,
-      "i",
-    ),
-  );
-  if (colorCommand?.[1] && colorCommand[2] && !/\b(add|create|insert|draw)\b/.test(lower)) {
-    const rawTarget = colorCommand[1].trim();
-    const edges = edgeQuery(rawTarget);
-    if (edges) {
-      const colorToken = colorCommand[2].toLowerCase();
-      const hex = colorToken.startsWith("#") ? colorToken : null;
-      const slots = withPalette({
-        target: edges,
-        colorName: hex ? null : colorToken,
-        fillColor: hex,
-      });
-      return decision("style", `Set the ${edges} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
-    }
-    if (isAllTarget(rawTarget)) {
-      const colorToken = colorCommand[2].toLowerCase();
-      const hex = colorToken.startsWith("#") ? colorToken : null;
-      const slots = withPalette({ target: null, colorName: hex ? null : colorToken, fillColor: hex });
-      return decision("style", `Set every shape to ${colorToken}.`, slots, [{ intent: "style", slots }]);
-    }
-    const namedTarget = titleLabel(rawTarget);
-    const colorToken = colorCommand[2].toLowerCase();
-    const hex = colorToken.startsWith("#") ? colorToken : null;
-    const colorName = hex ? null : colorToken;
-    if (isVagueTarget(namedTarget)) {
-      return decision("clarify", `Which shape should be ${colorToken}? Name it, for example “Make the API red.”`);
-    }
-    const slots = withPalette({
-      target: isAllTarget(namedTarget) ? null : namedTarget,
-      colorName,
-      fillColor: hex,
-    });
-    const subject = slots.target ?? "every shape";
-    return decision("style", `Set ${subject} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
-  }
+  const restyle = shapeRestyleDecision(text);
+  if (restyle) return restyle;
 
   if (/\b(add|insert|create|draw|place)\b/.test(lower)) {
     return parseAdd(text);

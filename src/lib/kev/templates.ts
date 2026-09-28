@@ -241,7 +241,7 @@ function isCloud(text: string): boolean {
 }
 
 function mentionsApiGateway(text: string): boolean {
-  return /\bapi[\s-]?gateway\b/i.test(text);
+  return /\bapi[\s-]?gateway\b|\bapigw\b|\bapi\s+gw\b/i.test(text);
 }
 
 function mentionsLambda(text: string): boolean {
@@ -1025,7 +1025,7 @@ function namedAzureServices(text: string): AzureServiceId[] {
   if (/\bazure\s+functions\b/i.test(text) || (mentionsAzure(text) && /\bfunctions\b/i.test(text))) ids.push("functions");
   if (/\baks\b|\bazure\s+kubernetes(?:\s+service)?\b/i.test(text)) ids.push("aks");
   if (/\bazure\s+sql\b/i.test(text)) ids.push("sql");
-  if (/\bcosmos\s*db\b|\bcosmosdb\b/i.test(text)) ids.push("cosmos");
+  if (/\bcosmos\s*db\b|\bcosmosdb\b/i.test(text) || (mentionsAzure(text) && /\bcosmos\b/i.test(text))) ids.push("cosmos");
   if (/\bblob\s+storage\b|\bazure\s+(?:blob|storage)\b/i.test(text)) ids.push("storage");
   if (/\bservice\s+bus\b/i.test(text)) ids.push("bus");
   if (/\bevent\s+hubs?\b/i.test(text)) ids.push("eventhubs");
