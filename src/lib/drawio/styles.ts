@@ -57,6 +57,8 @@ export const PALETTE: Record<string, PaletteColor> = {
   teal: { fill: "#d5e8e4", stroke: "#0e8088" },
   cyan: { fill: "#c5f6fa", stroke: "#0c8599" },
   pink: { fill: "#fad7e4", stroke: "#c45c7a" },
+  // Hue ~294, inside the magenta band. Pink (~343) is a different color.
+  magenta: { fill: "#f8e1f8", stroke: "#c026d3" },
   black: { fill: "#1f2937", stroke: "#111827", font: "#ffffff" },
   white: { fill: "#ffffff", stroke: "#94a3b8" },
 };

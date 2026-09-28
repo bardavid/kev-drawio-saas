@@ -353,10 +353,12 @@ function listedStepsUncovered(spec: CompositionSpec, text: string): boolean {
 }
 
 function templateDropsNamedWork(spec: CompositionSpec, labels: string[]): boolean {
-  if (labels.length < 5) return false;
+  // Two named products the sketch does not draw are enough. A three-name stack
+  // used to pass the five-label cutoff and was replaced by the sketch.
+  if (labels.length < 2) return false;
   const have = new Set(specLabels(spec).map((label) => label.toLowerCase()));
   const uncovered = labels.filter((label) => !labelCovered(have, label));
-  if (uncovered.length < 3) return false;
+  if (uncovered.length < 2) return false;
   return uncovered.length * 2 >= labels.length;
 }
 
@@ -606,7 +608,9 @@ export function resolveComposition(
 
   if (redisDiagramRequest(text)) {
     const spec = redisUsageSpec();
-    if (!grounded || specCovers(spec, catalogLabels(text))) {
+    // Catalog-only coverage is vacuous when every named product is ad hoc.
+    // The usage sketch applies only when it already draws those names.
+    if (!grounded || specCovers(spec, labels)) {
       return packComposition(spec, text, hints, builtinBrief(text)?.summary ?? null, grounded);
     }
   }
