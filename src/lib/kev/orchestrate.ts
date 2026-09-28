@@ -9,6 +9,7 @@ import {
   composeOnCanvas,
   compositionDecision,
   highLevelComposition,
+  hostPreparedComposition,
   renderBlankArchitecture,
   renderComposition,
   resolveComposition,
@@ -557,6 +558,8 @@ const COMPOSITION_PHASES: Array<{ phase: CompositionPhase; detail: string }> = [
  * Anything else leaves the canvas alone instead of drawing sentence scraps.
  */
 async function planOpenIdea(input: OrchestratorContext): Promise<KevTurnResult> {
+  const prepared = hostPreparedComposition(input.userMessage);
+  if (prepared) return runComposition({ ...input, prepared });
   const depth = input.reading.depth ?? null;
   if (depth === "few") {
     const composition = highLevelComposition(input.userMessage);

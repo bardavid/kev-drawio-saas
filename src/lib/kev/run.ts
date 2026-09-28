@@ -6,6 +6,7 @@ import {
   colorInMessage,
   CAPACITY_REPLY,
   composeOnCanvas,
+  hostPreparedComposition,
   renderComposition,
   renderBlankArchitecture,
   resolveComposition,
@@ -503,6 +504,21 @@ async function runOpenAITurn(input: {
   });
 }
 
+function hostPreparedTurn(
+  userMessage: string,
+  currentXml: string,
+  originalXml: string,
+  mode: KevMode,
+  model: string | undefined,
+): KevTurnResult | null {
+  const composition = hostPreparedComposition(userMessage);
+  if (!composition) return null;
+  const placed = composeOnCanvas(userMessage, currentXml, composition, renderComposition(composition));
+  if (placed === "unchanged" || placed === "keep") return null;
+  if (sameMxfile(placed.xml, originalXml)) return null;
+  return result(placed.decision, mode, model, placed.xml, false);
+}
+
 export async function runKevTurn(input: {
   messages: ChatMessage[];
   currentXml: string;
@@ -519,7 +535,8 @@ export async function runKevTurn(input: {
   const described = describeMode();
   const userMessage = latestUser(input.messages);
   // Connector colors are a host stroke edit, applied before any model fill.
-  // Hue families share one edge stroke: pink/magenta/fuchsia near 300, amber/gold/orange near 40.
+  // Hue families share one edge stroke: pink/magenta/fuchsia near 300,
+  // coral/salmon/tomato near 16, amber/gold/orange near 40.
   const utteredEdges = edgeRestyleDecision(userMessage);
   if (utteredEdges) {
     return finish(utteredEdges, described.mode, described.model, input.currentXml, currentXml, { userMessage });
@@ -532,6 +549,8 @@ export async function runKevTurn(input: {
   if (renamed) {
     return finish(renamed, described.mode, described.model, input.currentXml, currentXml, { userMessage });
   }
+  const prepared = hostPreparedTurn(userMessage, currentXml, input.currentXml, described.mode, described.model);
+  if (prepared) return prepared;
   const context = editContext(currentXml, input.previousXml);
   const request = {
     messages: input.messages,

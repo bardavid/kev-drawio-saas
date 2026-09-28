@@ -18,6 +18,8 @@ import {
   chainRole,
   composeNamedDiagram,
   extractNamedEntities,
+  labeledPlacement,
+  listedComponents,
   listedProcessSteps,
   rolePaint,
   topicLabelFor,
@@ -34,7 +36,7 @@ import {
   withPalette,
 } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
-import { componentsFromBrief, ideaSubject, longUnlistedDescription } from "@/lib/kev/scale";
+import { componentsFromBrief, highLevelOverview, ideaSubject, longUnlistedDescription, overviewSubject } from "@/lib/kev/scale";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
 
@@ -256,7 +258,11 @@ function isIncrementalEdit(text: string): boolean {
   if (/^(?:please\s+)?(?:change|make|turn|set|style|color|colour)\b/i.test(trimmed) && COLOR_RE.test(trimmed)) {
     return true;
   }
-  return /^(?:please\s+)?(?:lay|reflow|relayout|re-layout|arrange|organize|organise)\b/i.test(trimmed);
+  if (/^(?:please\s+)?(?:lay|reflow|relayout|re-layout|arrange|organize|organise)\b/i.test(trimmed)) {
+    // "Lay out three boxes labeled A, B, and C" places those boxes. It is not a reflow.
+    return !labeledPlacement(trimmed);
+  }
+  return false;
 }
 
 function specLabels(spec: CompositionSpec): string[] {
@@ -619,7 +625,7 @@ export function resolveComposition(
   const flowchart = flowchartSpec(text);
   if (flowchart) return packComposition(flowchart, text, hints, null, true);
 
-  if (architectureOwns(text, labels)) return null;
+  if (architectureOwns(text, labels) && !labeledPlacement(text)) return null;
 
   // Scraps of a longer description are not the named boxes. Sequences and
   // workflows below still draw. A template already returned above.
@@ -647,12 +653,27 @@ export function resolveComposition(
 export function unresolvedOpenIdea(message: string): boolean {
   const text = message.trim();
   if (!longUnlistedDescription(text)) return false;
+  if (listedComponents(text) || highLevelOverview(text)) return false;
   return resolveComposition(text) === null && parseArchitecture(text) === null;
+}
+
+/**
+ * Drawings the host can place without asking which shape to use.
+ * A short overview is one subject box. A labeled set, or components named in
+ * the message, is one vertex each. Topic notes are not required for either.
+ */
+export function hostPreparedComposition(message: string): Composition | null {
+  if (labeledPlacement(message) || listedComponents(message)) {
+    const composed = resolveComposition(message);
+    return composed?.grounded ? composed : null;
+  }
+  if (!highLevelOverview(message) || resolveComposition(message)) return null;
+  return highLevelComposition(message);
 }
 
 /** One box for a high-level reading. The subject stays whole. */
 export function highLevelComposition(message: string): Composition | null {
-  const label = ideaSubject(message);
+  const label = overviewSubject(message) ?? ideaSubject(message);
   if (!label) return null;
   const paint = PALETTE.orange!;
   const spec: LayerSpec = {
