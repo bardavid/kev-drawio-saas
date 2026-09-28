@@ -249,6 +249,23 @@ function result(
   return turn;
 }
 
+/** Draw a grounded composition when a nameless add would otherwise ask what to call the shape. */
+function compositionTurn(
+  message: string,
+  currentXml: string,
+  originalXml: string,
+  mode: KevMode,
+  model: string | undefined,
+  extra: { fallback?: boolean; confidence?: number | null },
+): KevTurnResult | null {
+  const composed = resolveComposition(message);
+  if (!composed?.grounded) return null;
+  const placed = composeOnCanvas(message, currentXml, composed, renderComposition(composed));
+  if (placed === "unchanged" || placed === "keep") return null;
+  if (sameMxfile(placed.xml, originalXml)) return null;
+  return result(placed.decision, mode, model, placed.xml, false, extra);
+}
+
 function finish(
   decision: KevDecision,
   mode: KevMode,
@@ -316,6 +333,11 @@ function finish(
     return result(decision, mode, model, updated, Boolean(decision.updatedXml), extra);
   } catch (error) {
     if (error instanceof DiagramXmlError) {
+      // A blank add with no label is the mutator asking for a name. Named steps already answer it.
+      if (error.message === "What should the new shape be called?" && extra.userMessage) {
+        const hosted = compositionTurn(extra.userMessage, currentXml, originalXml, mode, model, extra);
+        if (hosted) return hosted;
+      }
       return result(
         { ...decision, reply: error.message, intent: "clarify", operations: [] },
         mode,

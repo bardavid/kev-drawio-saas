@@ -1020,4 +1020,141 @@ describe("named composition", () => {
     assert.equal(drawnLabels.includes("SQL"), false);
     assert.equal(drawnLabels.includes("Object storage"), false);
   });
+
+  it("draws one node per named tier and does not promote a leading verb", () => {
+    const prompt =
+      "Outline the product as three layers: a SPA for the interface, application servers for the domain, and a Postgres store underneath.";
+    const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+    for (const label of ["SPA", "Application servers", "Postgres"]) assert.ok(labels.includes(label), labels.join(", "));
+    for (const stolen of ["Outline", "Interface", "Domain", "Business logic", "UI", "Store"]) {
+      assert.equal(labels.includes(stolen), false, `${stolen} in ${labels.join(", ")}`);
+    }
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+    const report = assertClean(drawn.xml);
+    const drawnLabels = content(report.nodes).map((node) => node.label);
+    assert.deepEqual(drawnLabels, ["SPA", "Application servers", "Postgres"]);
+    assert.ok(report.edges.length >= 2);
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    assertPastel(content(report.nodes), prompt);
+
+    const tiers = "Sketch three layers: UI, business logic, and a database.";
+    const tierLabels = extractNamedEntities(tiers).map((entity) => entity.label);
+    for (const label of ["UI", "Business logic", "Database"]) assert.ok(tierLabels.includes(label), tierLabels.join(", "));
+    assert.equal(tierLabels.includes("Sketch"), false);
+    const tierDrawn = previewDemo(tiers, STARTER_XML);
+    const tierReport = assertClean(tierDrawn.xml);
+    const tierNodes = content(tierReport.nodes).map((node) => node.label);
+    for (const label of ["UI", "Business logic", "Database"]) assert.ok(tierNodes.includes(label), tierNodes.join(", "));
+    assert.equal(tierNodes.includes("Sketch"), false);
+    assert.ok(tierReport.edges.length >= 2);
+  });
+
+  it("draws a sign-in choreography as a sequence with message edges", () => {
+    const prompt =
+      "Careful sign-in choreography: the Mobile App requests a one-time link from Auth0; later the Billing API checks the token.";
+    const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+    for (const label of ["Mobile App", "Auth0", "Billing API"]) assert.ok(labels.includes(label), labels.join(", "));
+    for (const stolen of ["Careful", "Sign-in", "Choreography", "Token", "Link"]) {
+      assert.equal(labels.includes(stolen), false, `${stolen} in ${labels.join(", ")}`);
+    }
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /Drew Architecture/);
+    assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+    const report = assertClean(drawn.xml);
+    assert.deepEqual(content(report.nodes).map((node) => node.label), ["Mobile App", "Auth0", "Billing API"]);
+    assert.ok(content(report.nodes).every((node) => node.style.includes("umlLifeline")));
+    assert.ok(report.edges.length >= 2);
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+    assert.ok(report.edges.some((edge) => /link/i.test(edge.label)));
+    assert.ok(report.edges.some((edge) => /token/i.test(edge.label)));
+    assertPastel(content(report.nodes), prompt);
+  });
+
+  it("connects ordered pipeline stages so a connector tint can restyle the stroke", () => {
+    const prompt = "Buildkite sketch: Bundle the artifact first, then Promote onto Fly.io";
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["Buildkite", "Bundle", "Promote", "Fly.io"]) assert.ok(labels.includes(label), labels.join(", "));
+    const ordered = [...content(report.nodes)].sort((left, right) => left.x - right.x).map((node) => node.label);
+    for (let index = 1; index < ordered.length; index += 1) {
+      const from = ordered[index - 1];
+      const to = ordered[index];
+      assert.ok(
+        report.edges.some((edge) => edge.from === from && edge.to === to),
+        `${from} -> ${to} missing from ${report.edges.map((edge) => `${edge.from}->${edge.to}`).join(", ")}`,
+      );
+    }
+    assert.ok(report.edges.every((edge) => edge.label.length > 0));
+
+    const before = boxes(drawn.xml);
+    const fills = content(report.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const tinted = previewDemo("Tint every connector teal", drawn.xml);
+    assert.equal(tinted.decision.intent, "style");
+    assert.equal(tinted.decision.slots.colorName, "teal");
+    assert.deepEqual(boxes(tinted.xml), before);
+    const after = assessDiagram(tinted.xml);
+    assert.ok(after.edges.length >= 3);
+    assert.ok(after.edges.every((edge) => edge.style.includes("strokeColor=#0e8088")));
+    assert.deepEqual(
+      content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+      fills,
+    );
+  });
+
+  it("draws one node per named step on a path and does not ask for a name", async () => {
+    const prompt = "Clinic intake path: greet the patient, record vitals, physician review, treatment, discharge";
+    const steps = ["Greet Patient", "Record Vitals", "Physician Review", "Treatment", "Discharge"];
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+    assert.match(drawn.decision.reply, /Clinic Intake/);
+    const report = assertClean(drawn.xml);
+    assert.deepEqual(content(report.nodes).map((node) => node.label), steps);
+    assert.ok(report.nodes.some((node) => node.role === "cluster" && node.label === "Steps"));
+    assert.deepEqual(
+      report.edges.map((edge) => `${edge.from}->${edge.to}`),
+      ["Greet Patient->Record Vitals", "Record Vitals->Physician Review", "Physician Review->Treatment", "Treatment->Discharge"],
+    );
+    assert.ok(report.edges.every((edge) => edge.label === "Next"));
+    assertPastel(content(report.nodes), prompt);
+
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions?: Record<string, { type: string }> };
+      if (body.questions?.intent) {
+        return Response.json({
+          model: "kev-latest",
+          answers: {
+            intent: { type: "choice", choice: "add_shape", confidence: 0.87 },
+            needs_xml_edit: { type: "noul", noul: 0.9 },
+            color: { type: "choice", choice: "none" },
+            shape: { type: "choice", choice: "none" },
+            layout: { type: "choice", choice: "none" },
+            anchor: { type: "choice", choice: "none" },
+          },
+        });
+      }
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          next: { type: "choice", choice: "clarify", confidence: 0.2 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+
+    const kev = await runKevTurn({
+      messages: [{ role: "user", content: prompt }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(kev.intent, "add_shape");
+    assert.doesNotMatch(kev.reply, /What should the new shape be called/);
+    assert.deepEqual(content(assertClean(kev.updatedXml).nodes).map((node) => node.label), steps);
+  });
 });
