@@ -1,5 +1,5 @@
 import { PALETTE, inferShape, type ShapeKind } from "@/lib/drawio/styles";
-import { hasEnumeratedBoxes, PLACEMENT_MANNER_TOKENS } from "@/lib/kev/plan";
+import { hasEnumeratedBoxes, isLimitInstruction, PLACEMENT_MANNER_TOKENS, stripTrailingLimits } from "@/lib/kev/plan";
 
 /**
  * Named services, steps, actors, and states pulled from the words the user
@@ -252,7 +252,7 @@ interface Span {
 }
 
 function normalize(text: string): string {
-  return text
+  return stripTrailingLimits(text)
     .replace(/['’]s\b/g, "")
     .replace(/['’]/g, "")
     .replace(/[—–]/g, ",")
@@ -1944,6 +1944,7 @@ export function listedComponents(message: string): string[] | null {
   const labels: string[] = [];
   const seen = new Set<string>();
   for (const part of parts) {
+    if (isLimitInstruction(part)) continue;
     const words = (part.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter(
       (word) => !/^(?:a|an|the|and|or|plus)$/i.test(word),
     );
@@ -1971,10 +1972,12 @@ function explicitLabeledBoxes(text: string): string[] | null {
     .filter(Boolean);
   const labels: string[] = [];
   for (const part of parts) {
+    if (isLimitInstruction(part)) continue;
     const words = (part.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter(
       (word) => !/^(?:box|boxes|shape|shapes|node|nodes|rectangle|rectangles)$/i.test(word),
     );
     if (words.length === 0 || words.length > 6) return null;
+    if (isLimitInstruction(words.join(" "))) continue;
     labels.push(words.map((word) => displayToken(word)).join(" "));
   }
   return labels.length >= 2 ? labels : null;
@@ -2013,6 +2016,7 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   const consumed = new Set<Span>();
 
   function pushDraft(draft: Draft) {
+    if (isLimitInstruction(draft.label)) return;
     if (
       draft.origin === "adhoc" &&
       (junkLabel(draft.label) ||

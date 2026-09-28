@@ -16,9 +16,6 @@ const GLUE = /^(?:a|an|the|of|and|its|their|his|her|for|with|to|in|on|or)$/i;
 export const OPEN_IDEA_REPLY =
   "That idea needs its own components. Name the boxes, or say whether you want a high-level sketch or a detailed diagram.";
 
-export const DETAILED_UNRESOLVED_REPLY =
-  "A detailed diagram needs the components of that idea. The topic notes did not name them, so the canvas is unchanged.";
-
 export interface BriefLink {
   from: string;
   to: string;

@@ -71,7 +71,7 @@ import {
   type SystemOneQuestion,
   type SystemOneRequest,
 } from "@/lib/kev/systemone";
-import { DETAILED_UNRESOLVED_REPLY, OPEN_IDEA_REPLY } from "@/lib/kev/scale";
+import { OPEN_IDEA_REPLY } from "@/lib/kev/scale";
 import type {
   DiagramOperation,
   DiagramSlots,
@@ -554,8 +554,9 @@ const COMPOSITION_PHASES: Array<{ phase: CompositionPhase; detail: string }> = [
 
 /**
  * A detailed idea with no named boxes is unsure about its components.
- * Topic notes supply them. A high-level reading stays one subject box.
- * Anything else leaves the canvas alone instead of drawing sentence scraps.
+ * Topic notes supply them when a brief names enough interacting parts.
+ * A shorter title is tried when the first brief does not. A high-level
+ * reading stays one subject box. Otherwise ask which depth to draw.
  */
 async function planOpenIdea(input: OrchestratorContext): Promise<KevTurnResult> {
   const prepared = hostPreparedComposition(input.userMessage);
@@ -568,12 +569,15 @@ async function planOpenIdea(input: OrchestratorContext): Promise<KevTurnResult> 
   }
   if (depth === "many") {
     let topicContext = input.topicContext ?? null;
-    if (!topicContext) {
+    let composition = topicContext ? composeDetailedFromBrief(input.userMessage, topicContext) : null;
+    if (!composition) {
       const brief = await researchIdea(input.userMessage, { network: true });
-      topicContext = brief?.summary ?? null;
+      if (brief?.summary) {
+        topicContext = brief.summary;
+        composition = composeDetailedFromBrief(input.userMessage, topicContext);
+      }
     }
-    const composition = topicContext ? composeDetailedFromBrief(input.userMessage, topicContext) : null;
-    if (!composition) return clarifyOpen(input, DETAILED_UNRESOLVED_REPLY);
+    if (!composition) return clarifyOpen(input, OPEN_IDEA_REPLY);
     return runComposition({ ...input, topicContext, prepared: composition });
   }
   return clarifyOpen(input, OPEN_IDEA_REPLY);
