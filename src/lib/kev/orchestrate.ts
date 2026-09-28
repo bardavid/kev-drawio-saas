@@ -72,7 +72,7 @@ import {
   type SystemOneQuestion,
   type SystemOneRequest,
 } from "@/lib/kev/systemone";
-import { OPEN_IDEA_REPLY, openIdeaDepthFollowUp } from "@/lib/kev/scale";
+import { OPEN_IDEA_REPLY, depthContinuation } from "@/lib/kev/scale";
 import type {
   ChatMessage,
   DiagramOperation,
@@ -118,6 +118,11 @@ export interface OrchestratorContext {
   messages?: readonly ChatMessage[];
   /** The user already chose few or many. Place that drawing without another confirm loop. */
   depthCommitted?: boolean;
+  /**
+   * The open page is the sparse sketch of this same idea.
+   * The depth view replaces it. A blank page is drawn as usual.
+   */
+  replaceCanvas?: boolean;
 }
 
 export function buildSpecificityRequest(input: {
@@ -228,13 +233,14 @@ export function buildOrchestratorStepRequest(input: {
  * reading is already a complete single edit for the legacy path.
  */
 export async function maybeOrchestrate(input: OrchestratorContext): Promise<KevTurnResult | null> {
-  const followUp = openIdeaDepthFollowUp(input.messages ?? []);
+  const followUp = depthContinuation(input.messages ?? []);
   if (followUp) {
     return planOpenIdea({
       ...input,
       userMessage: followUp.idea,
       reading: { ...input.reading, depth: followUp.depth },
       depthCommitted: true,
+      replaceCanvas: followUp.replace,
     });
   }
   if (isBareDraw(input.userMessage)) return bareDraw(input);
@@ -578,6 +584,7 @@ export async function composeCommittedOpenIdea(
   depth: "few" | "many",
   currentXml: string,
   topicContext?: string | null,
+  replace = false,
 ): Promise<{ decision: KevDecision; xml: string }> {
   if (overNamedCapacity(idea)) {
     return {
@@ -588,7 +595,7 @@ export async function composeCommittedOpenIdea(
   if (depth === "few") {
     const composition = highLevelComposition(idea);
     if (!composition) return openIdeaClarify(currentXml);
-    return placeComposition(idea, currentXml, composition);
+    return placeComposition(idea, currentXml, composition, replace);
   }
   let composition = topicContext?.trim() ? composeDetailedFromBrief(idea, topicContext) : null;
   if (!composition) {
@@ -598,7 +605,7 @@ export async function composeCommittedOpenIdea(
   // Notes that do not name parts are not another copy of the same question.
   if (!composition) composition = composeDetailedFromIdea(idea);
   if (!composition) return openIdeaClarify(currentXml);
-  return placeComposition(idea, currentXml, composition);
+  return placeComposition(idea, currentXml, composition, replace);
 }
 
 function openIdeaClarify(xml: string): { decision: KevDecision; xml: string } {
@@ -612,8 +619,20 @@ function placeComposition(
   idea: string,
   currentXml: string,
   composition: Composition,
+  replace = false,
 ): { decision: KevDecision; xml: string } {
-  const placed = composeOnCanvas(idea, currentXml, composition, renderComposition(composition));
+  const rendered = renderComposition(composition);
+  // A sparse sketch of this idea is the unfinished picture. Depth replaces it.
+  if (replace) {
+    if (sameMxfile(rendered, currentXml)) {
+      return {
+        decision: { intent: "noop", reply: UNCHANGED_DIAGRAM_REPLY, slots: {}, operations: [], updatedXml: null },
+        xml: currentXml,
+      };
+    }
+    return { decision: compositionDecision(composition, rendered), xml: rendered };
+  }
+  const placed = composeOnCanvas(idea, currentXml, composition, rendered);
   if (placed === "unchanged") {
     return {
       decision: { intent: "noop", reply: UNCHANGED_DIAGRAM_REPLY, slots: {}, operations: [], updatedXml: null },
@@ -639,7 +658,13 @@ function placeComposition(
 async function planOpenIdea(input: OrchestratorContext): Promise<KevTurnResult> {
   const depth = input.reading.depth ?? null;
   if (input.depthCommitted && (depth === "few" || depth === "many")) {
-    const placed = await composeCommittedOpenIdea(input.userMessage, depth, input.currentXml, input.topicContext);
+    const placed = await composeCommittedOpenIdea(
+      input.userMessage,
+      depth,
+      input.currentXml,
+      input.topicContext,
+      input.replaceCanvas,
+    );
     return turn(input, {
       reply: placed.decision.reply,
       updatedXml: placed.xml,

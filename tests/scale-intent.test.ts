@@ -731,3 +731,213 @@ describe("open idea depth follow-up", { concurrency: 1 }, () => {
     assert.match(labels[0] ?? "", /Storage/);
   });
 });
+
+const SPARSE_IDEAS = [
+  "Picture a GPU inference farm that batches requests through a shared KV cache and a token ring so GPUs stay saturated — show the moving parts",
+  "Picture a harbor crane yard that swings loads through a shared boom lock and a tag line so hulls stay steady — show the moving parts",
+];
+
+const INVENT_ANSWERS = [
+  "Make it detailed and invent all the component names yourself",
+  "Go detailed — pick the box names for me",
+  "Detailed please — you give every box a name",
+];
+
+const UNUSABLE_NOTES = "A short note with no listed machinery and no interacting parts to draw.";
+
+function assertDetailed(xml: string, answer: string) {
+  const report = assertClean(xml);
+  const labels = content(report.nodes).map((node) => node.label);
+  assert.ok(labels.length >= 4, `${answer}: ${labels.join(", ")}`);
+  assert.ok(report.nodes.some((node) => node.role === "cluster"), answer);
+  assert.ok(report.edges.length >= 3, answer);
+  assert.ok(report.edges.every((edge) => edge.label.length > 0), answer);
+  for (const node of content(report.nodes)) {
+    const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+    assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${answer} ${node.label} ${fill}`);
+  }
+  return labels;
+}
+
+describe("depth after a sparse open picture", { concurrency: 1 }, () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+  });
+
+  it("composes a detailed diagram from the earlier idea when the first turn already drew scraps", async () => {
+    globalThis.fetch = (async () => Response.json({ extract: UNUSABLE_NOTES })) as typeof fetch;
+
+    let sawSparse = false;
+    for (const idea of SPARSE_IDEAS) {
+      const seed = previewDemo(idea, STARTER_XML);
+      const seedLabels = content(assessDiagram(seed.xml).nodes).map((node) => node.label);
+      const sparse = seed.decision.intent === "add_shape" && seedLabels.length < 4;
+      const clarified = seed.decision.intent === "clarify" && seed.decision.reply === OPEN_IDEA_REPLY;
+      assert.equal(sparse || clarified, true, `${idea} → ${seed.decision.intent} ${seedLabels.join(", ")}`);
+      if (sparse) sawSparse = true;
+      for (const answer of INVENT_ANSWERS) {
+        const result = await runKevTurn({
+          messages: [
+            { role: "user", content: idea },
+            { role: "assistant", content: seed.decision.reply },
+            { role: "user", content: answer },
+          ],
+          currentXml: seed.xml,
+        });
+        assert.equal(result.intent, "add_shape", `${idea} / ${answer}`);
+        assert.notEqual(result.reply, OPEN_IDEA_REPLY, answer);
+        assert.doesNotMatch(result.reply, /Describe a diagram change|What should the new shape be called|Name the shape to edit/, answer);
+        assert.notEqual(result.updatedXml, seed.xml, answer);
+        const labels = assertDetailed(result.updatedXml, `${idea} / ${answer}`);
+        assert.equal(
+          labels.some((label) => /GPU|KV|Harbor|Boom|Cache|Ring|Lock|Line|Hull/i.test(label)),
+          true,
+          labels.join(", "),
+        );
+      }
+    }
+    assert.equal(sawSparse, true);
+  });
+
+  it("keeps composing when a later naming line follows a shape-name miss in the same chat", async () => {
+    globalThis.fetch = (async () => Response.json({ extract: UNUSABLE_NOTES })) as typeof fetch;
+    const idea = SPARSE_IDEAS[0]!;
+    const seed = previewDemo(idea, STARTER_XML);
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: idea },
+        { role: "assistant", content: seed.decision.reply },
+        { role: "user", content: INVENT_ANSWERS[0]! },
+        { role: "assistant", content: "What should the new shape be called?" },
+        { role: "user", content: INVENT_ANSWERS[1]! },
+      ],
+      currentXml: seed.xml,
+    });
+    assert.equal(result.intent, "add_shape");
+    assert.doesNotMatch(result.reply, /What should the new shape be called|Name the shape to edit|Describe a diagram change/);
+    assertDetailed(result.updatedXml, INVENT_ANSWERS[1]!);
+  });
+
+  it("uses topic notes when they name the parts, including after a sparse drawing", async () => {
+    const idea = SPARSE_IDEAS[0]!;
+    const seed = previewDemo(idea, STARTER_XML);
+    globalThis.fetch = (async () =>
+      Response.json({
+        extract:
+          "Dispatchers send to the workers. The workers read the cache. The cache writes to the store. The store replicates to the peers.",
+      })) as typeof fetch;
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: idea },
+        { role: "assistant", content: seed.decision.reply },
+        { role: "user", content: "Make it detailed and invent all the component names yourself" },
+      ],
+      currentXml: seed.xml,
+    });
+    const labels = assertDetailed(result.updatedXml, idea);
+    assert.ok(labels.includes("Workers"), labels.join(", "));
+    assert.ok(labels.includes("Cache"), labels.join(", "));
+    assert.ok(labels.includes("Peers"), labels.join(", "));
+  });
+
+  it("collapses a sparse drawing to one subject box for a high-level answer", async () => {
+    let wiki = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("wikipedia.org")) wiki += 1;
+      return Response.json({ extract: UNUSABLE_NOTES });
+    }) as typeof fetch;
+    const idea = SPARSE_IDEAS[0]!;
+    const seed = previewDemo(idea, STARTER_XML);
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: idea },
+        { role: "assistant", content: seed.decision.reply },
+        { role: "user", content: "Just the high-level overview" },
+      ],
+      currentXml: seed.xml,
+    });
+    assert.equal(wiki, 0);
+    assert.equal(result.intent, "add_shape");
+    assert.doesNotMatch(result.reply, /Name the shapes and the edit you want|Describe a diagram change/);
+    const labels = content(assertClean(result.updatedXml).nodes).map((node) => node.label);
+    assert.equal(labels.length, 1);
+    assert.match(labels[0] ?? "", /Inference|Farm|GPU/);
+  });
+
+  it("still soft-fails a detailed naming sentence that has no earlier idea", () => {
+    for (const answer of INVENT_ANSWERS) {
+      const alone = previewDemo(answer, STARTER_XML);
+      assert.equal(alone.decision.reply, "Describe a diagram change.", answer);
+      assert.equal(alone.xml, STARTER_XML, answer);
+    }
+  });
+
+  it("leaves bare draw, a thin three-tier ask, and a wipe alone after a sparse drawing", async () => {
+    const idea = SPARSE_IDEAS[0]!;
+    const seed = previewDemo(idea, STARTER_XML);
+    const history = [
+      { role: "user" as const, content: idea },
+      { role: "assistant" as const, content: seed.decision.reply },
+    ];
+
+    const bare = await runKevTurn({
+      messages: [...history, { role: "user", content: "draw" }],
+      currentXml: seed.xml,
+    });
+    assert.equal(bare.intent, "clarify");
+    assert.match(bare.reply, /What should I draw/);
+    assert.equal(bare.updatedXml, seed.xml);
+
+    const tier = await runKevTurn({
+      messages: [...history, { role: "user", content: "three tier web app" }],
+      currentXml: seed.xml,
+    });
+    const tierLabels = content(assertClean(tier.updatedXml).nodes).map((node) => node.label);
+    assert.ok(tierLabels.includes("Client") && tierLabels.includes("App") && tierLabels.includes("Postgres"), tierLabels.join(", "));
+
+    const before = content(assessDiagram(seed.xml).nodes).map((node) => node.label);
+    const replaced = await runKevTurn({
+      messages: [...history, { role: "user", content: "redraw this from scratch and make it more complex" }],
+      currentXml: seed.xml,
+    });
+    const after = content(assessDiagram(replaced.updatedXml).nodes).map((node) => node.label);
+    for (const kept of before) assert.ok(after.includes(kept), kept);
+  });
+
+  it("composes the earlier idea when Kev would otherwise ask for a shape name", async () => {
+    process.env.KEV_BASE_URL = "http://kev.local";
+    const idea = SPARSE_IDEAS[0]!;
+    const seed = previewDemo(idea, STARTER_XML);
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("wikipedia.org")) return Response.json({ extract: UNUSABLE_NOTES });
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "add_shape", confidence: 0.4 },
+          needs_xml_edit: { type: "noul", noul: 0.2 },
+          depth: { type: "choice", choice: "few", confidence: 0.3 },
+          shape: { type: "choice", choice: "none" },
+          next: { type: "choice", choice: "clarify", confidence: 0.2 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: idea },
+        { role: "assistant", content: seed.decision.reply },
+        { role: "user", content: "Detailed please — you give every box a name" },
+      ],
+      currentXml: seed.xml,
+    });
+    assert.equal(result.mode, "kev");
+    assert.equal(result.intent, "add_shape");
+    assert.doesNotMatch(result.reply, /What should the new shape be called|Name the shape to edit|Describe a diagram change/);
+    assert.notEqual(result.reply, OPEN_IDEA_REPLY);
+    assertDetailed(result.updatedXml, idea);
+  });
+});

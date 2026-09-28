@@ -23,7 +23,7 @@ import { composeCommittedOpenIdea, maybeOrchestrate } from "@/lib/kev/orchestrat
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
 import { architectureDecision, isRenameEdit, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
-import { OPEN_IDEA_REPLY, openIdeaDepthFollowUp } from "@/lib/kev/scale";
+import { OPEN_IDEA_REPLY, depthContinuation } from "@/lib/kev/scale";
 import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
 import {
@@ -558,7 +558,7 @@ export async function runKevTurn(input: {
 
   const described = describeMode();
   const userMessage = latestUser(input.messages);
-  const depthFollowUp = openIdeaDepthFollowUp(input.messages);
+  const depthFollowUp = depthContinuation(input.messages);
   // Connector colors are a host stroke edit, applied before any model fill.
   // Hue families share one edge stroke: pink/magenta/fuchsia near 300,
   // coral/salmon/tomato near 16, amber/gold/orange near 40.
@@ -577,7 +577,13 @@ export async function runKevTurn(input: {
   // A depth answer is not a new high-level sketch. Continue the earlier idea
   // before the latest line can be drawn on its own.
   if (depthFollowUp && described.mode !== "kev") {
-    const placed = await composeCommittedOpenIdea(depthFollowUp.idea, depthFollowUp.depth, currentXml);
+    const placed = await composeCommittedOpenIdea(
+      depthFollowUp.idea,
+      depthFollowUp.depth,
+      currentXml,
+      null,
+      depthFollowUp.replace,
+    );
     return result(placed.decision, described.mode, described.model, placed.xml, false);
   }
   if (!depthFollowUp) {
@@ -623,7 +629,13 @@ export async function runKevTurn(input: {
   } catch (error) {
     if (error instanceof KevUnreachableError) {
       if (depthFollowUp) {
-        const placed = await composeCommittedOpenIdea(depthFollowUp.idea, depthFollowUp.depth, currentXml);
+        const placed = await composeCommittedOpenIdea(
+          depthFollowUp.idea,
+          depthFollowUp.depth,
+          currentXml,
+          null,
+          depthFollowUp.replace,
+        );
         return result(placed.decision, "kev", described.model, placed.xml, false);
       }
       const drawn = localDiagram(userMessage, currentXml, input.currentXml, "kev", described.model);
