@@ -6,7 +6,7 @@ The site opens into the tool at `/`. `/app` redirects there.
 
 **Kev** ([jaredpalmer/kev](https://github.com/jaredpalmer/kev)) is Jared Palmer’s open-source decision model. It is compatible with TypeSafe’s **Jev** and serves the same System One API (`POST /v1/systemone`) with typed answers: Choice, Noul, and Score. One call cannot plan a multi-shape diagram. A chain is applied edit by edit. A known diagram is a typed template: Jev confirms the node outline, then the edges, then the style, and the host writes the mxfile. With neither `KEV_BASE_URL` nor `OPENAI_API_KEY`, demo mode draws those same templates locally.
 
-The canvas opens on a blank page. Turns edit that page. Trash clears the chat and the canvas together. Product rules for the engine are in [ENGINE.md](ENGINE.md). A topic lookup runs only after the model is unsure, and only then from a short Wikipedia summary or a built-in brief. No API key is sent for that lookup.
+The canvas opens on a blank page. Turns edit that page. Trash clears the chat and the canvas together. A reload in the same browser brings that chat and diagram back; trash clears the saved copy too. Product rules for the engine are in [ENGINE.md](ENGINE.md). A topic lookup runs only after the model is unsure, and only then from a short Wikipedia summary or a built-in brief. No API key is sent for that lookup.
 
 ## Local setup
 

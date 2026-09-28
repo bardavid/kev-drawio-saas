@@ -11,6 +11,7 @@ import { STARTER_XML } from "@/lib/drawio/starter";
 import { noteEditorXml, noteHostXml, previousForTurn, type DiagramSync } from "@/lib/drawio/sync";
 import type { DiagramSlots, Intent, KevTurnResult } from "@/lib/kev/types";
 import { rewindToUserMessage } from "@/lib/session";
+import { browserLocalStorage, clearStoredSession, sessionForLoad, writeStoredSession } from "@/lib/session-store";
 import { cn } from "@/lib/utils";
 
 interface DrawHistoryState {
@@ -28,6 +29,12 @@ function looksLikeDiagram(xml: string): boolean {
 
 function canvasLooksBlank(xml: string): boolean {
   return !xml.includes('vertex="1"') && !xml.includes("vertex='1'");
+}
+
+/** Browser-only. The editor shell skips server rendering, so this does not run during SSR. */
+function bootSession(): { messages: ChatItem[]; xml: string } {
+  const loaded = sessionForLoad(browserLocalStorage());
+  return { messages: loaded.messages, xml: loaded.xml };
 }
 
 function isHistoryState(value: unknown): value is DrawHistoryState {
@@ -54,16 +61,17 @@ export function Editor() {
   const applyingRef = useRef(false);
   const ignorePopRef = useRef(false);
   const historyIndexRef = useRef(0);
-  const messagesRef = useRef<ChatItem[]>([]);
+  const [boot] = useState(bootSession);
+  const messagesRef = useRef<ChatItem[]>(boot.messages);
   const showXmlRef = useRef<(next: string) => Promise<void>>(async () => {});
   const commitMessagesRef = useRef<(next: ChatItem[]) => void>(() => {});
   const syncRef = useRef<DiagramSync>({
-    currentXml: STARTER_XML,
-    baselineXml: STARTER_XML,
+    currentXml: boot.xml,
+    baselineXml: boot.xml,
     acceptEcho: true,
   });
-  const [xml, setXml] = useState(STARTER_XML);
-  const [messages, setMessages] = useState<ChatItem[]>([]);
+  const [xml, setXml] = useState(boot.xml);
+  const [messages, setMessages] = useState(boot.messages);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [pane, setPane] = useState<Pane>("chat");
@@ -123,10 +131,22 @@ export function Editor() {
   });
 
   useEffect(() => {
-    if (!isHistoryState(window.history.state)) {
-      const initial: DrawHistoryState = { drawai: true, index: 0, messages: [], xml: STARTER_XML };
-      window.history.replaceState(initial, "");
-    }
+    const storage = browserLocalStorage();
+    if (!storage) return;
+    writeStoredSession(storage, { messages, xml });
+  }, [messages, xml]);
+
+  useEffect(() => {
+    const prior = window.history.state;
+    const index = isHistoryState(prior) ? prior.index : 0;
+    historyIndexRef.current = index;
+    const initial: DrawHistoryState = {
+      drawai: true,
+      index,
+      messages: messagesRef.current,
+      xml: syncRef.current.currentXml,
+    };
+    window.history.replaceState(initial, "");
     function onPop(event: PopStateEvent) {
       if (ignorePopRef.current) {
         ignorePopRef.current = false;
@@ -254,7 +274,12 @@ export function Editor() {
 
   async function resetAll() {
     if (sendingRef.current) return;
-    commitMessages([]);
+    const storage = browserLocalStorage();
+    if (storage) clearStoredSession(storage);
+    messagesRef.current = [];
+    syncRef.current = { currentXml: STARTER_XML, baselineXml: STARTER_XML, acceptEcho: false };
+    setMessages([]);
+    setXml(STARTER_XML);
     setDraft("");
     await showXml(STARTER_XML);
     pushHistory(messagesRef.current, syncRef.current.currentXml);
