@@ -61,7 +61,7 @@ function isDeverbal(word: string): boolean {
 /** Degree, absence, or pace. “Zero copy” and “low latency” are properties, not parts. */
 const DEGREE = /^(?:low|high|zero|no|non|fast|slow|even|full|half|extra|ultra|very|more|less|soft|hard|hot|cold|quiet|cool|steady|stable|secure|safe|fresh)$/i;
 /** A generic name for the path itself. It is not a part beside the quality. */
-const MANNER_NOUN = /^(?:paths?|transports?|flows?|routes?|ways?)$/i;
+const MANNER_NOUN = /^(?:paths?|transports?|flows?|routes?|ways?|channels?|conduits?)$/i;
 
 function isAdjectiveForm(word: string): boolean {
   if (ROLE_NOUN.test(word)) return false;
@@ -84,10 +84,16 @@ function isQualityWord(word: string): boolean {
   return DEGREE.test(word) || isAdjectiveForm(word) || isDeverbal(word) || isAbstractNoun(word) || GENERIC_WORD.test(word);
 }
 
+/** A leading adjective, degree, or deverbal. “Encrypted beacon” starts with one. A bare part does not. */
+function isModifier(word: string): boolean {
+  return DEGREE.test(word) || isAdjectiveForm(word) || isDeverbal(word);
+}
+
 /**
  * A property of how something moves, not a part you can draw as a peer box.
- * Hyphenated manner, an absence (“zero …”), or only adjectives and abstract nouns.
- * The word “path” on the end of a property is the manner, not a vertex.
+ * Hyphenated manner, an absence (“zero …”), or an adjective plus an abstract noun.
+ * A trailing path, route, or channel is the manner, not a vertex.
+ * Two bare nouns stay parts. A single bare noun stays a part.
  */
 function isQualityPhrase(raw: string): boolean {
   if (isMannerCompound(raw)) return true;
@@ -97,7 +103,10 @@ function isQualityPhrase(raw: string): boolean {
   if (words.length === 0) return false;
   if (words.some((word) => ROLE_NOUN.test(word))) return false;
   if (/^(?:zero|no|non)$/i.test(words[0] ?? "") && words.slice(1).every((word) => !ROLE_NOUN.test(word))) return true;
-  return words.every((word) => isQualityWord(word));
+  if (words.every((word) => isQualityWord(word))) return true;
+  // “Veiled signal path” is a property. “Stone piers” and “haul drum” are things.
+  const head = words[0] ?? "";
+  return words.length >= 2 && isModifier(head) && words.slice(1).every((word) => !ROLE_NOUN.test(word));
 }
 
 /**

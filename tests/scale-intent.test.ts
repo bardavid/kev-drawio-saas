@@ -1340,3 +1340,83 @@ describe("invent replies use the prior idea", { concurrency: 1 }, () => {
     }
   });
 });
+
+const TRAMWAY_IDEAS = [
+  "Draw a basalt tramway that uses stone piers and a haul drum through a veiled signal path for zero lamp fade so riders see steady cars",
+  "Draw a basalt tramway that uses stone piers and a haul drum through a veiled signal channel for zero lamp fade so riders see steady cars",
+  "Draw a basalt tramway that uses stone piers and a haul drum via a veiled signal route for zero lamp fade so riders see steady cars",
+];
+
+describe("adjective properties stay off path vertices", { concurrency: 1 }, () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+  });
+
+  it("puts an adjective plus abstract noun on an edge, including path, channel, and route", () => {
+    assert.equal(isScrapLabel("Veiled Signal Path"), true);
+    assert.equal(isScrapLabel("Veiled Signal Channel"), true);
+    assert.equal(isScrapLabel("Veiled Signal Route"), true);
+    assert.equal(isScrapLabel("Stone Piers"), false);
+    assert.equal(isScrapLabel("Haul Drum"), false);
+
+    for (const idea of TRAMWAY_IDEAS) {
+      const roles = architectureFromIdea(idea);
+      const labels = roles?.nodes.map((node) => node.label) ?? [];
+      assert.ok(labels.length >= 4, `${idea}: ${labels.join(", ")}`);
+      for (const scrap of [
+        "Veiled Signal",
+        "Veiled Signal Path",
+        "Veiled Signal Channel",
+        "Veiled Signal Route",
+        "Zero Lamp Fade",
+        "Riders See Steady",
+        "Basalt Tramway",
+      ]) {
+        assert.equal(labels.includes(scrap), false, `${scrap} in ${labels.join(", ")}`);
+      }
+      for (const label of labels) assert.equal(isScrapLabel(label), false, label);
+      assert.ok(labels.includes("Clients"), labels.join(", "));
+      assert.ok(labels.some((label) => /Tramway/.test(label)), labels.join(", "));
+      assert.ok(labels.some((label) => /Pier/.test(label)), labels.join(", "));
+      assert.ok(labels.some((label) => /Drum/.test(label)), labels.join(", "));
+      const edges = roles?.edges.map((edge) => edge.label).join(" | ") ?? "";
+      assert.match(edges, /Veiled Signal/);
+      assert.match(edges, /Zero Lamp/);
+      assert.equal(/Path$/.test(roles?.edges.find((edge) => /Veiled/.test(edge.label))?.label ?? ""), false, edges);
+    }
+  });
+
+  it("still invents those roles after a naming reply, with the property on an edge", async () => {
+    globalThis.fetch = (async () =>
+      Response.json({
+        extract: "Common relics include amber beads, cedar masks, river shells, and bone flutes.",
+      })) as typeof fetch;
+    const result = await runKevTurn({
+      messages: [
+        { role: "user", content: TRAMWAY_IDEAS[0]! },
+        { role: "assistant", content: OPEN_IDEA_REPLY },
+        { role: "user", content: "Show a detailed diagram and invent the component names yourself" },
+      ],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(result.intent, "add_shape");
+    assert.notEqual(result.reply, OPEN_IDEA_REPLY);
+    const report = assertClean(result.updatedXml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.equal(labels.includes("Veiled Signal Path"), false, labels.join(", "));
+    assert.equal(labels.some((label) => /Veiled/.test(label)), false, labels.join(", "));
+    assert.ok(labels.some((label) => /Pier/.test(label)), labels.join(", "));
+    assert.ok(labels.some((label) => /Drum/.test(label)), labels.join(", "));
+    assert.ok(labels.some((label) => /Tramway/.test(label)), labels.join(", "));
+    assert.match(report.edges.map((edge) => edge.label).join(" | "), /Veiled Signal/);
+    assert.match(report.edges.map((edge) => edge.label).join(" | "), /Zero Lamp/);
+    assert.ok(report.nodes.some((node) => node.role === "cluster"));
+    for (const node of content(report.nodes)) {
+      const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+      assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${node.label} ${fill}`);
+    }
+  });
+});
