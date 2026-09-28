@@ -35,6 +35,9 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isRichWebTiers(text)) return richWebTiers();
   if (TIER_RE.test(text)) return null;
   if (isOauth(text)) return oauthSequence();
+  // Stripe Checkout names the webhook and the database. The generic checkout
+  // sketch (Payment, Orders) drops both.
+  if (isStripeCheckout(text)) return stripeCheckoutSequence();
   if (isCheckout(text)) return checkoutSequence();
   if (isCacheAside(text)) return cacheAsideSequence(text);
   if (isApiSequence(text)) return apiSequence();
@@ -47,6 +50,9 @@ export function matchTemplate(message: string): TemplateMatch | null {
   if (isGcp(text)) return gcpArchitecture(text);
   if (isEventDriven(text)) return eventDriven(text);
   if (isMicroservices(text)) return microservices(text);
+  // CloudFront and S3 are a CDN plus static origin. Lambda and DynamoDB do not
+  // turn that into API Gateway, and "AWS" does not turn it into an ALB / ECS VPC.
+  if (isAwsCdn(text)) return awsCdn(text);
   // API Gateway, Lambda, and DynamoDB are not an ALB / ECS / RDS VPC.
   if (isAwsServerless(text)) return awsServerless();
   if (isCloud(text)) return cloudVpc(text);
@@ -140,6 +146,15 @@ function isCheckout(text: string): boolean {
   return /\bsequence\b/i.test(text) && /\b(place an order|payment)\b/i.test(text);
 }
 
+/** Stripe Checkout, or a checkout that names the webhook and the database. */
+function isStripeCheckout(text: string): boolean {
+  const stripe = /\bstripe\b/i.test(text);
+  const webhook = /\bwebhook\b/i.test(text);
+  const checkout = isCheckout(text);
+  if (stripe && (checkout || webhook || /\bpayment\b/i.test(text))) return true;
+  return checkout && webhook && /\b(database|databases|db)\b/i.test(text);
+}
+
 function isCacheAside(text: string): boolean {
   return /\bcache[\s-]?aside\b|\blook[\s-]?aside\b|\bcache architecture\b/i.test(text);
 }
@@ -211,7 +226,7 @@ function isMicroservices(text: string): boolean {
 }
 
 function isCloud(text: string): boolean {
-  if (isGcp(text) || isAzure(text)) return false;
+  if (isGcp(text) || isAzure(text) || isAwsCdn(text)) return false;
   return (
     /\b(vpc|aws|amazon web services)\b/i.test(text) ||
     /\bcloud architecture\b/i.test(text) ||
@@ -231,13 +246,32 @@ function mentionsDynamoDb(text: string): boolean {
   return /\bdynamodb\b|\bdynamo\s+db\b/i.test(text);
 }
 
+function mentionsCloudFront(text: string): boolean {
+  return /\bcloud\s*front\b/i.test(text);
+}
+
+function mentionsS3(text: string): boolean {
+  return /\bs3\b|\bsimple\s+storage\s+service\b/i.test(text);
+}
+
+/**
+ * CloudFront, or S3 together with Lambda, DynamoDB, or AWS.
+ * Wins before serverless: Lambda + DynamoDB used to ignore CloudFront and S3.
+ */
+function isAwsCdn(text: string): boolean {
+  if (isGcp(text) || isAzure(text) || isKubernetes(text)) return false;
+  if (mentionsCloudFront(text)) return true;
+  if (!mentionsS3(text)) return false;
+  return mentionsLambda(text) || mentionsDynamoDb(text) || /\b(aws|amazon(?:\s+web\s+services)?|cdn)\b/i.test(text);
+}
+
 /**
  * AWS serverless asks name the service, the API Gateway + Lambda pair, or DynamoDB.
  * Checked before the generic VPC sketch. Azure, GCP (including Serverless VPC Access and
- * Cloud Functions), and Kubernetes keep their own templates.
+ * Cloud Functions), Kubernetes, and a CloudFront / S3 composition keep their own templates.
  */
 function isAwsServerless(text: string): boolean {
-  if (isGcp(text) || isAzure(text) || isKubernetes(text)) return false;
+  if (isGcp(text) || isAzure(text) || isKubernetes(text) || isAwsCdn(text)) return false;
   if (/\bserverless\b/i.test(text)) return true;
   if (mentionsApiGateway(text) && mentionsLambda(text)) return true;
   return mentionsDynamoDb(text) && /\b(aws|amazon(?:\s+web\s+services)?|serverless)\b/i.test(text);
@@ -290,6 +324,31 @@ function oauthSequence(): TemplateMatch {
       "Drew an OAuth login sequence: User, Browser, App, and Auth server.",
       participants,
       messages,
+    ),
+  };
+}
+
+function stripeCheckoutSequence(): TemplateMatch {
+  return {
+    context:
+      "Stripe Checkout: the browser pays on Stripe Checkout, Stripe notifies the webhook handler, and the handler writes the Database. Payment and Orders do not stand in for the webhook or the database.",
+    spec: sequence(
+      "Stripe checkout",
+      "Drew a Stripe checkout sequence: Browser, Stripe Checkout, Webhook handler, and Database.",
+      [
+        { id: "browser", label: "Browser", shape: "rectangle" },
+        { id: "checkout", label: "Stripe Checkout", shape: "rectangle" },
+        { id: "webhook", label: "Webhook handler", shape: "rectangle" },
+        { id: "db", label: "Database", shape: "rectangle" },
+      ],
+      [
+        { from: "browser", to: "checkout", label: "Redirect" },
+        { from: "checkout", to: "webhook", label: "Webhook" },
+        { from: "webhook", to: "db", label: "Record payment" },
+        { from: "db", to: "webhook", label: "Saved", dashed: true },
+        { from: "webhook", to: "checkout", label: "200 OK", dashed: true },
+        { from: "checkout", to: "browser", label: "Success URL", dashed: true },
+      ],
     ),
   };
 }
@@ -772,7 +831,18 @@ function cqrs(): TemplateMatch {
   };
 }
 
-type GcpServiceId = "lb" | "run" | "functions" | "gke" | "dataflow" | "vpc" | "sql" | "storage" | "bigquery" | "pubsub";
+type GcpServiceId =
+  | "lb"
+  | "run"
+  | "functions"
+  | "gke"
+  | "dataflow"
+  | "vpc"
+  | "sql"
+  | "memorystore"
+  | "storage"
+  | "bigquery"
+  | "pubsub";
 
 interface GcpService {
   id: GcpServiceId;
@@ -789,6 +859,7 @@ const GCP_SERVICES: Record<GcpServiceId, GcpService> = {
   dataflow: { id: "dataflow", label: "Dataflow", shape: "rectangle", tier: "compute" },
   vpc: { id: "vpc", label: "VPC connector", shape: "rectangle", tier: "network" },
   sql: { id: "sql", label: "Cloud SQL", shape: "cylinder", tier: "data" },
+  memorystore: { id: "memorystore", label: "Memorystore", shape: "cylinder", tier: "data" },
   storage: { id: "storage", label: "Cloud Storage", shape: "cylinder", tier: "data" },
   bigquery: { id: "bigquery", label: "BigQuery", shape: "cylinder", tier: "data" },
   pubsub: { id: "pubsub", label: "Pub/Sub", shape: "queue", tier: "data" },
@@ -952,10 +1023,10 @@ function mentionsBigQuery(text: string): boolean {
   return /\bbigquery\b/i.test(text);
 }
 
-/** Cloud Run / load balancer asks stay on the web stack, even if they also say Pub/Sub. */
+/** Cloud Run, load balancing, and Memorystore stay on the web stack, even if they also say Pub/Sub. */
 function isGcpWebStack(text: string): boolean {
   return (
-    /\bcloud\s+run\b|\bcloud\s+functions\b|\bgke\b|\bgoogle\s+kubernetes\s+engine\b|\bcloud\s+load\s+balanc|\bcloud\s+lb\b/i.test(
+    /\bcloud\s+run\b|\bcloud\s+functions\b|\bgke\b|\bgoogle\s+kubernetes\s+engine\b|\bcloud\s+load\s+balanc|\bcloud\s+lb\b|\bmemorystore\b/i.test(
       text,
     ) ||
     (mentionsGcp(text) && /\bload\s+balanc/i.test(text))
@@ -986,6 +1057,7 @@ function namedGcpServices(text: string): GcpServiceId[] {
   if (mentionsDataflow(text)) ids.push("dataflow");
   if (/\bvpc\s+connector\b|\bserverless\s+vpc\s+access\b|\bvpc\s+access\s+connector\b/i.test(text)) ids.push("vpc");
   if (/\bcloud\s+sql\b/i.test(text)) ids.push("sql");
+  if (/\bmemorystore\b/i.test(text)) ids.push("memorystore");
   if (/\bcloud\s+storage\b|\bgcs\b/i.test(text)) ids.push("storage");
   if (mentionsBigQuery(text)) ids.push("bigquery");
   if (mentionsPubSub(text)) ids.push("pubsub");
@@ -1012,6 +1084,7 @@ function gcpSelection(text: string): GcpService[] {
 
 function gcpEdgeLabel(from: string, to: GcpServiceId): string {
   if (to === "sql") return "SQL";
+  if (to === "memorystore") return "Cache";
   if (to === "pubsub") return "Publish";
   if (to === "vpc") return "Private";
   if (to === "storage" || to === "bigquery") return "Read / write";
@@ -1075,8 +1148,13 @@ function gcpArchitecture(text: string): TemplateMatch {
       services.forEach((service, serviceIndex) => {
         if (!anchor) return;
         // Async events leave Cloud Run. They do not travel through the VPC connector.
+        // Memorystore is the web-stack cache beside Cloud Run, not a data-pipeline stage.
         if (service.id === "pubsub" && compute && compute.id !== anchor) {
           edges.push(edge(compute.id, service.id, "Publish", true));
+          return;
+        }
+        if (service.id === "memorystore" && compute) {
+          edges.push(edge(compute.id, service.id, "Cache", true));
           return;
         }
         edges.push(edge(anchor, service.id, gcpEdgeLabel(anchor, service.id), serviceIndex > 0));
@@ -1096,18 +1174,28 @@ function gcpArchitecture(text: string): TemplateMatch {
     names.includes("Cloud Run") &&
     names.includes("Cloud SQL") &&
     names.includes("Pub/Sub");
+  const webCache =
+    names.includes("Cloud Load Balancing") &&
+    names.includes("Cloud Run") &&
+    names.includes("Cloud SQL") &&
+    names.includes("Memorystore");
   const vpc = names.includes("VPC connector");
-  return {
-    context: vpc
+  const context = names.includes("Memorystore")
+    ? "On GCP, clients reach Cloud Load Balancing, Cloud Run serves the web request, Cloud SQL stores relational data, and Memorystore caches beside Cloud Run. This is a web stack, not a Pub/Sub → Dataflow → BigQuery pipeline."
+    : vpc
       ? "On GCP, clients reach Cloud Load Balancing, Cloud Run serves the request, a VPC connector reaches Cloud SQL, and Pub/Sub carries async events."
-      : "On GCP, clients reach Cloud Load Balancing, Cloud Run serves the request, Cloud SQL stores relational data, and Pub/Sub carries events.",
+      : "On GCP, clients reach Cloud Load Balancing, Cloud Run serves the request, Cloud SQL stores relational data, and Pub/Sub carries events.";
+  return {
+    context,
     spec: layers(
       "GCP",
-      full
-        ? vpc
-          ? "Drew a GCP architecture: Internet → Cloud Load Balancing → Cloud Run → VPC connector → Cloud SQL, and Cloud Run publishes to Pub/Sub."
-          : "Drew a GCP architecture: Internet → Cloud Load Balancing → Cloud Run, with Cloud SQL and Pub/Sub."
-        : `Drew a GCP architecture with ${names.join(", ")}.`,
+      webCache
+        ? "Drew a GCP architecture: Internet → Cloud Load Balancing → Cloud Run → Cloud SQL, with Memorystore."
+        : full
+          ? vpc
+            ? "Drew a GCP architecture: Internet → Cloud Load Balancing → Cloud Run → VPC connector → Cloud SQL, and Cloud Run publishes to Pub/Sub."
+            : "Drew a GCP architecture: Internet → Cloud Load Balancing → Cloud Run, with Cloud SQL and Pub/Sub."
+          : `Drew a GCP architecture with ${names.join(", ")}.`,
       groups,
       edges,
     ),
@@ -1205,6 +1293,64 @@ function microservices(text: string): TemplateMatch {
         edge("catalog", "catalogDb", "SQL"),
         edge("payments", "paymentsDb", "SQL"),
       ],
+    ),
+  };
+}
+
+function awsCdn(text: string): TemplateMatch {
+  const parts: Array<{ id: string; label: string; cluster: string; clusterLabel: string; shape: LayerNode["shape"] }> = [];
+  if (mentionsCloudFront(text)) {
+    parts.push({ id: "cloudfront", label: "CloudFront", cluster: "cdn", clusterLabel: "CDN", shape: "rectangle" });
+  }
+  if (mentionsS3(text)) {
+    parts.push({ id: "s3", label: "S3", cluster: "static", clusterLabel: "Static", shape: "cylinder" });
+  }
+  if (mentionsLambda(text)) {
+    parts.push({ id: "lambda", label: "Lambda", cluster: "compute", clusterLabel: "Compute", shape: "rectangle" });
+  }
+  if (mentionsDynamoDb(text)) {
+    parts.push({ id: "dynamo", label: "DynamoDB", cluster: "data", clusterLabel: "Data", shape: "cylinder" });
+  }
+  const groups: LayerGroup[] = [col("clients", "Clients", [node("client", "Client", "rectangle")])];
+  for (const part of parts) groups.push(col(part.cluster, part.clusterLabel, [node(part.id, part.label, part.shape)]));
+
+  const ids = new Set(parts.map((part) => part.id));
+  const edges: LayerEdge[] = [];
+  const cdnStaticCompute = ids.has("cloudfront") && ids.has("s3") && ids.has("lambda") && ids.has("dynamo");
+  if (cdnStaticCompute) {
+    edges.push(edge("client", "cloudfront", "HTTPS"));
+    edges.push(edge("cloudfront", "s3", "Origin"));
+    edges.push(edge("cloudfront", "lambda", "Invoke", true));
+    edges.push(edge("lambda", "dynamo", "Read / write"));
+  } else {
+    let previous = "client";
+    for (const part of parts) {
+      const label =
+        part.id === "cloudfront" && previous === "client"
+          ? "HTTPS"
+          : part.id === "s3" && previous === "cloudfront"
+            ? "Origin"
+            : part.id === "lambda"
+              ? "Invoke"
+              : part.id === "dynamo"
+                ? "Read / write"
+                : "Request";
+      edges.push(edge(previous, part.id, label));
+      previous = part.id;
+    }
+  }
+
+  const names = parts.map((part) => part.label);
+  return {
+    context:
+      "CloudFront is the CDN, S3 is the static origin, Lambda is the compute, and DynamoDB stores the data. This is not API Gateway serverless and not an ALB / ECS / RDS VPC.",
+    spec: layers(
+      "AWS CDN",
+      cdnStaticCompute
+        ? "Drew an AWS architecture: Client → CloudFront → S3, with Lambda and DynamoDB."
+        : `Drew an AWS architecture with ${names.join(", ")}.`,
+      groups,
+      edges,
     ),
   };
 }

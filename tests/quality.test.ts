@@ -1091,15 +1091,18 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw a CDN architecture",
       "draw a load balancer architecture",
       "draw a checkout sequence diagram",
+      "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database",
       "draw an OAuth login sequence",
       "draw an API call sequence diagram",
       "draw an approval workflow",
       "draw an e-commerce data model",
       "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB",
+      "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB",
       "draw an AWS VPC architecture with an ALB, ECS, and RDS",
       "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache",
       "draw an Azure architecture with Application Gateway, App Service, Azure SQL, and Service Bus",
       "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub",
+      "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Memorystore",
       "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery",
       "Draw a GCP architecture with Cloud Load Balancing in front of Cloud Run services, Cloud SQL for Postgres, and Pub/Sub for async events. Include a VPC connector if needed. Label GCP services.",
       "draw a kubernetes deployment",
@@ -1226,6 +1229,22 @@ describe("live kev architecture", { concurrency: 1 }, () => {
         prompt: "draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery",
         labels: ["Pub/Sub", "Dataflow", "BigQuery"],
         absent: ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Event broker"],
+      },
+      {
+        prompt:
+          "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database",
+        labels: ["Browser", "Stripe Checkout", "Webhook handler", "Database"],
+        absent: ["Payment", "Orders", "Checkout"],
+      },
+      {
+        prompt: "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB",
+        labels: ["CloudFront", "S3", "Lambda", "DynamoDB"],
+        absent: ["API Gateway", "ALB", "ECS", "RDS"],
+      },
+      {
+        prompt: "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Memorystore",
+        labels: ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Memorystore"],
+        absent: ["Pub/Sub", "Dataflow", "BigQuery", "Event broker"],
       },
     ];
     for (const item of cases) {

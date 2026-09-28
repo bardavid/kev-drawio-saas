@@ -488,6 +488,52 @@ const FIXTURES: Fixture[] = [
     ],
     clusters: ["Ingest", "Processing", "Warehouse"],
   },
+  {
+    prompt: "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database",
+    labels: ["Browser", "Stripe Checkout", "Webhook handler", "Database"],
+    edges: [
+      ["Browser", "Stripe Checkout", "Redirect"],
+      ["Stripe Checkout", "Webhook handler", "Webhook"],
+      ["Webhook handler", "Database", "Record payment"],
+      ["Database", "Webhook handler", "Saved"],
+      ["Stripe Checkout", "Browser", "Success URL"],
+    ],
+    messages: ["Redirect", "Webhook", "Record payment", "Saved", "200 OK", "Success URL"],
+  },
+  {
+    prompt: "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB",
+    labels: ["Client", "CloudFront", "S3", "Lambda", "DynamoDB"],
+    edges: [
+      ["Client", "CloudFront", "HTTPS"],
+      ["CloudFront", "S3", "Origin"],
+      ["CloudFront", "Lambda", "Invoke"],
+      ["Lambda", "DynamoDB", "Read / write"],
+    ],
+    above: [
+      ["Client", "CloudFront"],
+      ["CloudFront", "S3"],
+      ["S3", "Lambda"],
+      ["Lambda", "DynamoDB"],
+    ],
+    clusters: ["Clients", "CDN", "Static", "Compute", "Data"],
+  },
+  {
+    prompt: "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Memorystore",
+    labels: ["Internet", "Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Memorystore"],
+    edges: [
+      ["Internet", "Cloud Load Balancing", "HTTPS"],
+      ["Cloud Load Balancing", "Cloud Run", "HTTP"],
+      ["Cloud Run", "Cloud SQL", "SQL"],
+      ["Cloud Run", "Memorystore", "Cache"],
+    ],
+    above: [
+      ["Internet", "Cloud Load Balancing"],
+      ["Cloud Load Balancing", "Cloud Run"],
+      ["Cloud Run", "Cloud SQL"],
+      ["Cloud SQL", "Memorystore"],
+    ],
+    clusters: ["Clients", "Edge", "Compute", "Data"],
+  },
 ];
 
 describe("popular diagram templates", () => {
@@ -927,6 +973,104 @@ describe("popular diagram templates", () => {
     }
     assert.equal(web.includes("Dataflow"), false);
     assert.equal(matchTemplate("draw a Pub/Sub architecture")?.spec.title, "Event-driven");
+  });
+
+  it("draws a Stripe checkout sequence with the webhook handler and database", () => {
+    const prompt =
+      "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database";
+    assert.equal(matchTemplate(prompt)?.spec.title, "Stripe checkout");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.match(drawn.decision.reply, /Stripe Checkout/);
+    assert.match(drawn.decision.reply, /Webhook handler/);
+    assert.match(drawn.decision.reply, /Database/);
+    assert.doesNotMatch(drawn.decision.reply, /Payment, and Orders/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    assert.deepEqual(labels, ["Browser", "Stripe Checkout", "Webhook handler", "Database"]);
+    assert.ok(content(report.nodes).every((node) => node.style.includes("umlLifeline")));
+    for (const stolen of ["Payment", "Orders", "Checkout"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    const plain = content(assertClean(previewDemo("draw a checkout sequence diagram", STARTER_XML).xml).nodes).map(
+      (node) => node.label,
+    );
+    assert.deepEqual(plain, ["User", "Browser", "Checkout", "Payment", "Orders"]);
+  });
+
+  it("keeps CloudFront and S3 on an AWS architecture that also names Lambda and DynamoDB", () => {
+    const prompt = "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB";
+    assert.equal(matchTemplate(prompt)?.spec.title, "AWS CDN");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.doesNotMatch(drawn.decision.reply, /API Gateway/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["CloudFront", "S3", "Lambda", "DynamoDB"]) assert.ok(labels.includes(label), label);
+    for (const stolen of ["API Gateway", "ALB", "ECS", "RDS", "ElastiCache"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    linked(report, "CloudFront", "S3", "Origin");
+    linked(report, "CloudFront", "Lambda", "Invoke");
+    linked(report, "Lambda", "DynamoDB", "Read / write");
+    const serverless = content(
+      assertClean(
+        previewDemo("draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB", STARTER_XML).xml,
+      ).nodes,
+    ).map((node) => node.label);
+    assert.ok(serverless.includes("API Gateway"));
+    assert.equal(serverless.includes("CloudFront"), false);
+    assert.equal(serverless.includes("S3"), false);
+    assert.equal(
+      matchTemplate("draw an AWS architecture that uses DynamoDB")?.spec.title,
+      "AWS serverless",
+    );
+    const vpc = content(
+      assertClean(previewDemo("draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache", STARTER_XML).xml)
+        .nodes,
+    ).map((node) => node.label);
+    assert.ok(vpc.includes("ALB"));
+    assert.equal(vpc.includes("CloudFront"), false);
+    assert.equal(vpc.includes("S3"), false);
+  });
+
+  it("draws the GCP Cloud Run web stack with Memorystore instead of a data pipeline", () => {
+    const prompt = "draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Memorystore";
+    assert.equal(matchTemplate(prompt)?.spec.title, "GCP");
+    const drawn = previewDemo(prompt, STARTER_XML);
+    assert.equal(drawn.decision.intent, "add_shape");
+    assert.equal(drawn.decision.reply.includes("Which nodes should I draw"), false);
+    assert.match(drawn.decision.reply, /Memorystore/);
+    assert.doesNotMatch(drawn.decision.reply, /Dataflow/);
+    assert.doesNotMatch(drawn.decision.reply, /BigQuery/);
+    const report = assertClean(drawn.xml);
+    const labels = content(report.nodes).map((node) => node.label);
+    for (const label of ["Cloud Load Balancing", "Cloud Run", "Cloud SQL", "Memorystore"]) {
+      assert.ok(labels.includes(label), label);
+    }
+    for (const stolen of ["Pub/Sub", "Dataflow", "BigQuery", "Event broker"]) {
+      assert.equal(labels.includes(stolen), false, stolen);
+    }
+    above(report, "Cloud Load Balancing", "Cloud Run");
+    above(report, "Cloud Run", "Cloud SQL");
+    above(report, "Cloud SQL", "Memorystore");
+    linked(report, "Cloud Run", "Cloud SQL", "SQL");
+    linked(report, "Cloud Run", "Memorystore", "Cache");
+    const pipeline = content(
+      assertClean(previewDemo("draw a GCP data pipeline with Pub/Sub, Dataflow, and BigQuery", STARTER_XML).xml).nodes,
+    ).map((node) => node.label);
+    assert.deepEqual(pipeline, ["Pub/Sub", "Dataflow", "BigQuery"]);
+    assert.equal(pipeline.includes("Memorystore"), false);
+    const web = content(
+      assertClean(
+        previewDemo("draw a GCP architecture with Cloud Load Balancing, Cloud Run, Cloud SQL, and Pub/Sub", STARTER_XML)
+          .xml,
+      ).nodes,
+    ).map((node) => node.label);
+    assert.ok(web.includes("Pub/Sub"));
+    assert.equal(web.includes("Memorystore"), false);
   });
 
   it("leaves a generic sequence and flowchart alone", () => {
