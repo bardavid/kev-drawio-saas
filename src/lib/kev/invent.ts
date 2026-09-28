@@ -7,8 +7,9 @@ import { ideaSubject } from "@/lib/kev/scale";
  * A detailed open idea whose boxes were not named.
  * The host invents roles from the idea's own words: who calls in, the front
  * door, control, the workers, and each thing named on the path.
- * A purpose, a manner compound, or a modifier-only phrase is a quality of an
- * edge, not a box. The same rules apply to every idea.
+ * A purpose, a manner compound, an absence, or an adjective and abstract
+ * property is a quality of an edge, not a box. A leftover clause is not a box.
+ * The same rules apply to every idea.
  */
 
 export interface InventedNode {
@@ -58,26 +59,45 @@ function isDeverbal(word: string): boolean {
 }
 
 /** Degree, absence, or pace. “Zero copy” and “low latency” are properties, not parts. */
-const DEGREE = /^(?:low|high|zero|no|non|fast|slow|even|full|half|extra|ultra|very|more|less|soft|hard|hot|cold|quiet|cool)$/i;
+const DEGREE = /^(?:low|high|zero|no|non|fast|slow|even|full|half|extra|ultra|very|more|less|soft|hard|hot|cold|quiet|cool|steady|stable|secure|safe|fresh)$/i;
+/** A generic name for the path itself. It is not a part beside the quality. */
+const MANNER_NOUN = /^(?:paths?|transports?|flows?|routes?|ways?)$/i;
 
 function isAdjectiveForm(word: string): boolean {
   if (ROLE_NOUN.test(word)) return false;
   return /(?:ed|ing|al|ive|ous|ic|less|ful|able|ible|ary|ency|ity|ness|ance|ence)$/i.test(word);
 }
 
+/** An abstract noun (metry, graphy, logy). A concrete part is not one. */
+function isAbstractNoun(word: string): boolean {
+  if (ROLE_NOUN.test(word)) return false;
+  return /(?:metry|graphy|logy|nomy|scopy|osis|ism)$/i.test(word);
+}
+
+function qualityWords(raw: string): string[] {
+  return tokenize(raw).filter(
+    (word) => !GLUE.test(word) && !FILLER.test(word) && !LEADING_VERB.test(word) && !isClauseVerb(word) && !MANNER_NOUN.test(word),
+  );
+}
+
+function isQualityWord(word: string): boolean {
+  return DEGREE.test(word) || isAdjectiveForm(word) || isDeverbal(word) || isAbstractNoun(word) || GENERIC_WORD.test(word);
+}
+
 /**
  * A property of how something moves, not a part you can draw as a peer box.
  * Hyphenated manner, an absence (“zero …”), or only adjectives and abstract nouns.
+ * The word “path” on the end of a property is the manner, not a vertex.
  */
 function isQualityPhrase(raw: string): boolean {
   if (isMannerCompound(raw)) return true;
-  if (hasRoleNoun(raw)) return false;
-  const parts = raw.split(/[-\s]+/).filter(Boolean);
+  const parts = raw.split(/[-\s]+/).filter((part) => part && !MANNER_NOUN.test(part));
   if (raw.includes("-") && parts.length >= 2 && parts.every((part) => !ROLE_NOUN.test(part))) return true;
-  const words = tokenize(raw).filter((word) => !GLUE.test(word) && !FILLER.test(word) && !LEADING_VERB.test(word) && !isClauseVerb(word));
+  const words = qualityWords(raw);
   if (words.length === 0) return false;
+  if (words.some((word) => ROLE_NOUN.test(word))) return false;
   if (/^(?:zero|no|non)$/i.test(words[0] ?? "") && words.slice(1).every((word) => !ROLE_NOUN.test(word))) return true;
-  return words.every((word) => DEGREE.test(word) || isAdjectiveForm(word) || isDeverbal(word) || GENERIC_WORD.test(word));
+  return words.every((word) => isQualityWord(word));
 }
 
 /**
@@ -91,8 +111,10 @@ export function isScrapLabel(label: string): boolean {
   if (isMannerCompound(text) || isQualityPhrase(text)) return true;
   const words = tokenize(text).filter((word) => !GLUE.test(word));
   if (words.length === 0) return true;
-  if (words.some((word) => ROLE_NOUN.test(word))) return false;
-  return words.every((word) => FILLER.test(word) || isDeverbal(word) || GENERIC_WORD.test(word));
+  // “Operators see steady …” is a leftover clause, not a part.
+  if (words.some((word) => isClauseVerb(word) || OUTCOME_PREDICATE.test(word))) return true;
+  if (words.some((word) => ROLE_NOUN.test(word) && !MANNER_NOUN.test(word))) return false;
+  return words.every((word) => FILLER.test(word) || isDeverbal(word) || isAbstractNoun(word) || GENERIC_WORD.test(word) || MANNER_NOUN.test(word));
 }
 
 function displayWord(word: string): string {
@@ -146,7 +168,7 @@ function qualityText(raw: string): string | null {
     const token = tokenize(raw).find((word) => word.includes("-"));
     return token ? displayWord(token) : null;
   }
-  const words = tokenize(raw).filter((word) => !GLUE.test(word) && !FILLER.test(word) && !LEADING_VERB.test(word) && !isClauseVerb(word));
+  const words = qualityWords(raw);
   if (words.length === 0) return null;
   const label = words.slice(0, 4).map(displayWord).join(" ");
   if (label.length < 2 || GENERIC_PHRASE.test(label)) return null;
@@ -249,7 +271,7 @@ function takePiece(parsed: Parsed, slot: Slot, piece: string) {
     return;
   }
   if (slot === "manner") {
-    if (hasRoleNoun(piece)) takeThing(parsed, piece);
+    if (isQualityPhrase(piece) || hasRoleNoun(piece)) takeThing(parsed, piece);
     return;
   }
   if (slot === "mechanism") takeThing(parsed, piece);
@@ -366,29 +388,36 @@ function relationLabel(from: Draft, to: Draft): string {
   return "Call";
 }
 
+const GENERIC_RELATION = /^(?:Request|Direct|Call|Reach|Sync|Fetch|Through)$/;
+
 function assignEdges(ordered: Draft[], qualities: string[]): InventedArchitecture["edges"] {
   const edges: InventedArchitecture["edges"] = [];
   let cursor = 0;
-  const qualityAt = new Map<number, string>();
-  for (let index = 1; index < ordered.length; index += 1) {
-    const group = ordered[index]?.group;
-    if (group === "Path" || group === "Parts" || group === "Data") {
-      const quality = qualities[cursor];
-      if (quality) {
-        qualityAt.set(index, quality);
-        cursor += 1;
-      }
-    }
-  }
-  if (cursor < qualities.length) {
-    const worker = ordered.findIndex((node) => node.group === "Workers");
-    if (worker > 0) qualityAt.set(worker, qualities[cursor] ?? "");
-  }
+  const take = () => {
+    const quality = qualities[cursor];
+    if (!quality) return null;
+    cursor += 1;
+    return quality;
+  };
   for (let index = 1; index < ordered.length; index += 1) {
     const from = ordered[index - 1]!;
     const to = ordered[index]!;
-    edges.push({ from: from.label, to: to.label, label: qualityAt.get(index) || relationLabel(from, to) });
+    const group = to.group;
+    const preferred = group === "Path" || group === "Parts" || group === "Data";
+    const quality = preferred ? take() : null;
+    edges.push({ from: from.label, to: to.label, label: quality || relationLabel(from, to) });
   }
+  const placeLeftover = (index: number) => {
+    const edge = edges[index];
+    const quality = qualities[cursor];
+    if (!edge || !quality || !GENERIC_RELATION.test(edge.label)) return false;
+    edge.label = quality;
+    cursor += 1;
+    return true;
+  };
+  const worker = ordered.findIndex((node) => node.group === "Workers");
+  if (worker > 0) placeLeftover(worker - 1);
+  for (let index = 0; index < edges.length && cursor < qualities.length; index += 1) placeLeftover(index);
   return edges;
 }
 

@@ -29,7 +29,14 @@ const HIGH_LEVEL_ANSWER = /\b(?:high[-\s]?level|bird(?:'s)?[-\s]?eye|few boxes|r
 const NAMING_DELEGATE = /\b(?:you|yourself|for me)\b/i;
 /** The act of choosing labels, not a request to recolor boxes. */
 const NAMING_ACT = /\b(?:invent|choose|picks?|supply|decide|name|naming|names|come up with|make up)\b/i;
-const NAMING_TARGET = /\b(?:names?|boxes|components?|labels?|parts|nodes|them)\b/i;
+const NAMING_TARGET = /\b(?:names?|box(?:es)?|components?|labels?|parts?|nodes?|them)\b/i;
+/** Words that ask for names, not a new system beside that ask. */
+const NAMING_FLUFF =
+  /^(?:invent|choose|picks?|supply|decide|nam(?:e|es|ing)|come|up|with|make|figure|out|give|yourself|you|me|component|components|labels?|parts?|nodes?|box(?:es)?|them|all|every|each|version|diagram|please|go|ahead|just|and|of|for|it|this|that|these|those)$/i;
+const PICTURE_WORD = /^(?:draw|sketch|build|create|architect|show|illustrate|map|picture|trace|please|me)$/i;
+/** An example list after a naming reply. It is not the system to draw. */
+const EXAMPLE_LIST =
+  /\b(?:including|includes|include|containing|contains|consisting of|consists of|comprised of|composed of|made up of|namely|such as|for example|e\.g\.)\b[\s\S]*$/i;
 const NAMING_IMPERATIVE =
   /^(?:please\s+)?(?:go ahead and\s+)?(?:invent|choose|pick|name)\b/i;
 
@@ -42,8 +49,21 @@ const NAMING_IMPERATIVE =
 const DEPTH_WORD =
   /^(?:detailed|detail|low(?:-level)?|level|high(?:-level)?|rough|sketch|diagram|it|this|that|one|more|in|very|just|please)$/i;
 
+function withoutExampleList(text: string): string {
+  return text.replace(EXAMPLE_LIST, " ").replace(/\s+/g, " ").trim();
+}
+
+/** A noun that names a different system, once the naming ask and any example list are gone. */
+function namesANewSystem(text: string): boolean {
+  return contentWords(withoutExampleList(text)).some(
+    (word) => !DEPTH_WORD.test(word) && !NAMING_FLUFF.test(word) && !PICTURE_WORD.test(word),
+  );
+}
+
 function delegatesComponentNames(text: string): boolean {
   if (NAMING_DELEGATE.test(text) && NAMING_ACT.test(text) && NAMING_TARGET.test(text)) return true;
+  // “Invent every box” can sit after “sketch the detailed version”. An example list does not count.
+  if (NAMING_ACT.test(text) && NAMING_TARGET.test(text) && !namesANewSystem(text)) return true;
   // “You give the names” delegates. “Give the boxes a color” does not.
   if (/\b(?:you|yourself)\b/i.test(text) && /\bgive\b/i.test(text) && /\b(?:names?|labels?)\b/i.test(text)) return true;
   if (NAMING_IMPERATIVE.test(text) && NAMING_TARGET.test(text) && contentWords(text).length <= 8) return true;
@@ -65,11 +85,16 @@ function delegatesComponentNames(text: string): boolean {
 export function depthFromOpenAnswer(message: string): "few" | "many" | null {
   const text = message.trim();
   if (!text || REPLACE_CANVAS.test(text)) return null;
+  const judged = withoutExampleList(text);
+  const namingReply = delegatesComponentNames(text) && !namesANewSystem(judged);
   // "Draw a detailed payment system" is a new picture. "Draw it in detail" is not.
-  if (FRESH_PICTURE.test(text) && contentWords(text).some((word) => !DEPTH_WORD.test(word))) return null;
+  // A naming reply can still start with "show" or "draw". Its example list is not a new system.
+  if (FRESH_PICTURE.test(text) && contentWords(judged).some((word) => !DEPTH_WORD.test(word)) && !namingReply) {
+    return null;
+  }
   if (DETAILED_ANSWER.test(text)) return "many";
   if (HIGH_LEVEL_ANSWER.test(text)) return "few";
-  if (delegatesComponentNames(text)) return "many";
+  if (namingReply || delegatesComponentNames(text)) return "many";
   return null;
 }
 
@@ -320,6 +345,73 @@ export function componentsFromBrief(summary: string): { nodes: string[]; edges: 
     nodes: solidNodes.slice(0, 8),
     edges: solidLinks.filter((link) => kept.has(link.from.toLowerCase()) && kept.has(link.to.toLowerCase())),
   };
+}
+
+const BRIEF_STOP = new Set([
+  "client",
+  "gateway",
+  "coordinator",
+  "peer",
+  "node",
+  "path",
+  "system",
+  "service",
+  "data",
+  "part",
+  "group",
+  "request",
+  "work",
+  "thing",
+  "item",
+  "region",
+  "user",
+  "box",
+  "name",
+]);
+
+function briefStem(word: string): string {
+  const raw = word.toLowerCase();
+  if (raw.endsWith("s") && raw.length > 4 && !raw.endsWith("ss")) return raw.slice(0, -1);
+  return raw;
+}
+
+/**
+ * A category list (“includes A, B, and C”) is an example taxonomy.
+ * It is not the interacting parts of the idea.
+ */
+export function isTaxonomyBrief(parts: { edges: BriefLink[] }): boolean {
+  return parts.edges.length > 0 && parts.edges.every((edge) => /^includes$/i.test(edge.label));
+}
+
+/** True when a brief’s parts share a content noun with the idea the user already stated. */
+export function briefSharesIdea(idea: string, parts: { nodes: string[] }): boolean {
+  const nouns = new Set<string>();
+  for (const word of contentWords(idea)) {
+    if (word.length < 4 || isClauseVerb(word)) continue;
+    const token = briefStem(word);
+    if (token.length < 4 || BRIEF_STOP.has(token)) continue;
+    nouns.add(token);
+  }
+  if (nouns.size === 0) return false;
+  for (const node of parts.nodes) {
+    for (const word of node.split(/[^A-Za-z0-9]+/)) {
+      if (word.length < 4) continue;
+      const token = briefStem(word);
+      if (token.length < 4 || BRIEF_STOP.has(token)) continue;
+      if (nouns.has(token)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Topic notes can fill a detailed diagram when they name interactions of this idea.
+ * A category list, or a brief about a different topic, cannot.
+ */
+export function briefFitsIdea(idea: string, summary: string): boolean {
+  const parts = componentsFromBrief(summary);
+  if (!parts || isTaxonomyBrief(parts)) return false;
+  return briefSharesIdea(idea, parts);
 }
 
 /**

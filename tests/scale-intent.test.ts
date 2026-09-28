@@ -1243,3 +1243,100 @@ describe("layout-led open ask on a blank page", { concurrency: 1 }, () => {
     ]);
   });
 });
+
+const FUNICULAR_IDEA =
+  "Draw a canyon funicular that uses trestles and a cog wheel through muffled fluxometry for zero jolts so wardens see steady rides";
+
+const RELIC_NOTES =
+  "Common relics include amber beads, cedar masks, river shells, and bone flutes. Museums keep such goods on display.";
+
+describe("invent replies use the prior idea", { concurrency: 1 }, () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    globalThis.fetch = originalFetch;
+  });
+
+  it("keeps concrete path nouns and moves properties and clause scraps onto edges", () => {
+    assert.equal(depthFromOpenAnswer("Show a detailed diagram and invent the component names yourself"), "many");
+    assert.equal(depthFromOpenAnswer("Sketch the detailed version — invent every box"), "many");
+    assert.equal(
+      depthFromOpenAnswer("Draw it in detail and name the parts, including amber beads, cedar masks, river shells, and bone flutes"),
+      "many",
+    );
+    assert.equal(depthFromOpenAnswer("Draw a detailed payment system"), null);
+    assert.equal(depthFromOpenAnswer("High-level, you name the boxes"), "few");
+    assert.equal(depthFromOpenAnswer("give the boxes a color"), null);
+
+    const roles = architectureFromIdea(FUNICULAR_IDEA);
+    const labels = roles?.nodes.map((node) => node.label) ?? [];
+    assert.ok(labels.length >= 4, labels.join(", "));
+    for (const scrap of [
+      "Muffled Fluxometry",
+      "Muffled Fluxometry Path",
+      "Wardens See Steady",
+      "Zero Jolts",
+      "Canyon Funicular",
+    ]) {
+      assert.equal(labels.includes(scrap), false, `${scrap} in ${labels.join(", ")}`);
+    }
+    for (const label of labels) assert.equal(isScrapLabel(label), false, label);
+    assert.ok(labels.includes("Clients"), labels.join(", "));
+    assert.ok(labels.some((label) => /Funicular/.test(label)), labels.join(", "));
+    assert.ok(labels.some((label) => /Trestle/.test(label)), labels.join(", "));
+    assert.ok(labels.some((label) => /Cog/.test(label)), labels.join(", "));
+    const edges = roles?.edges.map((edge) => edge.label).join(" | ") ?? "";
+    assert.match(edges, /Fluxometry/);
+    assert.match(edges, /Zero Jolt/);
+    assert.ok(roles?.edges.every((edge) => edge.label.length > 0));
+  });
+
+  it("draws the prior idea's roles when an invent reply follows, even if notes are a category list", async () => {
+    globalThis.fetch = (async () => Response.json({ extract: RELIC_NOTES })) as typeof fetch;
+    const answers = [
+      "Show a detailed diagram and invent the component names yourself",
+      "Sketch the detailed version — invent every box",
+      "Draw it in detail and name the parts, including amber beads, cedar masks, river shells, and bone flutes",
+      "Detailed diagram — invent the names, such as amber beads, cedar masks, river shells, and bone flutes",
+    ];
+    for (const answer of answers) {
+      const result = await runKevTurn({
+        messages: [
+          { role: "user", content: FUNICULAR_IDEA },
+          { role: "assistant", content: OPEN_IDEA_REPLY },
+          { role: "user", content: answer },
+        ],
+        currentXml: STARTER_XML,
+      });
+      assert.equal(result.intent, "add_shape", answer);
+      assert.notEqual(result.reply, OPEN_IDEA_REPLY, answer);
+      assert.doesNotMatch(result.reply, /Describe a diagram change|What should the new shape be called|Name the shape to edit/, answer);
+      const report = assertClean(result.updatedXml);
+      const labels = content(report.nodes).map((node) => node.label);
+      assert.ok(labels.length >= 4, `${answer}: ${labels.join(", ")}`);
+      assert.ok(labels.includes("Clients"), `${answer}: ${labels.join(", ")}`);
+      assert.ok(labels.some((label) => /Funicular|Trestle|Cog/.test(label)), `${answer}: ${labels.join(", ")}`);
+      for (const stolen of [
+        "Amber Beads",
+        "Cedar Masks",
+        "River Shells",
+        "Bone Flutes",
+        "Muffled Fluxometry",
+        "Muffled Fluxometry Path",
+        "Wardens See Steady",
+        "Zero Jolts",
+      ]) {
+        assert.equal(labels.includes(stolen), false, `${answer}: ${stolen} in ${labels.join(", ")}`);
+      }
+      assert.match(report.edges.map((edge) => edge.label).join(" | "), /Fluxometry/);
+      assert.match(report.edges.map((edge) => edge.label).join(" | "), /Zero Jolt/);
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), answer);
+      assert.ok(report.edges.length >= 3 && report.edges.every((edge) => edge.label.length > 0), answer);
+      for (const node of content(report.nodes)) {
+        const fill = node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.ok(fill && PASTEL.has(fill) && fill !== "#ffffff", `${answer} ${node.label} ${fill}`);
+      }
+    }
+  });
+});
