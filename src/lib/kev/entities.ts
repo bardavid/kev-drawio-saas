@@ -1312,11 +1312,14 @@ export function isClauseVerb(word: string): boolean {
 
 /**
  * Predicates of a message exchange. Inflected forms share one list with the
- * clause splitter. A gloss or cue head ("Returns Desk", "Front Desk") stays a
- * name when the next word is one of these.
+ * clause splitter. A gloss or cue head stays a name when the next word is a
+ * message verb: asks, tells, sends, informs, notifies, and the same family.
  */
-const MESSAGE_VERB_BODY =
-  "requests?|sends?|checks?|calls?|asks?|verifies?|validates?|returns?|replies|invokes?|queries?|notifies?|issues?|authenticates?|posts?|talks?|speaks?|credits?|opens?|delivers?|loads?|packs?|greets?|confirms?|approves?|prepares?|rejects?";
+const MESSAGE_VERB_BODY = [
+  "requests?|sends?|checks?|calls?|asks?|verifies?|validates?|returns?|replies|invokes?|queries?|notif(?:y|ies)|issues?|authenticates?|posts?|talks?|speaks?",
+  "credits?|opens?|delivers?|loads?|packs?|greets?|confirms?|approves?|prepares?|rejects?",
+  "tells?|informs?|alerts?|warns?|forwards?|advises?|instructs?|emails?|pings?|announces?|mentions?|relays?|transmits?",
+].join("|");
 
 const MESSAGE_VERB = new RegExp(`\\b(${MESSAGE_VERB_BODY})\\b`, "i");
 
@@ -1337,10 +1340,10 @@ function continuesNounPhrase(text: string, end: number): boolean {
     return false;
   }
   if (rejectedToken(token) || CUE.has(token) || FLUFF.has(token) || ORDINARY.has(token) || CRUMB.has(token)) return false;
-  if (/^(?:and|or|with|for|to|of|in|on|via|using|then|its|their|his|her|a|an|the|as|by|at|into|onto)$/.test(token)) {
+  if (/^(?:and|or|with|for|to|of|in|on|via|using|then|its|their|his|her|a|an|the|as|by|at|into|onto|about)$/.test(token)) {
     return false;
   }
-  // The next word is the predicate ("asks"), not another word of the name.
+  // The next word is the predicate ("asks", "tells", "informs"), not another word of the name.
   if (isMessagePredicate(token)) return false;
   return true;
 }
@@ -1374,9 +1377,7 @@ function salvageBigrams(
     if (/^(?:stores?|hosts?|holds?|keeps?|handles?|uses?|runs?|carries|carry|carrying)$/.test(left)) continue;
     // "notification leaves" and "workers pull" are predicates. "app platform" still joins.
     if (isClauseVerb(left) || isClauseVerb(right)) continue;
-    if (/^(?:requests?|sends?|checks?|calls?|asks?|verifies?|validates?|talks?|speaks?|runs?|holds?|keeps?|stores?)$/.test(right)) {
-      continue;
-    }
+    if (isMessagePredicate(right) || /^(?:runs?|holds?|keeps?|stores?)$/.test(right)) continue;
     if (MODIFIERS.has(left) || /^(?:a|an|the)$/.test(left)) continue;
     // "managed redis" keeps the product. "app platform" keeps the cue that would be stripped.
     // "web app" and "redis cache" are two role words and stay on the catalog path.
@@ -2098,9 +2099,12 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     for (const local of compoundsIn(segment.text, isMessageExchange(text))) {
       // "Distributed Message delivery" is the start of a longer noun, not a box.
       // "App Platform hosts" ends at the verb, so the product stays.
+      // A message exchange already decided this Title Case span is a participant.
+      // An unlisted verb must not discard the actor who starts the exchange.
       const head = local.words[0] ?? "";
       const tail = local.words[local.words.length - 1] ?? "";
       if (
+        !isMessageExchange(text) &&
         continuesNounPhrase(segment.text, local.end) &&
         !headIsUncommon(head) &&
         !isUncommonBrand(head, segment.text) &&
@@ -2445,7 +2449,9 @@ function verbStem(verb: string): string {
   if (/^verif/.test(lower)) return "Verify";
   if (/^validat/.test(lower)) return "Validate";
   if (/^authentica/.test(lower)) return "Authenticate";
-  if (/^notifies?$/.test(lower)) return "Notify";
+  if (/^notif(?:y|ies)$/.test(lower)) return "Notify";
+  if (/^tells?$/.test(lower)) return "Tell";
+  if (/^informs?$/.test(lower)) return "Inform";
   if (/^invokes?$/.test(lower)) return "Invoke";
   if (/^queries?$/.test(lower)) return "Query";
   if (/^returns?$/.test(lower)) return "Return";
@@ -2458,7 +2464,7 @@ function verbStem(verb: string): string {
 function messageObject(clause: string, verb: RegExpMatchArray, mentioned: NamedEntity[]): string {
   const start = (verb.index ?? 0) + verb[0].length;
   let rest = clause.slice(start);
-  const stop = rest.search(/\b(?:from|to|into|onto|via|using|with|for|by|and|then)\b/i);
+  const stop = rest.search(/\b(?:from|to|into|onto|via|using|with|for|by|and|then|about)\b/i);
   if (stop >= 0) rest = rest.slice(0, stop);
   const skip = new Set(["a", "an", "the", "its", "their", "his", "her", "this", "that"]);
   const mentionedWords = new Set(mentioned.flatMap((node) => node.label.toLowerCase().split(/\s+/)));
@@ -2503,15 +2509,19 @@ function exchangeMessages(text: string, nodes: NamedEntity[]): Array<{ from: str
     }
     const direct = messageObject(clause, verb, mentioned);
     const payload = namedPayload(clause, verb);
-    const label = direct === verbStem(verb[1] ?? verb[0]) && payload ? payload : direct;
+    const stem = verbStem(verb[1] ?? verb[0]);
+    let label = direct === stem ? payload ?? direct : direct;
     if (mentioned.length >= 2) {
       const verbAt = verb.index ?? 0;
       const verbEnd = verbAt + verb[0].length;
       const before = hits.filter((hit) => hit.end <= verbAt);
       const after = hits.filter((hit) => hit.at >= verbEnd);
       // "X asks Y for Z" addresses Y. Z stays a node. The last name is not always the addressee.
+      // "X tells Y about Z" and "X sends Y a Z" label the message with Z.
       const from = (before.length > 0 ? before[before.length - 1] : hits[0])?.node;
       const to = (after.length > 0 ? after[0] : hits[hits.length - 1])?.node;
+      const carried = after.length > 1 ? after[1]?.node.label ?? null : null;
+      if (direct === stem && !payload && carried) label = carried;
       if (from && to && from.id !== to.id) messages.push({ from: from.id, to: to.id, label });
       previous = to ?? from ?? previous;
       continue;

@@ -1271,6 +1271,113 @@ describe("named composition", () => {
     }
   });
 
+  it("keeps a cue-headed initiator for tells, sends, and informs, not only asks", async () => {
+    const prompts = [
+      {
+        text: "Lobby hop: Front Counter tells Badge Clerk about a Visitor Pass; later Floor Guide opens the lane",
+        actors: ["Front Counter", "Badge Clerk", "Floor Guide"],
+        payload: "Visitor Pass",
+        absent: ["Lobby", "Hop", "Later", "Lane", "Counter", "Clerk", "Pass"],
+      },
+      {
+        text: "Dispatch message flow: Route Desk sends Ramp Clerk a Load Sheet; afterward Yard Driver loads the trailer",
+        actors: ["Route Desk", "Ramp Clerk", "Yard Driver"],
+        payload: "Load Sheet",
+        absent: ["Dispatch", "Message", "Flow", "Afterward", "Trailer", "Desk", "Clerk", "Sheet"],
+      },
+      {
+        text: "Clinic sequence: Front Office informs Ward Clerk about a Chart; later Night Nurse confirms the note",
+        actors: ["Front Office", "Ward Clerk", "Night Nurse"],
+        payload: "Chart",
+        absent: ["Clinic", "Sequence", "Later", "Note", "Office", "Clerk"],
+      },
+      {
+        text: "Pier handoff: Front Gate asks Tide Checker for a Berth Slip; afterward Dock Pilot prepares the line",
+        actors: ["Front Gate", "Tide Checker", "Dock Pilot"],
+        payload: "Berth Slip",
+        absent: ["Pier", "Handoff", "Afterward", "Line", "Gate", "Checker", "Slip"],
+      },
+      {
+        text: "Payroll message flow: Billing Counter tells Audit Clerk about a Receipt; later Cash Runner posts the deposit",
+        actors: ["Billing Counter", "Audit Clerk", "Cash Runner"],
+        payload: "Receipt",
+        absent: ["Payroll", "Message", "Flow", "Later", "Deposit", "Counter", "Clerk", "Billing"],
+      },
+      {
+        text: "Harbor hop: Route Tower notifies Crew Chief about a Departure; afterward Pilot Boat confirms the channel",
+        actors: ["Route Tower", "Crew Chief", "Pilot Boat"],
+        payload: "Departure",
+        absent: ["Harbor", "Hop", "Afterward", "Channel", "Tower", "Chief"],
+      },
+    ];
+    for (const prompt of prompts) {
+      const labels = extractNamedEntities(prompt.text).map((entity) => entity.label);
+      for (const name of [...prompt.actors, prompt.payload]) {
+        assert.ok(labels.includes(name), `${prompt.text} → ${labels.join(", ")} missing ${name}`);
+      }
+      for (const stolen of prompt.absent) {
+        assert.equal(labels.includes(stolen), false, `${prompt.text} stole ${stolen} (${labels.join(", ")})`);
+      }
+      assert.equal(labels[0], prompt.actors[0], `${prompt.text} dropped the actor who starts the exchange`);
+      const drawn = previewDemo(prompt.text, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt.text);
+      assert.match(drawn.decision.reply, /Drew a sequence with/, prompt.text);
+      assert.match(drawn.decision.reply, new RegExp(prompt.actors[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.doesNotMatch(drawn.decision.reply, /Drew Architecture/);
+      assert.doesNotMatch(drawn.decision.reply, /What should the new shape be called/);
+      assert.doesNotMatch(drawn.decision.reply, /Which nodes should I draw/);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      assert.deepEqual(drawnLabels, labels, prompt.text);
+      assert.ok(content(report.nodes).every((node) => node.style.includes("umlLifeline")), prompt.text);
+      assert.ok(report.edges.length >= 2, prompt.text);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt.text);
+      assert.ok(
+        report.edges.some(
+          (edge) => edge.from === prompt.actors[0] && edge.to === prompt.actors[1] && edge.label === prompt.payload,
+        ),
+        `${prompt.text} ${report.edges.map((edge) => `${edge.from}->${edge.to}:${edge.label}`).join(", ")}`,
+      );
+      assert.ok(
+        report.edges.some((edge) => edge.from === prompt.actors[2] || edge.to === prompt.actors[2]),
+        prompt.text,
+      );
+      assertPastel(content(report.nodes), prompt.text);
+    }
+
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async () => {
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "clarify", confidence: 0.22 },
+          needs_xml_edit: { type: "noul", noul: 0.12 },
+          color: { type: "choice", choice: "none" },
+          shape: { type: "choice", choice: "none" },
+          layout: { type: "choice", choice: "none" },
+          anchor: { type: "choice", choice: "none" },
+          next: { type: "choice", choice: "clarify", confidence: 0.2 },
+          confirm: { type: "noul", noul: 0.1 },
+        },
+      });
+    }) as typeof fetch;
+
+    const prompted = prompts[4]!;
+    const kev = await runKevTurn({
+      messages: [{ role: "user", content: prompted.text }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(kev.intent, "add_shape");
+    assert.match(kev.reply, /Drew a sequence with/);
+    assert.doesNotMatch(kev.reply, /What should the new shape be called/);
+    assert.doesNotMatch(kev.reply, /Which nodes should I draw/);
+    const kevLabels = content(assertClean(kev.updatedXml).nodes).map((node) => node.label);
+    assert.equal(kevLabels[0], prompted.actors[0]);
+    for (const name of [...prompted.actors, prompted.payload]) {
+      assert.ok(kevLabels.includes(name), kevLabels.join(", "));
+    }
+  });
+
   it("connects ordered pipeline stages so a connector tint can restyle the stroke", () => {
     const prompt = "Buildkite sketch: Bundle the artifact first, then Promote onto Fly.io";
     const drawn = previewDemo(prompt, STARTER_XML);
