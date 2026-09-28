@@ -28,6 +28,7 @@ import {
   describeOperation,
   isArchitectureRequest,
   isBareDraw,
+  opensPicture,
   operationsForPlan,
   resolvePlan,
   summarizePlan,
@@ -677,6 +678,9 @@ async function planOpenIdea(input: OrchestratorContext): Promise<KevTurnResult> 
   const prepared = hostPreparedComposition(input.userMessage);
   if (prepared) return runComposition({ ...input, prepared });
   if (depth === "few") {
+    // The model guessed high-level for a layout-led open ask. The user has not
+    // chosen a depth yet, so ask. A committed high-level answer already returned.
+    if (!input.depthCommitted && opensPicture(input.userMessage)) return clarifyOpen(input, OPEN_IDEA_REPLY);
     const composition = highLevelComposition(input.userMessage);
     if (!composition) return clarifyOpen(input, OPEN_IDEA_REPLY);
     return runComposition({ ...input, prepared: composition });

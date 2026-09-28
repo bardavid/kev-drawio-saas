@@ -138,13 +138,50 @@ function isColorRestyle(text: string): boolean {
   );
 }
 
+const LAYOUT_LEAD =
+  /^(?:please\s+)?(?:lay(?:\s+out)?|reflow|relayout|re-layout|arrange|organize|organise)\b/i;
+
+/**
+ * A reflow names the open canvas.
+ * "Lay the diagram out" and "reflow it" are this. A system description is not.
+ */
+const REFLOW_SUBJECT =
+  /^(?:please\s+)?(?:lay(?:\s+out)?|reflow|relayout|re-layout|arrange|organize|organise)(?:\s+me)?\s+(?:it|them|this|that|these|those|everything|the\s+(?:diagram|canvas|page|boxes|shapes|nodes|drawing|layout))\b/i;
+
+/**
+ * "Lay out an edge CDN that fans pulls through regional POPs — show the moving parts"
+ * introduces a system. "Lay the diagram out" rearranges whatever is already drawn.
+ * A short direction ("lay out horizontally") stays a reflow. Labeled boxes stay a placement.
+ */
+export function opensPicture(text: string): boolean {
+  const trimmed = text.trim();
+  if (!LAYOUT_LEAD.test(trimmed) || REFLOW_SUBJECT.test(trimmed)) return false;
+  let rest = trimmed.replace(LAYOUT_LEAD, "").trim().replace(/^(?:out|me)\b/i, "").trim();
+  if (
+    !rest ||
+    /^(?:horizontally|vertically|horizontal|vertical|in\s+a\s+(?:row|column)|left\s+to\s+right|top\s+to\s+bottom)\b/i.test(
+      rest,
+    )
+  ) {
+    return false;
+  }
+  const words = rest
+    .replace(/[^A-Za-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word && !/^(?:a|an|the|of|and|its|their|his|her|for|with|to|in|on|or|out|me)$/i.test(word));
+  return words.length >= 8;
+}
+
 /**
  * An edit of the open canvas. "Add a cache to the 3-tier app" names a tier count
  * only as context. It is not a request for a new stack.
+ * A long "lay out / arrange …" description is a picture of a new system, not a reflow.
  */
 function isLedByEdit(text: string): boolean {
+  const trimmed = text.trim();
+  if (opensPicture(trimmed)) return false;
   return /^(?:please\s+)?(?:add|insert|place|put|drop|connect|delete|remove|rename|relabel|change|turn|paint|color|colour|recolor|recolour|restyle|style|lay|reflow|relayout|re-layout|arrange|organize|organise|move)\b/i.test(
-    text.trim(),
+    trimmed,
   );
 }
 

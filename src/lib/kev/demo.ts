@@ -21,6 +21,7 @@ import {
   isBetweenEdit,
   operationsForPlan,
   PLACEMENT_MANNER_TOKENS,
+  opensPicture,
   resolvePlan,
   withPalette,
 } from "@/lib/kev/plan";
@@ -575,6 +576,7 @@ export function decideDemo(message: string): KevDecision {
 
   if (
     !labeledPlacement(text) &&
+    !opensPicture(text) &&
     (/\b(reflow|relayout|re-layout|arrange|organize|organise)\b/.test(lower) ||
       /\blay(?:out)?\b/.test(lower) ||
       /\blay (?:it |them |the diagram )?out\b/.test(lower))

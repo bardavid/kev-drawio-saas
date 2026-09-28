@@ -21,9 +21,9 @@ import { DiagramXmlError, applyOperations, edgeQuery, groundDecision } from "@/l
 import { OPENAI_DEFAULT_MODEL, OpenAIKevClient, writeDiagramXml } from "@/lib/kev/openai";
 import { composeCommittedOpenIdea, maybeOrchestrate } from "@/lib/kev/orchestrate";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY, softenUnchangedReply } from "@/lib/kev/reply";
-import { architectureDecision, isRenameEdit, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { architectureDecision, isRenameEdit, opensPicture, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { researchTopic, wikipediaTitle } from "@/lib/kev/research";
-import { OPEN_IDEA_REPLY, depthContinuation } from "@/lib/kev/scale";
+import { OPEN_IDEA_REPLY, depthContinuation, longUnlistedDescription, sparseOpenPicture } from "@/lib/kev/scale";
 import { composeFromBrief, isStateMachineRequest } from "@/lib/kev/templates";
 import { KEV_DEFAULT_MODEL, KevUnreachableError, askKev } from "@/lib/kev/systemone";
 import {
@@ -264,6 +264,28 @@ function result(
   return turn;
 }
 
+/** A blank or one-scrap page. A real diagram is more than that. */
+function nearBlank(xml: string): boolean {
+  try {
+    return summarizeDiagram(xml).vertices.length <= 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A long open ask on a blank page. Naming a shape to add or edit is the wrong question.
+ */
+function blankOpenAsk(message: string, xml: string): boolean {
+  if (!nearBlank(xml)) return false;
+  return (
+    opensPicture(message) ||
+    unresolvedOpenIdea(message) ||
+    sparseOpenPicture(message) ||
+    longUnlistedDescription(message)
+  );
+}
+
 /** Draw a grounded composition when a nameless add would otherwise ask what to call the shape. */
 function compositionTurn(
   message: string,
@@ -383,6 +405,21 @@ function finish(
           compositionTurn(extra.userMessage, currentXml, originalXml, mode, model, extra) ??
           blankArchitectureTurn(extra.userMessage, currentXml, originalXml, mode, model, extra);
         if (hosted) return hosted;
+      }
+      // A blank open ask has no shape to name. Ask for depth instead of a label.
+      if (
+        extra.userMessage &&
+        (error.message === "What should the new shape be called?" || error.message === "Name the shape to edit.") &&
+        blankOpenAsk(extra.userMessage, currentXml)
+      ) {
+        return result(
+          { intent: "clarify", slots: {}, operations: [], reply: OPEN_IDEA_REPLY, updatedXml: null },
+          mode,
+          model,
+          originalXml,
+          false,
+          { ...extra, intent: "clarify" },
+        );
       }
       return result(
         { ...decision, reply: error.message, intent: "clarify", operations: [] },

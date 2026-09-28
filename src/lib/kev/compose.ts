@@ -29,6 +29,7 @@ import {
   isBetweenEdit,
   isRenameEdit,
   layoutDefault,
+  opensPicture,
   operationsForPlan,
   parseArchitecture,
   requestedLayout,
@@ -272,8 +273,10 @@ function isIncrementalEdit(text: string): boolean {
     return true;
   }
   if (/^(?:please\s+)?(?:lay|reflow|relayout|re-layout|arrange|organize|organise)\b/i.test(trimmed)) {
-    // "Lay out three boxes labeled A, B, and C" places those boxes. It is not a reflow.
-    return !labeledPlacement(trimmed);
+    // "Lay out three boxes labeled A, B, and C" places those boxes.
+    // "Lay out a system that … — show the moving parts" is a new picture.
+    // Neither one is a reflow of the open canvas.
+    return !labeledPlacement(trimmed) && !opensPicture(trimmed);
   }
   return false;
 }
