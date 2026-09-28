@@ -734,7 +734,7 @@ const MODIFIER = new Set([
 const NAME_FILLER = new Set(["box", "boxes", "shape", "shapes", "node", "nodes", "component", "components", "thing", "things"]);
 
 function tierToken(token: string): boolean {
-  return /^(?:\d+|two|three|four|five)[\s-]*tier$/.test(token);
+  return /^(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)$/.test(token);
 }
 
 function rejectedToken(token: string): boolean {
@@ -1415,7 +1415,7 @@ function draftsFromTierPhrase(
       "",
     )
     .replace(/^(?:and|then|plus)\s+/i, "");
-  if (/\b(?:\d+|two|three|four|five)[\s-]*tier\b/i.test(stripped)) return null;
+  if (/\b(?:\d+|two|three|four|five)[\s-]*(?:tiers?|layers?)\b/i.test(stripped)) return null;
   const rawWords = stripped.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? [];
   if (rawWords.length === 0 || rawWords.length > 4) return null;
   const kept: Array<{ raw: string; token: string; role: EntityRole }> = [];
