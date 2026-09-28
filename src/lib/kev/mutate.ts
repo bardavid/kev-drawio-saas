@@ -24,7 +24,7 @@ import {
   serializeDiagram,
 } from "@/lib/drawio/xml";
 import { polishDiagram } from "@/lib/drawio/layout";
-import type { DiagramOperation, DiagramSlots } from "@/lib/kev/types";
+import type { DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
 export { DiagramXmlError };
 
@@ -61,6 +61,8 @@ function significantTokens(value: string): string[] {
     .filter((token) => token && !FILLER.has(token));
 }
 
+const COLOR_WORDS = new Set(Object.keys(PALETTE));
+
 function scoreVertex(label: string, query: string): number {
   const rawQuery = normalizeName(query);
   const rawLabel = normalizeName(label);
@@ -78,17 +80,109 @@ function scoreVertex(label: string, query: string): number {
   return 0;
 }
 
-export function findVertex(doc: XmlDocument, query: string): XmlElement | null {
+/** Color words are style, not part of a shape name. */
+function mentionTokens(value: string): string[] {
+  return significantTokens(value).filter((token) => !COLOR_WORDS.has(token));
+}
+
+/** Query tokens are a leading prefix of the canvas label. */
+function leadingScore(label: string, query: string): number {
+  const q = mentionTokens(query);
+  const l = significantTokens(label);
+  if (q.length === 0 || l.length === 0 || q.length > l.length) return 0;
+  if (!q.every((token, index) => l[index] === token)) return 0;
+  return 70 + Math.min(q.length, 9);
+}
+
+function bestVertex(
+  doc: XmlDocument,
+  query: string,
+  score: (label: string, query: string) => number,
+): XmlElement | null {
   let best: XmlElement | null = null;
   let bestScore = 0;
   for (const vertex of listVertices(doc)) {
-    const score = scoreVertex(cellLabel(vertex), query);
-    if (score > bestScore) {
+    const value = score(cellLabel(vertex), query);
+    if (value > bestScore) {
       best = vertex;
-      bestScore = score;
+      bestScore = value;
     }
   }
   return bestScore >= 50 ? best : null;
+}
+
+/**
+ * Resolve a mention to a shape already on the canvas.
+ * Trailing words that are not part of any label ("stages", "of this pipeline")
+ * are dropped until a leading prefix hits one label. They do not become a new name.
+ */
+export function findVertex(doc: XmlDocument, query: string): XmlElement | null {
+  const direct = bestVertex(doc, query, scoreVertex);
+  if (direct) return direct;
+  const tokens = mentionTokens(query);
+  const stripped = tokens.join(" ");
+  if (stripped && stripped !== normalizeName(query)) {
+    const colored = bestVertex(doc, stripped, scoreVertex);
+    if (colored) return colored;
+  }
+  for (let count = tokens.length - 1; count >= 1; count -= 1) {
+    const prefix = tokens.slice(0, count).join(" ");
+    const hit = bestVertex(doc, prefix, leadingScore);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function hasLeftover(query: string, label: string): boolean {
+  const labelTokens = significantTokens(label);
+  return mentionTokens(query).some((token) => !labelTokens.includes(token));
+}
+
+function alignMention(
+  doc: XmlDocument,
+  value: string | null | undefined,
+  rewritten: Map<string, string>,
+): string | null {
+  if (!value) return null;
+  if (edgeQuery(value)) return value;
+  const found = findVertex(doc, value);
+  if (!found) return value;
+  const label = cellLabel(found);
+  if (!label) return value;
+  if (hasLeftover(value, label)) rewritten.set(value, label);
+  return hasLeftover(value, label) ? label : value;
+}
+
+function alignSlots(doc: XmlDocument, slots: DiagramSlots, rewritten: Map<string, string>): DiagramSlots {
+  return {
+    ...slots,
+    from: alignMention(doc, slots.from, rewritten),
+    to: alignMention(doc, slots.to, rewritten),
+    target: alignMention(doc, slots.target, rewritten),
+  };
+}
+
+/** Point from/to/target at canvas labels when the phrase has leftover tokens. */
+export function groundDecision(xml: string, decision: KevDecision): KevDecision {
+  let doc: XmlDocument;
+  try {
+    doc = openDiagram(xml);
+  } catch {
+    return decision;
+  }
+  const rewritten = new Map<string, string>();
+  const slots = alignSlots(doc, decision.slots, rewritten);
+  const operations = decision.operations.map((operation) => ({
+    ...operation,
+    slots: alignSlots(doc, operation.slots, rewritten),
+  }));
+  let reply = decision.reply;
+  const keys = [...rewritten.keys()].sort((left, right) => right.length - left.length);
+  for (const key of keys) {
+    const value = rewritten.get(key);
+    if (value) reply = reply.split(key).join(value);
+  }
+  return { ...decision, slots, operations, reply };
 }
 
 function requireVertex(doc: XmlDocument, query: string): XmlElement {

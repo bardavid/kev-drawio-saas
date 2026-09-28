@@ -1,6 +1,6 @@
 import { PALETTE, inferColorName, inferShape, isShapeKind } from "@/lib/drawio/styles";
 import type { KevClient } from "@/lib/kev/client";
-import { applyOperations, edgeQuery } from "@/lib/kev/mutate";
+import { applyOperations, edgeQuery, groundDecision } from "@/lib/kev/mutate";
 import { compositionDecision, renderComposition, resolveComposition, sameMxfile, templateCanvasPlan } from "@/lib/kev/compose";
 import { architectureDecision, isBareDraw, operationsForPlan, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY } from "@/lib/kev/reply";
@@ -497,5 +497,6 @@ export function previewDemo(message: string, xml: string): { decision: KevDecisi
   }
   const result = decideDemo(message);
   if (result.operations.length === 0) return { decision: result, xml };
-  return { decision: result, xml: applyOperations(xml, result.operations) };
+  const grounded = groundDecision(xml, result);
+  return { decision: grounded, xml: applyOperations(xml, grounded.operations) };
 }

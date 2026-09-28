@@ -69,12 +69,22 @@ export function isArchitectureRequest(message: string): boolean {
 
 /** "Add X between A and B" edits the open canvas. It is not a new architecture chain. */
 function isBetweenInsert(text: string): boolean {
-  return /^(?:please\s+)?(?:add|insert|place)\b/i.test(text.trim()) && /\bbetween\b/i.test(text);
+  const trimmed = text.trim();
+  return /^(?:please\s+)?(?:add|insert|place|put|drop)\b/i.test(trimmed) && /\bbetween\b/i.test(trimmed);
+}
+
+/** "Make the boxes orange" restyles. "Build" inside it is not a draw verb. */
+function isColorRestyle(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    /^(?:please\s+)?(?:change|make|turn|paint|color|colour|recolor|recolour|restyle|style|set)\b/i.test(trimmed) &&
+    COLOR_RE.test(trimmed)
+  );
 }
 
 export function parseArchitecture(message: string): ArchitecturePlan | null {
   const text = message.trim();
-  if (!text || isBareDraw(text) || isBetweenInsert(text)) return null;
+  if (!text || isBareDraw(text) || isBetweenInsert(text) || isColorRestyle(text)) return null;
   const hasVerb = DRAW_VERB.test(text);
   const hasArrow = /→|->|=>|—>|-->|–>/.test(text);
   const tiers = tierCount(text);

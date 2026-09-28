@@ -318,4 +318,102 @@ describe("named composition", () => {
     const labels = assessDiagram(drawn.updatedXml).nodes.map((node) => node.label);
     for (const label of ["Workers", "D1", "R2", "Queues"]) assert.ok(labels.includes(label), label);
   });
+
+  it("splices a stage between canvas labels when the sentence has trailing words", () => {
+    const drawn = previewDemo(
+      "draw a simple CI/CD pipeline with GitHub Actions, build, and deploy to Vercel",
+      STARTER_XML,
+    );
+    const placed = (xml: string) =>
+      content(assessDiagram(xml).nodes).map((node) => ({
+        label: node.label,
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
+      }));
+    const before = placed(drawn.xml);
+    const phrases = [
+      "Insert Test between the Build and Deploy stages",
+      "Put Test between Build and Deploy stages of the pipeline",
+    ];
+    for (const phrase of phrases) {
+      const edited = previewDemo(phrase, drawn.xml);
+      assert.equal(edited.decision.intent, "add_shape", phrase);
+      const report = assertClean(edited.xml);
+      const labels = content(report.nodes).map((node) => node.label);
+      assert.ok(labels.includes("Test"), phrase);
+      assert.equal(labels.includes("Deploy Stages"), false, phrase);
+      assert.equal(labels.includes("Stages"), false, phrase);
+      assert.deepEqual(
+        [...content(report.nodes)].sort((a, b) => a.x - b.x).map((node) => node.label),
+        ["GitHub Actions", "Build", "Test", "Deploy to Vercel"],
+        phrase,
+      );
+      assert.ok(report.edges.some((edge) => edge.from === "Build" && edge.to === "Test"), phrase);
+      assert.ok(report.edges.some((edge) => edge.from === "Test" && edge.to === "Deploy to Vercel"), phrase);
+      assert.equal(
+        report.edges.some((edge) => edge.from === "Build" && edge.to === "Deploy to Vercel"),
+        false,
+        phrase,
+      );
+      const kept = placed(edited.xml);
+      assert.deepEqual(
+        kept.find((node) => node.label === "GitHub Actions"),
+        before.find((node) => node.label === "GitHub Actions"),
+        phrase,
+      );
+      assert.deepEqual(
+        kept.find((node) => node.label === "Build"),
+        before.find((node) => node.label === "Build"),
+        phrase,
+      );
+    }
+
+    const painted = previewDemo("Paint the Deploy stages teal", drawn.xml);
+    assert.equal(painted.decision.intent, "style");
+    assert.deepEqual(placed(painted.xml), before);
+    const deploy = assessDiagram(painted.xml).nodes.find((node) => node.label === "Deploy to Vercel");
+    assert.ok(deploy);
+    assert.match(deploy.style, /fillColor=#d5e8e4/);
+    assert.match(deploy.style, /strokeColor=#0e8088/);
+    assert.equal(
+      assessDiagram(painted.xml).nodes.some((node) => node.label === "Deploy Stages"),
+      false,
+    );
+  });
+
+  it("keeps uncommon brand tokens and still uses role words for shape and grouping", () => {
+    const phrases = [
+      "Draw Fly.io with Tigris object storage and Upstash Redis.",
+      "fly.io plus tigris for object storage, and upstash for redis",
+    ];
+    for (const phrase of phrases) {
+      const labels = extractNamedEntities(phrase).map((entity) => entity.label);
+      for (const label of ["Fly.io", "Tigris", "Upstash"]) assert.ok(labels.includes(label), `${phrase} → ${labels.join(", ")}`);
+      assert.equal(labels.includes("Object storage"), false, phrase);
+      assert.equal(labels.includes("Redis"), false, phrase);
+
+      const drawn = previewDemo(phrase, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", phrase);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = report.nodes.map((node) => node.label);
+      for (const label of ["Fly.io", "Tigris", "Upstash"]) assert.ok(drawnLabels.includes(label), phrase);
+      assert.equal(drawnLabels.includes("Object storage"), false, phrase);
+      assert.equal(drawnLabels.includes("Redis"), false, phrase);
+      const tigris = content(report.nodes).find((node) => node.label === "Tigris");
+      const upstash = content(report.nodes).find((node) => node.label === "Upstash");
+      assert.ok(tigris?.style.includes("shape=cloud"), phrase);
+      assert.ok(upstash?.style.includes("shape=cylinder3"), phrase);
+      const clusters = report.nodes.filter((node) => node.role === "cluster").map((node) => node.label);
+      for (const label of ["Services", "Storage", "Data"]) assert.ok(clusters.includes(label), `${phrase} ${label}`);
+      assert.ok(report.edges.filter((edge) => edge.label).length >= 2, phrase);
+      assertPastel(content(report.nodes), phrase);
+    }
+
+    const generic = previewDemo("Draw object storage and Redis", STARTER_XML);
+    const genericLabels = content(assertClean(generic.xml).nodes).map((node) => node.label);
+    assert.ok(genericLabels.includes("Object storage"));
+    assert.ok(genericLabels.includes("Redis"));
+  });
 });
