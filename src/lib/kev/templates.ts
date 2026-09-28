@@ -55,6 +55,8 @@ export function matchTemplate(message: string): TemplateMatch | null {
   // CloudFront and S3 are a CDN plus static origin. Lambda and DynamoDB do not
   // turn that into API Gateway, and "AWS" does not turn it into an ALB / ECS VPC.
   if (isAwsCdn(text)) return awsCdn(text);
+  // SQS and SNS are a messaging stack. They are not DynamoDB serverless and not an ALB / ECS VPC.
+  if (isAwsMessaging(text)) return awsMessaging(text);
   // API Gateway, Lambda, and DynamoDB are not an ALB / ECS / RDS VPC.
   if (isAwsServerless(text)) return awsServerless();
   if (isCloud(text)) return cloudVpc(text);
@@ -230,7 +232,7 @@ function isMicroservices(text: string): boolean {
 }
 
 function isCloud(text: string): boolean {
-  if (isGcp(text) || isAzure(text) || isAwsCdn(text)) return false;
+  if (isGcp(text) || isAzure(text) || isAwsCdn(text) || isAwsMessaging(text)) return false;
   return (
     /\b(vpc|aws|amazon web services)\b/i.test(text) ||
     /\bcloud architecture\b/i.test(text) ||
@@ -258,6 +260,31 @@ function mentionsS3(text: string): boolean {
   return /\bs3\b|\bsimple\s+storage\s+service\b/i.test(text);
 }
 
+function mentionsSqs(text: string): boolean {
+  return /\bsqs\b|\bsimple\s+queue(?:\s+service)?\b/i.test(text);
+}
+
+function mentionsSns(text: string): boolean {
+  return /\bsns\b|\bsimple\s+notification(?:\s+service)?\b/i.test(text);
+}
+
+function isAwsVpcStack(text: string): boolean {
+  return (
+    /\balb\b|\bapplication\s+load\s+balancer\b|\becs\b|\bfargate\b|\brds\b/i.test(text) || mentionsElastiCache(text)
+  );
+}
+
+/**
+ * SQS or SNS, including Simple Queue Service and Simple Notification Service.
+ * Wins before the DynamoDB serverless sketch and the ALB / ECS VPC.
+ * CloudFront / S3 and the VPC services keep their templates.
+ */
+function isAwsMessaging(text: string): boolean {
+  if (/\bsequence\b/i.test(text) || isStateMachineRequest(text) || /\b(workflow|flowchart)\b/i.test(text)) return false;
+  if (isGcp(text) || isAzure(text) || isKubernetes(text) || isAwsCdn(text) || isAwsVpcStack(text)) return false;
+  return mentionsSqs(text) || mentionsSns(text);
+}
+
 /**
  * CloudFront, or S3 together with Lambda, DynamoDB, or AWS.
  * Wins before serverless: Lambda + DynamoDB used to ignore CloudFront and S3.
@@ -272,10 +299,10 @@ function isAwsCdn(text: string): boolean {
 /**
  * AWS serverless asks name the service, the API Gateway + Lambda pair, or DynamoDB.
  * Checked before the generic VPC sketch. Azure, GCP (including Serverless VPC Access and
- * Cloud Functions), Kubernetes, and a CloudFront / S3 composition keep their own templates.
+ * Cloud Functions), Kubernetes, CloudFront / S3, and an SQS / SNS messaging stack keep their own templates.
  */
 function isAwsServerless(text: string): boolean {
-  if (isGcp(text) || isAzure(text) || isKubernetes(text) || isAwsCdn(text)) return false;
+  if (isGcp(text) || isAzure(text) || isKubernetes(text) || isAwsCdn(text) || isAwsMessaging(text)) return false;
   if (/\bserverless\b/i.test(text)) return true;
   if (mentionsApiGateway(text) && mentionsLambda(text)) return true;
   return mentionsDynamoDb(text) && /\b(aws|amazon(?:\s+web\s+services)?|serverless)\b/i.test(text);
@@ -1433,6 +1460,54 @@ function awsCdn(text: string): TemplateMatch {
       "AWS CDN",
       cdnStaticCompute
         ? "Drew an AWS architecture: Client → CloudFront → S3, with Lambda and DynamoDB."
+        : `Drew an AWS architecture with ${names.join(", ")}.`,
+      groups,
+      edges,
+    ),
+  };
+}
+
+function awsMessaging(text: string): TemplateMatch {
+  const selected: Array<{ id: string; label: string; shape: LayerNode["shape"]; tier: "edge" | "compute" | "bus" }> = [];
+  if (mentionsApiGateway(text)) selected.push({ id: "gateway", label: "API Gateway", shape: "hexagon", tier: "edge" });
+  if (mentionsLambda(text)) selected.push({ id: "lambda", label: "Lambda", shape: "rectangle", tier: "compute" });
+  if (mentionsSqs(text)) selected.push({ id: "sqs", label: "SQS", shape: "queue", tier: "bus" });
+  if (mentionsSns(text)) selected.push({ id: "sns", label: "SNS", shape: "queue", tier: "bus" });
+
+  const groups: LayerGroup[] = [];
+  const edges: LayerEdge[] = [];
+  const front = selected.some((service) => service.tier === "edge" || service.tier === "compute");
+  if (front) groups.push(col("clients", "Clients", [node("client", "Client", "rectangle")]));
+
+  let anchor: string | null = front ? "client" : null;
+  for (const tier of ["edge", "compute", "bus"] as const) {
+    const services = selected.filter((service) => service.tier === tier);
+    const first = services[0];
+    if (!first) continue;
+    const clusterId = tier === "edge" ? "edge" : tier === "compute" ? "compute" : "messaging";
+    const clusterLabel = tier === "edge" ? "Edge" : tier === "compute" ? "Compute" : "Messaging";
+    groups.push(col(clusterId, clusterLabel, services.map((service) => node(service.id, service.label, service.shape))));
+    if (tier === "bus" && anchor) {
+      const from = anchor;
+      services.forEach((service, index) => {
+        const label = service.id === "sns" ? "Publish" : "Send";
+        edges.push(edge(from, service.id, label, index > 0));
+      });
+      continue;
+    }
+    if (anchor) edges.push(edge(anchor, first.id, first.id === "lambda" ? "Invoke" : "HTTPS"));
+    anchor = first.id;
+  }
+
+  const names = selected.map((service) => service.label);
+  const full = ["API Gateway", "Lambda", "SQS", "SNS"].every((label) => names.includes(label));
+  return {
+    context:
+      "API Gateway accepts HTTPS and invokes Lambda. Lambda sends work to SQS and publishes notifications through SNS.",
+    spec: layers(
+      "AWS messaging",
+      full
+        ? "Drew an AWS architecture: Client → API Gateway → Lambda, with SQS and SNS."
         : `Drew an AWS architecture with ${names.join(", ")}.`,
       groups,
       edges,

@@ -1100,6 +1100,7 @@ describe("live kev architecture", { concurrency: 1 }, () => {
       "draw an approval workflow",
       "draw an e-commerce data model",
       "draw an AWS serverless architecture with API Gateway, Lambda, and DynamoDB",
+      "draw an AWS architecture with API Gateway, Lambda, SQS, and SNS",
       "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB",
       "draw an AWS VPC architecture with an ALB, ECS, and RDS",
       "draw an AWS architecture with ALB, ECS Fargate, RDS, and ElastiCache",
@@ -1239,6 +1240,11 @@ describe("live kev architecture", { concurrency: 1 }, () => {
           "draw a Stripe checkout payment sequence with browser, Stripe Checkout, webhook handler, and database",
         labels: ["Browser", "Stripe Checkout", "Webhook handler", "Database"],
         absent: ["Payment", "Orders", "Checkout"],
+      },
+      {
+        prompt: "draw an AWS architecture with API Gateway, Lambda, SQS, and SNS",
+        labels: ["API Gateway", "Lambda", "SQS", "SNS"],
+        absent: ["CloudFront", "S3", "DynamoDB", "ALB", "ECS", "ECS Fargate", "RDS"],
       },
       {
         prompt: "draw an AWS architecture with CloudFront, S3, Lambda, and DynamoDB",
