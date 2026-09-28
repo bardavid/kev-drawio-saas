@@ -204,10 +204,11 @@ describe("diagram depth", () => {
       assert.equal(result.intent, "add_shape", prompt);
       const report = assertClean(result.updatedXml);
       const labels = content(report.nodes).map((node) => node.label);
-      assert.deepEqual(labels, [...expected], prompt);
+      // Check before deepEqual: node:assert narrows labels to the expected literals.
       assert.equal(labels.includes("General Purpose"), false);
       assert.equal(labels.includes("Storage"), false);
       assert.equal(labels.includes("Interactions"), false);
+      assert.deepEqual(labels, [...expected], prompt);
       assert.ok(report.nodes.some((node) => node.role === "cluster"), prompt);
       assert.ok(report.edges.length >= 4, prompt);
       assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
