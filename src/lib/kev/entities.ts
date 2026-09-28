@@ -483,7 +483,7 @@ function linkLabel(from: NamedEntity, to: NamedEntity): string {
     return "Publish";
   }
   if (from.role === "client" || from.role === "actor" || to.role === "edge") return "HTTPS";
-  if (to.role === "compute" && (from.role === "edge" || from.role === "client")) {
+  if (to.role === "compute" && from.role === "edge") {
     return /lambda|function|worker/i.test(to.label) ? "Invoke" : "Route";
   }
   if (to.role === "step" || from.role === "step") return "Next";
