@@ -1852,4 +1852,208 @@ describe("named composition", () => {
       fills,
     );
   });
+
+  it("paints coral-family connector strokes and does not reuse the amber stroke", async () => {
+    const drawn = previewDemo("Client / API / Postgres", STARTER_XML);
+    const report = assertClean(drawn.xml);
+    assert.ok(report.edges.length >= 2);
+    const before = boxes(drawn.xml);
+    const fills = content(report.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]);
+    const vertexStrokes = content(report.nodes).map((node) => node.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]);
+    const phrases = [
+      { text: "Wash every connector coral", reply: /coral/i },
+      { text: "Wash every connector salmon", reply: /salmon/i },
+      { text: "Tint the arrows tomato", reply: /tomato/i },
+    ];
+    for (const phrase of phrases) {
+      const painted = previewDemo(phrase.text, drawn.xml);
+      assert.equal(painted.decision.intent, "style", phrase.text);
+      assert.equal(painted.decision.slots.colorName, "coral", phrase.text);
+      assert.match(painted.decision.slots.target ?? "", /^(?:arrows?|edges?|connectors?|lines?)$/i, phrase.text);
+      assert.equal(painted.decision.slots.from ?? null, null, phrase.text);
+      assert.equal(painted.decision.slots.to ?? null, null, phrase.text);
+      assert.match(painted.decision.reply, phrase.reply, phrase.text);
+      assert.doesNotMatch(painted.decision.reply, /amber|orange|goldenrod/i, phrase.text);
+      assert.deepEqual(boxes(painted.xml), before, phrase.text);
+      const after = assessDiagram(painted.xml);
+      assert.equal(after.edges.length, report.edges.length, phrase.text);
+      for (const edge of after.edges) {
+        const stroke = edge.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]?.toLowerCase();
+        assert.equal(stroke, "#ff7f50", phrase.text);
+        const hue = hexHue(stroke ?? "");
+        assert.ok(hue >= 0 && hue <= 25, `${phrase.text} stroke ${stroke} hue ${hue}`);
+        assert.notEqual(stroke, "#d79b00", phrase.text);
+      }
+      assert.deepEqual(
+        content(after.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+        fills,
+        phrase.text,
+      );
+      assert.deepEqual(
+        content(after.nodes).map((node) => node.style.match(/strokeColor=(#[0-9a-f]{6})/i)?.[1]),
+        vertexStrokes,
+        phrase.text,
+      );
+    }
+
+    const amber = previewDemo("Wash every connector amber", drawn.xml);
+    assert.ok(assessDiagram(amber.xml).edges.every((edge) => edge.style.includes("strokeColor=#d79b00")));
+    const red = previewDemo("Paint every connector red", drawn.xml);
+    assert.equal(red.decision.slots.colorName, "red");
+    assert.ok(assessDiagram(red.xml).edges.every((edge) => edge.style.includes("strokeColor=#b85450")));
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.KEV_BASE_URL = "http://kev.local";
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return Response.json({
+        model: "kev-latest",
+        answers: {
+          intent: { type: "choice", choice: "style", confidence: 0.92 },
+          needs_xml_edit: { type: "noul", noul: 0.9 },
+          color: { type: "choice", choice: "orange" },
+          anchor: { type: "choice", choice: "none" },
+          source: { type: "choice", choice: "none" },
+          target: { type: "choice", choice: "none" },
+        },
+      });
+    }) as typeof fetch;
+    const hosted = await runKevTurn({
+      messages: [{ role: "user", content: "Wash every connector coral" }],
+      currentXml: drawn.xml,
+    });
+    assert.equal(called, 0);
+    assert.equal(hosted.intent, "style");
+    assert.match(hosted.reply, /coral/i);
+    assert.doesNotMatch(hosted.reply, /amber|orange/i);
+    const hostedReport = assessDiagram(hosted.updatedXml);
+    assert.deepEqual(boxes(hosted.updatedXml), before);
+    assert.ok(hostedReport.edges.every((edge) => edge.style.includes("strokeColor=#ff7f50")));
+    assert.deepEqual(
+      content(hostedReport.nodes).map((node) => node.style.match(/fillColor=(#[0-9a-f]{6})/i)?.[1]),
+      fills,
+    );
+  });
+
+  it("places one vertex per labeled name for place-all verbs, including lay out", async () => {
+    const prompts = [
+      "Lay out three boxes labeled Hub, Spoke, and Cache",
+      "Place three boxes labeled Hub, Spoke, and Cache",
+      "Add three boxes labeled Hub, Spoke, and Cache",
+      "Drop three boxes labeled Hub, Spoke, and Cache",
+      "Draw three boxes labeled Hub, Spoke, and Cache",
+      "Put three boxes labeled Hub, Spoke, and Cache",
+      "Arrange three rectangles named Inlet, Mixer, and Outlet",
+    ];
+    for (const prompt of prompts) {
+      const wanted = prompt.includes("Inlet") ? ["Inlet", "Mixer", "Outlet"] : ["Hub", "Spoke", "Cache"];
+      const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+      assert.deepEqual(labels, wanted, prompt);
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      assert.doesNotMatch(drawn.decision.reply, /Which nodes should I draw|What should the new shape be called|Reflowed/i, prompt);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      assert.deepEqual([...drawnLabels].sort(), [...wanted].sort(), prompt);
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), prompt);
+      assert.ok(report.edges.length >= 1, prompt);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
+      assertPastel(content(report.nodes), prompt);
+    }
+
+    const placed = previewDemo("Lay out three boxes labeled Hub, Spoke, and Cache", STARTER_XML);
+    for (const phrase of ["Please call Spoke by the name Branch Node instead", "call Spoke by the name Branch Node"]) {
+      const renamed = previewDemo(phrase, placed.xml);
+      assert.equal(renamed.decision.intent, "edit_shape", phrase);
+      assert.match(renamed.decision.reply, /Renamed Spoke to Branch Node/, phrase);
+      const labels = content(assertClean(renamed.xml).nodes).map((node) => node.label);
+      assert.ok(labels.includes("Branch Node"), phrase);
+      assert.equal(labels.includes("Spoke"), false, phrase);
+      assert.ok(labels.includes("Hub") && labels.includes("Cache"), phrase);
+    }
+
+    const nonsense = previewDemo("zzzzzyx nonsense blobble wibble not a real request", placed.xml);
+    assert.equal(nonsense.decision.intent, "clarify");
+    assert.equal(nonsense.xml, placed.xml);
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async () => {
+      throw new Error("labeled boxes must not ask the model");
+    }) as typeof fetch;
+    const hosted = await runKevTurn({
+      messages: [{ role: "user", content: "Lay out three boxes labeled Hub, Spoke, and Cache" }],
+      currentXml: STARTER_XML,
+    });
+    assert.deepEqual(
+      content(assertClean(hosted.updatedXml).nodes).map((node) => node.label).sort(),
+      ["Cache", "Hub", "Spoke"],
+    );
+    const hostedRename = await runKevTurn({
+      messages: [{ role: "user", content: "Please call Spoke by the name Branch Node instead" }],
+      currentXml: hosted.updatedXml,
+    });
+    assert.equal(hostedRename.intent, "edit_shape");
+    assert.ok(content(assertClean(hostedRename.updatedXml).nodes).some((node) => node.label === "Branch Node"));
+  });
+
+  it("draws a short overview as few boxes and a listed component map as those names", async () => {
+    const overview = previewDemo("rough overview of a chat product", STARTER_XML);
+    assert.equal(overview.decision.intent, "add_shape");
+    assert.doesNotMatch(overview.decision.reply, /Which nodes should I draw|topic notes|What should the new shape be called/i);
+    const overviewLabels = content(assertClean(overview.xml).nodes).map((node) => node.label);
+    assert.deepEqual(overviewLabels, ["Chat Product"]);
+    assert.ok(assessDiagram(overview.xml).nodes.some((node) => node.role === "cluster"));
+
+    const paraphrased = previewDemo("Give me a rough overview of a billing product", STARTER_XML);
+    assert.deepEqual(content(assertClean(paraphrased.xml).nodes).map((node) => node.label), ["Billing Product"]);
+
+    const detailed =
+      "detailed subsystem map of a realtime chat backend covering websocket gateway, presence service, message store, fanout workers, and moderation queue";
+    const other =
+      "sketch the parts of a checkout flow covering card gateway, ledger service, receipt store, and refund queue";
+    for (const [prompt, wanted] of [
+      [
+        detailed,
+        ["Websocket Gateway", "Presence Service", "Message Store", "Fanout Workers", "Moderation Queue"],
+      ],
+      [other, ["Card Gateway", "Ledger Service", "Receipt Store", "Refund Queue"]],
+    ] as const) {
+      const labels = extractNamedEntities(prompt).map((entity) => entity.label);
+      assert.deepEqual(labels, [...wanted], prompt);
+      const drawn = previewDemo(prompt, STARTER_XML);
+      assert.equal(drawn.decision.intent, "add_shape", prompt);
+      assert.doesNotMatch(drawn.decision.reply, /topic notes did not name|Which nodes should I draw/i, prompt);
+      const report = assertClean(drawn.xml);
+      const drawnLabels = content(report.nodes).map((node) => node.label);
+      assert.deepEqual([...drawnLabels].sort(), [...wanted].sort(), prompt);
+      assert.ok(drawnLabels.length > overviewLabels.length, prompt);
+      assert.ok(report.nodes.some((node) => node.role === "cluster"), prompt);
+      assert.ok(report.edges.length >= wanted.length - 1, prompt);
+      assert.ok(report.edges.every((edge) => edge.label.length > 0), prompt);
+      assertPastel(content(report.nodes), prompt);
+    }
+
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.KEV_BASE_URL = "http://kev.local";
+    globalThis.fetch = (async () => {
+      throw new Error("named components must not ask the model");
+    }) as typeof fetch;
+    const hostedOverview = await runKevTurn({
+      messages: [{ role: "user", content: "rough overview of a chat product" }],
+      currentXml: STARTER_XML,
+    });
+    assert.deepEqual(content(assertClean(hostedOverview.updatedXml).nodes).map((node) => node.label), ["Chat Product"]);
+    const hosted = await runKevTurn({
+      messages: [{ role: "user", content: detailed }],
+      currentXml: STARTER_XML,
+    });
+    assert.equal(hosted.intent, "add_shape");
+    assert.doesNotMatch(hosted.reply, /topic notes/i);
+    const hostedLabels = content(assertClean(hosted.updatedXml).nodes).map((node) => node.label);
+    assert.equal(hostedLabels.length, 5);
+    assert.ok(hostedLabels.includes("Websocket Gateway"));
+    assert.ok(hostedLabels.includes("Moderation Queue"));
+  });
 });

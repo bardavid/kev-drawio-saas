@@ -961,7 +961,7 @@ export function chainEdgeLabel(fromLabel: string, toLabel: string): string {
 
 function inferRole(label: string): EntityRole {
   const text = label.toLowerCase();
-  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch)\b/.test(text)) return "data";
+  if (/\b(database|postgres|mysql|mongo|cosmos|dynamo|sql|db|d1|elasticsearch|opensearch|stores?)\b/.test(text)) return "data";
   if (/\b(storage|bucket|blob|s3|r2)\b/.test(text)) return "storage";
   if (/\b(queue|queues|bus|kafka|sqs|sns|hub|pubsub)\b/.test(text)) return "bus";
   if (/\b(gateway|apim|balancer|cloudfront|cdn|waf)\b/.test(text)) return "edge";
@@ -1773,10 +1773,52 @@ const BOX_LABEL_CUE =
  * Every listed name is a vertex, including words that usually name the diagram
  * ("edge", "path", "flow") rather than a product.
  */
+const PLACE_ALL_VERB =
+  /\b(?:place|put|add|draw|sketch|create|insert|drop|show|lay|layout|arrange|organize|organise|position)\b/i;
+
+/**
+ * Lay out / place / add / drop / draw / put, and the same family of verbs,
+ * followed by boxes labeled with names. "Lay out" is one of those verbs, not a reflow.
+ */
+export function labeledPlacement(message: string): boolean {
+  return explicitLabeledBoxes(normalize(message)) !== null;
+}
+
+const COMPONENT_LIST_RE =
+  /\b(?:covering|including|includes|include|containing|contains|consisting of|consists of|comprised of|composed of|made up of|namely|such as)\s+([^.]*)/i;
+
+/**
+ * Short names listed after a covering/including cue.
+ * The cue is grammar, not a topic. Each item is one component the user already named.
+ */
+export function listedComponents(message: string): string[] | null {
+  const match = normalize(message).match(COMPONENT_LIST_RE);
+  if (!match?.[1]) return null;
+  const parts = match[1]
+    .replace(/\s+\band\b\s+/gi, ", ")
+    .split(/\s*[,;]\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const words = (part.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? []).filter(
+      (word) => !/^(?:a|an|the|and|or|plus)$/i.test(word),
+    );
+    if (words.length === 0 || words.length > 4) return null;
+    const label = words.map((word) => displayToken(word)).join(" ");
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels.length >= 2 ? labels : null;
+}
+
 function explicitLabeledBoxes(text: string): string[] | null {
   const match = text.match(BOX_LABEL_CUE);
   if (!match?.[1]) return null;
-  if (!/\b(?:place|put|add|draw|sketch|create|insert|drop|show)\b/i.test(text)) return null;
+  if (!PLACE_ALL_VERB.test(text)) return null;
   const sentence = match[1].split(/(?<=[.!?])\s+/)[0] ?? match[1];
   const body = sentence.replace(/[?.!]+$/g, "").trim();
   if (!body) return null;
@@ -1821,9 +1863,10 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   const text = normalize(message);
   if (!text) return [];
   const boxed = explicitLabeledBoxes(text);
-  if (boxed) {
+  const listed = boxed ?? listedComponents(text);
+  if (listed) {
     return entitiesFromDrafts(
-      boxed.map((label, index) => {
+      listed.map((label, index) => {
         const role = inferRole(label);
         return {
           id: label.toLowerCase(),

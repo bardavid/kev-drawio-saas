@@ -5,6 +5,7 @@ import { OPEN_IDEA_REPLY } from "@/lib/kev/scale";
 import {
   CAPACITY_REPLY,
   composeOnCanvas,
+  hostPreparedComposition,
   renderBlankArchitecture,
   renderComposition,
   resolveComposition,
@@ -12,6 +13,7 @@ import {
   sameMxfile,
   overNamedCapacity,
 } from "@/lib/kev/compose";
+import { labeledPlacement } from "@/lib/kev/entities";
 import {
   architectureDecision,
   isBareDraw,
@@ -45,9 +47,10 @@ function decision(
   return { intent, reply, slots, operations, updatedXml: null };
 }
 
-function cleanNoun(value: string): string {
+function cleanNoun(value: string, preserveTail = false): string {
   let text = value.replace(/[?.!,;:]+$/g, "").replace(/\s+/g, " ").trim();
   text = text.replace(/^(?:the|a|an)\s+/i, "");
+  if (preserveTail) return text;
   let previous = "";
   while (previous !== text) {
     previous = text;
@@ -83,8 +86,8 @@ const SPECIAL: Record<string, string> = {
   gcp: "GCP",
 };
 
-function titleLabel(input: string): string {
-  const words = cleanNoun(input).split(/\s+/).filter(Boolean);
+function titleLabel(input: string, preserveTail = false): string {
+  const words = cleanNoun(input, preserveTail).split(/\s+/).filter(Boolean);
   if (words.length === 0) return "";
   return words
     .map((word) => {
@@ -166,7 +169,9 @@ const COLOR_MODIFIERS = new Set([
 /**
  * Edge colors resolve by hue family, not by one synonym at a time.
  * A spoken sample joins the nearest family whose center is within radius.
- * Amber, gold, orange, and goldenrod sit near hue 40 (±25).
+ * Amber, gold, orange, and goldenrod sit near hue 40 (±25) and share the orange stroke.
+ * Coral, salmon, and tomato sit near hue 16 (about 0–25) and share the coral stroke.
+ * Those bands do not overlap: coral is not amber, and goldenrod is not coral.
  * Pink, magenta, fuchsia, and hot-pink sit near hue 300 (±40).
  * Palette pink’s own stroke is outside that band, so the spoken sample is a
  * pink inside it and the edge uses the family stroke.
@@ -174,6 +179,9 @@ const COLOR_MODIFIERS = new Set([
  */
 const HUE_FAMILIES: Array<{ colorName: string; center: number; radius: number }> = [
   { colorName: "magenta", center: 300, radius: 40 },
+  // Center 12, radius 13 covers hue 0–25, including the wrap from 359.
+  // Hue 16 (coral) is nearer this center than the amber center at 40.
+  { colorName: "coral", center: 12, radius: 13 },
   { colorName: "orange", center: 40, radius: 25 },
 ];
 
@@ -185,6 +193,8 @@ const SPOKEN_COLOR_HEX: Record<string, string> = {
   goldenrod: "#daa520",
   darkorange: "#ff8c00",
   coral: "#ff7f50",
+  salmon: "#fa8072",
+  tomato: "#ff6347",
   pink: "#ff69b4",
   hotpink: "#ff69b4",
   magenta: "#c026d3",
@@ -563,9 +573,10 @@ export function decideDemo(message: string): KevDecision {
   }
 
   if (
-    /\b(reflow|relayout|re-layout|arrange|organize|organise)\b/.test(lower) ||
-    /\blay(?:out)?\b/.test(lower) ||
-    /\blay (?:it |them |the diagram )?out\b/.test(lower)
+    !labeledPlacement(text) &&
+    (/\b(reflow|relayout|re-layout|arrange|organize|organise)\b/.test(lower) ||
+      /\blay(?:out)?\b/.test(lower) ||
+      /\blay (?:it |them |the diagram )?out\b/.test(lower))
   ) {
     const layout = /\b(vertical\w*|column|stack|top to bottom)\b/.test(lower) ? "vertical" : "horizontal";
     const slots: DiagramSlots = { layout };
@@ -576,13 +587,14 @@ export function decideDemo(message: string): KevDecision {
   const rename = parseRename(text);
   if (rename) {
     const target = titleLabel(rename.target);
-    const newLabel = titleLabel(rename.next);
+    // The new name is what the user said. "Branch Node" keeps Node; the target still drops a trailing "node".
+    const newLabel = titleLabel(rename.next, true);
     if (isVagueTarget(target)) return decision("clarify", "Which shape should be renamed?");
     const slots: DiagramSlots = { target, newLabel };
     return decision("edit_shape", `Renamed ${target} to ${newLabel}.`, slots, [{ intent: "edit_shape", slots }]);
   }
 
-  if (/\b(delete|remove|drop)\b/.test(lower) && !/\b(add|create|insert|draw)\b/.test(lower)) {
+  if (!labeledPlacement(text) && /\b(delete|remove|drop)\b/.test(lower) && !/\b(add|create|insert|draw)\b/.test(lower)) {
     const match = text.match(/\b(?:delete|remove|drop)\s+(?:the\s+)?(.+)$/i);
     const target = titleLabel(match?.[1] ?? "");
     if (!target || isVagueTarget(target)) return decision("clarify", "Which shape should I delete?");
@@ -852,6 +864,11 @@ export function previewDemo(message: string, xml: string): { decision: KevDecisi
       decision: { intent: "clarify", reply: CAPACITY_REPLY, slots: {}, operations: [], updatedXml: null },
       xml,
     };
+  }
+  const prepared = hostPreparedComposition(message);
+  if (prepared) {
+    const placed = composeOnCanvas(message, xml, prepared, renderComposition(prepared));
+    if (placed !== "unchanged" && placed !== "keep") return { decision: placed.decision, xml: placed.xml };
   }
   const composed = resolveComposition(message);
   if (composed) {

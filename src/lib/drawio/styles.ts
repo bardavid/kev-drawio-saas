@@ -49,6 +49,8 @@ export const PALETTE: Record<string, PaletteColor> = {
   blue: { fill: "#dae8fc", stroke: "#6c8ebf" },
   green: { fill: "#d5e8d4", stroke: "#82b366" },
   orange: { fill: "#ffe6cc", stroke: "#d79b00" },
+  // Hue ~16, inside the coral band (0–25). Amber/goldenrod stay on the orange stroke.
+  coral: { fill: "#ffe0d6", stroke: "#ff7f50" },
   yellow: { fill: "#fff2cc", stroke: "#d6b656" },
   red: { fill: "#f8cecc", stroke: "#b85450" },
   purple: { fill: "#e1d5e7", stroke: "#9673a6" },
