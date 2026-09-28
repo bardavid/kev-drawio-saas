@@ -492,8 +492,13 @@ const FLUFF = new Set([
 /**
  * Words that describe a product. They must not replace it.
  * A few of them may sit beside an uncommon brand ("Stripe Billing", "Cloudflare CDN").
+ * "Data layer" names the job of a database already in the clause, so it must not
+ * rename Postgres or MySQL. A tier that is only "a data layer" still becomes Data.
  */
 const GLOSS = new Set([
+  "data",
+  "layer",
+  "layers",
   "events",
   "event",
   "media",
@@ -692,6 +697,8 @@ const ORDINARY = new Set([
   "validates",
   "validate",
   "validated",
+  "beside",
+  "besides",
 ]);
 
 /** Adjectives that belong to the product name. "Managed Redis" is not the brand Managed. */
@@ -868,8 +875,12 @@ function brandsBeside(
   }
   const before = wordsOf(segment.text.slice(leftCut, Math.max(leftCut, relStart)));
   const after = wordsOf(segment.text.slice(relEnd, rightCut));
+  // "app servers handling business rules" — words after the product describe it.
+  // "Tigris for object storage" keeps the brand on the other side of the phrase.
+  const purposeAt = after.findIndex((token) => /^(?:handling|handles|handle|for|as)$/.test(token));
+  const afterBrand = purposeAt === -1 ? after : after.slice(0, purposeAt);
   const left = nearestBrand(before, segment.text, true);
-  const right = nearestBrand(after, segment.text, false);
+  const right = nearestBrand(afterBrand, segment.text, false);
   const leftOk = Boolean(left && left.dist <= BRAND_WINDOW);
   const rightOk = Boolean(right && right.dist <= BRAND_WINDOW);
   if (leftOk && rightOk && left && right) return left.dist <= right.dist ? [left.token] : [right.token];
@@ -1169,6 +1180,16 @@ function salvageBigrams(
     if (rejectedToken(right) && !ROLE_WORDS.has(right)) continue;
     const start = segment.start + first.index;
     const end = segment.start + second.index + second[0].length;
+    // "app servers handling business rules" already named the tier. "business rules"
+    // on its own is still that tier.
+    if (leftIsFragment && !actorPair) {
+      const before = segment.text.slice(0, first.index);
+      const purpose = /\b(?:handling|handles|handle|for|as)\s+$/i.test(before);
+      const namesAProduct = spans.some(
+        (span) => segment.start <= span.start && span.end <= segment.end && (span.end <= start || span.start >= end),
+      );
+      if (purpose && namesAProduct) continue;
+    }
     const compound: Compound = {
       start,
       end,
@@ -1375,7 +1396,7 @@ function tierDraftFor(raw: string, token: string, order: number): Draft {
     role,
     shape: shapeFor({ role }, label),
     order,
-    origin: "adhoc",
+    origin: "listed",
   };
 }
 
@@ -1388,10 +1409,12 @@ function draftsFromTierPhrase(
   segment: { start: number; text: string },
   blocked: Set<string>,
 ): Draft[] | null {
-  const stripped = segment.text.replace(
-    /^(?:please\s+)?(?:draw|sketch|diagram|illustrate|map|build|create|architect|show)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
-    "",
-  );
+  const stripped = segment.text
+    .replace(
+      /^(?:please\s+)?(?:draw|sketch|diagram|illustrate|map|build|create|architect|show)\s+(?:me\s+)?(?:a|an|the\s+)?/i,
+      "",
+    )
+    .replace(/^(?:and|then|plus)\s+/i, "");
   if (/\b(?:\d+|two|three|four|five)[\s-]*tier\b/i.test(stripped)) return null;
   const rawWords = stripped.match(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g) ?? [];
   if (rawWords.length === 0 || rawWords.length > 4) return null;
@@ -1430,7 +1453,7 @@ function draftsFromTierPhrase(
 
 /** "Sql" or "Object storage" beside a real product of that role is the role, not another vertex. */
 function dropCoveredRoleGloss(drafts: Draft[]): Draft[] {
-  const generic = /^(?:sql|object storage|object store)$/i;
+  const generic = /^(?:sql|object storage|object store|data|data layer)$/i;
   return drafts.filter((draft) => {
     if (!generic.test(draft.label)) return true;
     return !drafts.some((other) => other !== draft && other.role === draft.role && !generic.test(other.label));
