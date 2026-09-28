@@ -508,6 +508,31 @@ describe("named composition", () => {
       { text: "Splice Rollback somewhere between Build and Deploy", label: "Rollback" },
       { text: "Wedge Hold anywhere between Build and Deploy", label: "Hold" },
       { text: "Drop Place Order into place between Build and Deploy", label: "Place Order" },
+      { text: "Drop Integration Smoke midstream between Build and Deploy", label: "Integration Smoke" },
+      { text: "Put Integration midstream Smoke between Build and Deploy", label: "Integration Smoke" },
+      { text: "Wedge midstream Integration Smoke between Build and Deploy", label: "Integration Smoke" },
+      { text: "Park Integration Smoke mid-stream between Build and Deploy", label: "Integration Smoke" },
+      { text: "Tuck Integration Smoke in the midst between Build and Deploy", label: "Integration Smoke" },
+      { text: "Drop Integration Smoke cleanly midstream between Build and Deploy", label: "Integration Smoke" },
+      { text: "Put the stage named Integration Smoke so it sits midstream between Build and Deploy", label: "Integration Smoke" },
+      { text: "Slot partway QA between Build and Deploy", label: "QA" },
+      { text: "Nest QA midpoint between the Build and Deploy stages", label: "QA" },
+      { text: "Drop QA midcourse between Build and Deploy", label: "QA" },
+      { text: "Put QA midspan between Build and Deploy", label: "QA" },
+      { text: "Splice QA midpath between Build and Deploy", label: "QA" },
+      { text: "Wedge QA midflow between Build and Deploy", label: "QA" },
+      { text: "Park QA betwixt between Build and Deploy", label: "QA" },
+      { text: "Tuck QA amid between Build and Deploy", label: "QA" },
+      { text: "Slot QA amidst between Build and Deploy", label: "QA" },
+      { text: "Nest QA enroute between Build and Deploy", label: "QA" },
+      { text: "Drop QA en-route between Build and Deploy", label: "QA" },
+      { text: "Put QA neatly between Build and Deploy", label: "QA" },
+      { text: "Splice QA cleanly between Build and Deploy", label: "QA" },
+      { text: "Wedge QA directly between Build and Deploy", label: "QA" },
+      { text: "Park QA squarely between Build and Deploy", label: "QA" },
+      { text: "Drop Place midstream Order between Build and Deploy", label: "Place Order" },
+      { text: "Splice Upstash Redis midstream between Build and Deploy", label: "Upstash Redis" },
+      { text: "Wedge AWS Lambda halfway between Build and Deploy", label: "AWS Lambda" },
     ];
     for (const phrase of phrases) {
       const edited = previewDemo(phrase.text, drawn.xml);
@@ -636,6 +661,9 @@ describe("named composition", () => {
       { text: "Insert the stage named Test so it sits between Build and Deploy", label: "Test" },
       { text: "Tuck Lint halfway after Build and before Deploy", label: "Lint" },
       { text: "Slot Review after the Build stage and before Deploy", label: "Review" },
+      { text: "Integration Smoke midstream — after Build, before Deploy", label: "Integration Smoke" },
+      { text: "QA mid-way after Build and before Deploy", label: "QA" },
+      { text: "Lint part-way — after Build, before Deploy", label: "Lint" },
     ];
     for (const phrase of phrases) {
       const edited = previewDemo(phrase.text, restyled.xml);
@@ -644,7 +672,7 @@ describe("named composition", () => {
       assert.equal(edited.decision.reply, `Added ${phrase.label} between Build and Deploy.`, phrase.text);
       const report = assertClean(edited.xml);
       const labels = content(report.nodes).map((node) => node.label);
-      for (const fluff of ["Named Test So It Sits", "Test So", "So It Sits", "Midway", "Stages"]) {
+      for (const fluff of ["Named Test So It Sits", "Test So", "So It Sits", "Midway", "Midstream", "Integration Smoke Midstream", "Stages"]) {
         assert.equal(labels.includes(fluff), false, `${phrase.text} → ${fluff}`);
       }
       assert.deepEqual(
