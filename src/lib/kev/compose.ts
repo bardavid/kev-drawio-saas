@@ -13,8 +13,8 @@ import {
   openDiagram,
   serializeDiagram,
 } from "@/lib/drawio/xml";
-import { composeNamedDiagram, extractNamedEntities } from "@/lib/kev/entities";
-import { isBetweenEdit, layoutDefault, parseArchitecture, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
+import { composeNamedDiagram, extractNamedEntities, listedProcessSteps } from "@/lib/kev/entities";
+import { isBetweenEdit, isRenameEdit, layoutDefault, parseArchitecture, requestedLayout, resolvePlan, withPalette } from "@/lib/kev/plan";
 import { builtinBrief, redisDiagramRequest } from "@/lib/kev/research";
 import { composeFromBrief, matchTemplate } from "@/lib/kev/templates";
 import type { KevDecision } from "@/lib/kev/types";
@@ -219,6 +219,7 @@ function isIncrementalEdit(text: string): boolean {
   const trimmed = text.trim();
   // "Splice Test between Build and Deploy stages" edits the open edge. It is not a new chain.
   if (isBetweenEdit(trimmed)) return true;
+  if (isRenameEdit(trimmed)) return true;
   if (/^(?:please\s+)?(?:rename|relabel|delete|remove|connect)\b/i.test(trimmed)) return true;
   if (/^(?:please\s+)?(?:add|insert|place|put|drop)\b/i.test(trimmed)) {
     // "Put Client, API, and Postgres" names a new diagram. "Add X in front of Y" edits one.
@@ -292,6 +293,13 @@ function looseDropsPeers(spec: CompositionSpec, labels: string[]): boolean {
  * that also names the rest of a stack. Extra template nodes are fine.
  * Dropping most of the named services is not.
  */
+/** A process list the template does not draw. Two named steps are enough. */
+function listedStepsUncovered(spec: CompositionSpec, text: string): boolean {
+  const steps = listedProcessSteps(text);
+  if (!steps || steps.length < 2) return false;
+  return !specCovers(spec, steps);
+}
+
 function templateDropsNamedWork(spec: CompositionSpec, labels: string[]): boolean {
   if (labels.length < 5) return false;
   const have = new Set(specLabels(spec).map((label) => label.toLowerCase()));
@@ -442,7 +450,9 @@ export function resolveComposition(
   const dropsNamed =
     matched != null &&
     grounded &&
-    (looseDropsPeers(matched.spec, labels) || templateDropsNamedWork(matched.spec, labels));
+    (looseDropsPeers(matched.spec, labels) ||
+      templateDropsNamedWork(matched.spec, labels) ||
+      listedStepsUncovered(matched.spec, text));
   if (matched && !dropsNamed) {
     return packComposition(matched.spec, text, hints, matched.context, grounded);
   }

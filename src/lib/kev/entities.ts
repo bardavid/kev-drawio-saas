@@ -552,6 +552,10 @@ const GLOSS = new Set([
   "one",
   "login",
   "logins",
+  "sign-in",
+  "signin",
+  "sign-up",
+  "signup",
   "payments",
   "payment",
   "billing",
@@ -619,6 +623,78 @@ const CRUMB = new Set([
   "then",
 ]);
 
+/**
+ * Ordinary clause words. They are not product brands, even when a sentence capitalizes them.
+ * "talks" must not replace Authorization Server. "tigris" is not in this set.
+ */
+const ORDINARY = new Set([
+  "talks",
+  "talk",
+  "talked",
+  "talking",
+  "checks",
+  "check",
+  "checked",
+  "checking",
+  "hosts",
+  "hosted",
+  "holds",
+  "hold",
+  "holding",
+  "later",
+  "earlier",
+  "afterward",
+  "afterwards",
+  "token",
+  "tokens",
+  "access",
+  "named",
+  "called",
+  "sits",
+  "sit",
+  "sitting",
+  "midway",
+  "halfway",
+  "verifies",
+  "verify",
+  "verified",
+  "validates",
+  "validate",
+  "validated",
+]);
+
+/** Adjectives that belong to the product name. "Managed Redis" is not the brand Managed. */
+const MODIFIER = new Set([
+  "managed",
+  "elastic",
+  "dedicated",
+  "shared",
+  "private",
+  "public",
+  "global",
+  "regional",
+  "serverless",
+  "distributed",
+  "relational",
+  "primary",
+  "secondary",
+  "internal",
+  "external",
+  "standard",
+  "premium",
+  "enterprise",
+  "container",
+  "digital",
+  "native",
+  "virtual",
+  "general",
+  "automatic",
+  "autonomous",
+  "hosted",
+]);
+
+const NAME_FILLER = new Set(["box", "boxes", "shape", "shapes", "node", "nodes", "component", "components", "thing", "things"]);
+
 function tierToken(token: string): boolean {
   return /^(?:\d+|two|three|four|five)[\s-]*tier$/.test(token);
 }
@@ -642,7 +718,7 @@ function rejectedToken(token: string): boolean {
  * ("tigris" next to object storage). Ordinary words do not.
  */
 function isUncommonBrand(token: string, segment: string, allowLowercase = false): boolean {
-  if (rejectedToken(token)) return false;
+  if (rejectedToken(token) || ORDINARY.has(token)) return false;
   // "Vercel" and "Orders" are products even when the word also appears inside a role phrase.
   const roleWord = ROLE_WORDS.has(token);
   if (roleWord && !looksNamed(token, segment) && !token.includes(".") && !/\d/.test(token)) return false;
@@ -660,7 +736,7 @@ interface SegmentPiece {
 
 /** Proper names in a clause. Style, grammar, and bare gloss do not become boxes. */
 function nodesFromSegment(segment: { start: number; text: string }): SegmentPiece[] {
-  const items: Array<{ token: string; index: number }> = [];
+  const items: Array<{ token: string; raw: string; index: number }> = [];
   for (const match of segment.text.matchAll(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g)) {
     const token = match[0].toLowerCase();
     if (
@@ -675,12 +751,12 @@ function nodesFromSegment(segment: { start: number; text: string }): SegmentPiec
       continue;
     }
     if (/^\d+$/.test(token)) continue;
-    items.push({ token, index: match.index ?? 0 });
+    items.push({ token, raw: match[0], index: match.index ?? 0 });
   }
   const brands = items.filter((item) => isUncommonBrand(item.token, segment.text));
   if (brands.length >= 2) {
     return brands.map((brand) => ({
-      label: titleLabel([brand.token]),
+      label: displayToken(brand.raw),
       role: inferRole(brand.token),
       order: segment.start + brand.index,
     }));
@@ -689,18 +765,18 @@ function nodesFromSegment(segment: { start: number; text: string }): SegmentPiec
     const brand = brands[0]!;
     const beside = items.filter((item) => BESIDE.has(item.token));
     if (TITLE_VENDOR.has(brand.token) && beside.length === 0) return [];
-    const label = titleLabel([brand.token, ...beside.map((item) => item.token)]);
+    const label = [brand.raw, ...beside.map((item) => item.raw)].map((word) => displayToken(word)).join(" ");
     return [{ label, role: inferRole(label), order: segment.start + brand.index }];
   }
   if (items.length === 1 && items[0] && BESIDE.has(items[0].token)) {
     const only = items[0];
-    return [{ label: titleLabel([only.token]), role: inferRole(only.token), order: segment.start + only.index }];
+    return [{ label: displayToken(only.raw), role: inferRole(only.token), order: segment.start + only.index }];
   }
   const named = items.filter(
     (item) => looksNamed(item.token, segment.text) && !GLOSS.has(item.token) && !ROLE_WORDS.has(item.token) && !FLUFF.has(item.token),
   );
   if (named.length === 0 || named.length > 3) return [];
-  const label = titleLabel(named.map((item) => item.token));
+  const label = named.map((item) => displayToken(item.raw)).join(" ");
   if (label.length < 2) return [];
   return [{ label, role: inferRole(label), order: segment.start + (named[0]?.index ?? 0) }];
 }
@@ -872,6 +948,227 @@ interface Draft {
   origin: NamedEntity["origin"];
 }
 
+function displayToken(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.length > 1 && trimmed === trimmed.toUpperCase() && /[A-Z]/.test(trimmed)) return trimmed;
+  if (/[A-Z]/.test(trimmed.slice(1))) return trimmed;
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+}
+
+interface Compound {
+  start: number;
+  end: number;
+  words: string[];
+  rawWords: string[];
+}
+
+/** Consecutive capitalized words are one product token. "App Platform", "Managed Redis". */
+function compoundsIn(text: string): Compound[] {
+  const found: Compound[] = [];
+  const pattern = /\b[A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)+\b/g;
+  for (const match of text.matchAll(pattern)) {
+    const rawWords = match[0].split(/\s+/);
+    const words = rawWords.map((word) => word.toLowerCase());
+    if (words.length < 2) continue;
+    const head = words[0] ?? "";
+    // "Draw Fly" is a verb plus a name. "App Platform" keeps the role word that is part of the product.
+    if ((CUE.has(head) || HARD_CUE.has(head) || ORDINARY.has(head)) && !ROLE_WORDS.has(head) && !MODIFIER.has(head)) {
+      continue;
+    }
+    if (words.every((word) => ORDINARY.has(word) || (rejectedToken(word) && !ROLE_WORDS.has(word)))) continue;
+    found.push({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      words,
+      rawWords,
+    });
+  }
+  return found;
+}
+
+function roleish(word: string): boolean {
+  if (ROLE_WORDS.has(word)) return true;
+  if (word.length > 3 && word.endsWith("s") && ROLE_WORDS.has(word.slice(0, -1))) return true;
+  return false;
+}
+
+function headIsUncommon(word: string): boolean {
+  return (
+    !ROLE_WORDS.has(word) &&
+    !CUE.has(word) &&
+    !HARD_CUE.has(word) &&
+    !MODIFIER.has(word) &&
+    !GLOSS.has(word) &&
+    !MODIFIERS.has(word) &&
+    !FLUFF.has(word) &&
+    !ORDINARY.has(word) &&
+    !CRUMB.has(word) &&
+    !NAME_FILLER.has(word)
+  );
+}
+
+function phraseEntry(phrase: string, text: string): CatalogEntry | null {
+  const key = phrase.toLowerCase();
+  for (const entry of CATALOG) {
+    if (entry.when && !entry.when(text)) continue;
+    if (entry.phrases.some((item) => item.toLowerCase() === key)) return entry;
+  }
+  return null;
+}
+
+function compoundDraft(compound: Compound, span: Span | null, text: string): Draft | null {
+  const phrase = compound.words.join(" ");
+  const exact = phraseEntry(phrase, text) ?? (span && span.entry.phrases.some((item) => item.toLowerCase() === phrase) ? span.entry : null);
+  if (exact) {
+    return {
+      id: exact.id,
+      label: exact.label,
+      role: exact.role,
+      shape: shapeFor(exact, exact.label),
+      order: compound.start,
+      origin: "catalog",
+    };
+  }
+  const head = compound.words[0] ?? "";
+  const tail = compound.words.slice(1).join(" ");
+  const tailEntry = span && span.entry.phrases.some((item) => item.toLowerCase() === tail) ? span.entry : phraseEntry(tail, text);
+  // "Upstash Redis" is the brand Upstash. "Managed Redis" keeps both words.
+  // A listed stage ("Smoke Test") is not a role word to strip.
+  if (tailEntry && !tailEntry.listed && tailEntry.role !== "step" && headIsUncommon(head)) {
+    const label = displayToken(compound.rawWords[0] ?? head);
+    return {
+      id: label.toLowerCase(),
+      label,
+      role: tailEntry.role,
+      shape: shapeFor(tailEntry, label),
+      order: compound.start,
+      origin: "adhoc",
+    };
+  }
+  const label = compound.rawWords.map((word) => displayToken(word)).join(" ");
+  if (junkLabel(label)) return null;
+  const role = tailEntry?.role ?? span?.entry.role ?? inferRole(label);
+  return {
+    id: label.toLowerCase(),
+    label,
+    role,
+    shape: shapeFor(tailEntry ?? span?.entry ?? { role }, label),
+    order: compound.start,
+    origin: "adhoc",
+  };
+}
+
+function overlappingSpan(compound: Compound, spans: Span[]): Span | null {
+  const hits = spans.filter((span) => span.start < compound.end && compound.start < span.end);
+  hits.sort((left, right) => right.end - right.start - (left.end - left.start));
+  return hits[0] ?? null;
+}
+
+/** "client browser" is one actor. "web app" is two roles and stays split. Plurals ("browser clients") stay split. */
+function listedActorPair(left: string, right: string, text: string): boolean {
+  const leftEntry = phraseEntry(left, text);
+  const rightEntry = phraseEntry(right, text);
+  if (!leftEntry?.listed || !rightEntry?.listed || leftEntry.id === rightEntry.id) return false;
+  if (leftEntry.role !== rightEntry.role) return false;
+  return leftEntry.role === "client" || leftEntry.role === "actor";
+}
+
+/**
+ * A cue or modifier stuck to the next word is one name.
+ * "app platform" must not become Platform. "managed redis" must not drop Redis.
+ * An uncommon brand still replaces its role word ("upstash redis" → Upstash).
+ */
+function salvageBigrams(
+  segment: { start: number; text: string },
+  spans: Span[],
+  blocked: Set<string>,
+  consumed: Set<Span>,
+  text: string,
+): Draft[] {
+  const drafts: Draft[] = [];
+  const matches = [...segment.text.matchAll(/[A-Za-z0-9]+(?:[./+\-][A-Za-z0-9]+)*/g)];
+  for (let index = 0; index < matches.length - 1; index += 1) {
+    const first = matches[index];
+    const second = matches[index + 1];
+    if (!first || !second || first.index === undefined || second.index === undefined) continue;
+    const gap = segment.text.slice(first.index + first[0].length, second.index);
+    if (!/^\s+$/.test(gap)) continue;
+    const left = first[0].toLowerCase();
+    const right = second[0].toLowerCase();
+    if (blocked.has(left) || blocked.has(right)) continue;
+    if (ORDINARY.has(left) || ORDINARY.has(right) || NAME_FILLER.has(right)) continue;
+    if (MODIFIERS.has(left) || /^(?:a|an|the)$/.test(left)) continue;
+    // "managed redis" keeps the product. "app platform" keeps the cue that would be stripped.
+    // "web app" and "redis cache" are two role words and stay on the catalog path.
+    // "client browser" is one actor: two listed people-side nouns of the same role.
+    const leftIsModifier = MODIFIER.has(left) && !roleish(left);
+    const rightIsRole = roleish(right) || Boolean(phraseEntry(right, text));
+    // Only a role word that would be stripped ("app" in "app platform"), not a verb ("draw", "and").
+    const leftIsFragment = roleish(left) && !rightIsRole;
+    const actorPair = listedActorPair(left, right, text);
+    if (!leftIsModifier && !leftIsFragment && !actorPair) continue;
+    if (headIsUncommon(left)) continue;
+    if (rejectedToken(right) && !ROLE_WORDS.has(right)) continue;
+    const start = segment.start + first.index;
+    const end = segment.start + second.index + second[0].length;
+    const compound: Compound = {
+      start,
+      end,
+      words: [left, right],
+      rawWords: [first[0], second[0]],
+    };
+    const span = overlappingSpan(compound, spans);
+    if (span && (span.start < compound.start || span.end > compound.end)) continue;
+    const draft = compoundDraft(compound, span, text);
+    if (!draft) continue;
+    if (span) consumed.add(span);
+    blocked.add(left);
+    blocked.add(right);
+    drafts.push(draft);
+  }
+  return drafts;
+}
+
+/**
+ * Comma-separated steps after a process, workflow, or procedure.
+ * A list that already names catalog services stays on that path.
+ */
+export function listedProcessSteps(message: string): string[] | null {
+  const text = normalize(message);
+  const marker = text.match(/\b(?:process|workflow|procedure)\b\s*[:—–-]\s*/i);
+  if (!marker || marker.index === undefined) return null;
+  const body = text.slice(marker.index + marker[0].length);
+  const parts = body
+    .split(/\s*(?:,|;)\s*|\s+\bthen\b\s+/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+  const steps: string[] = [];
+  for (const part of parts) {
+    if (catalogSpans(part).length > 0) return null;
+    if (compoundsIn(part).some((compound) => headIsUncommon(compound.words[0] ?? ""))) return null;
+    const rawWords = part
+      .replace(/[?.!]+$/g, "")
+      .trim()
+      .split(/\s+/)
+      .filter((word) => word && !/^(?:a|an|the|and|then)$/i.test(word));
+    if (rawWords.length === 0 || rawWords.length > 8) return null;
+    if (rawWords.every((word) => rejectedToken(word.toLowerCase()) || ORDINARY.has(word.toLowerCase()))) continue;
+    steps.push(rawWords.map((word) => displayToken(word)).join(" "));
+  }
+  return steps.length >= 2 ? steps : null;
+}
+
+/** "Sql" or "Object storage" beside a real product of that role is the role, not another vertex. */
+function dropCoveredRoleGloss(drafts: Draft[]): Draft[] {
+  const generic = /^(?:sql|object storage|object store)$/i;
+  return drafts.filter((draft) => {
+    if (!generic.test(draft.label)) return true;
+    return !drafts.some((other) => other !== draft && other.role === draft.role && !generic.test(other.label));
+  });
+}
+
 /** Concrete services, steps, actors, and states named in the message. */
 export function extractNamedEntities(message: string): NamedEntity[] {
   const text = normalize(message);
@@ -889,30 +1186,66 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     drafts.push(draft);
   }
 
-  for (const segment of segmentsOf(text)) {
+  const steps = listedProcessSteps(text);
+  if (steps) {
+    steps.forEach((label, index) => {
+      pushDraft({
+        id: label.toLowerCase(),
+        label,
+        role: "step",
+        shape: "rectangle",
+        order: index,
+        origin: "listed",
+      });
+    });
+  }
+
+  if (!steps) for (const segment of segmentsOf(text)) {
     const overlapping = spans.filter((span) => span.start < segment.end && segment.start < span.end);
+    const blocked = new Set<string>();
+    for (const local of compoundsIn(segment.text)) {
+      const compound: Compound = {
+        ...local,
+        start: segment.start + local.start,
+        end: segment.start + local.end,
+      };
+      const span = overlappingSpan(compound, overlapping.filter((item) => !consumed.has(item)));
+      const draft = compoundDraft(compound, span, text);
+      if (!draft) continue;
+      if (span) consumed.add(span);
+      for (const word of compound.words) blocked.add(word);
+      pushDraft({ ...draft, order: compound.start });
+    }
+    for (const draft of salvageBigrams(segment, overlapping, blocked, consumed, text)) {
+      pushDraft(draft);
+    }
     if (overlapping.length > 0) {
       // A slash splits "Pub/Sub" into two segments. Only the segment that holds the whole phrase owns it.
       const owned = overlapping.filter(
         (span) => !consumed.has(span) && segment.start <= span.start && segment.end >= span.end,
       );
       if (owned.length > 0) {
-        const used = new Set<string>();
+        const used = new Set<string>(blocked);
         for (const span of owned) {
           consumed.add(span);
           for (const token of wordsOf(text.slice(span.start, span.end))) used.add(token);
-          const brand = brandsBeside(segment, span, owned);
+          const brand = brandsBeside(segment, span, owned).filter((token) => !blocked.has(token));
           for (const token of brand) used.add(token);
-          const branded = brand.length > 0;
-          const label = branded ? titleLabel(brand) : span.entry.label;
-          const brandAt = branded ? segment.text.toLowerCase().indexOf(brand[0] ?? "") : -1;
+          const modifier = brand.length === 1 && brand[0] && MODIFIER.has(brand[0]) ? brand[0] : null;
+          const branded = brand.length > 0 && !modifier;
+          const label = modifier
+            ? `${displayToken(modifier)} ${span.entry.label}`
+            : branded
+              ? titleLabel(brand)
+              : span.entry.label;
+          const brandAt = brand[0] ? segment.text.toLowerCase().indexOf(brand[0]) : -1;
           pushDraft({
-            id: branded ? label.toLowerCase() : span.entry.id,
+            id: modifier || branded ? label.toLowerCase() : span.entry.id,
             label,
             role: span.entry.role,
             shape: shapeFor(span.entry, label),
             order: brandAt >= 0 ? segment.start + brandAt : span.start,
-            origin: branded ? "adhoc" : "catalog",
+            origin: modifier || branded ? "adhoc" : "catalog",
           });
         }
         for (const extra of listedExtras(segment, text, used)) {
@@ -939,7 +1272,7 @@ export function extractNamedEntities(message: string): NamedEntity[] {
       continue;
     }
     const listed = listedEntry(segment.text, text);
-    if (listed) {
+    if (listed && !blocked.has(listed.label.toLowerCase())) {
       pushDraft({
         id: listed.id,
         label: listed.label,
@@ -951,6 +1284,8 @@ export function extractNamedEntities(message: string): NamedEntity[] {
       continue;
     }
     for (const extra of nodesFromSegment(segment)) {
+      const words = extra.label.toLowerCase().split(/\s+/);
+      if (words.every((word) => blocked.has(word))) continue;
       pushDraft({
         id: extra.label.toLowerCase(),
         label: extra.label,
@@ -974,6 +1309,9 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     });
   }
 
+  const kept = dropCoveredRoleGloss(drafts);
+  drafts.length = 0;
+  drafts.push(...kept);
   drafts.sort((left, right) => left.order - right.order);
   const used = new Set<string>();
   const perRole = new Map<EntityRole, number>();
@@ -1094,6 +1432,11 @@ function topicTitle(text: string): string | null {
   if (/\b(gcp|google cloud)\b/i.test(text)) return "GCP";
   if (/\bmicroservice/i.test(text)) return "Microservices";
   if (/\bsequence\b/i.test(text)) return "Sequence";
+  const heading = text.match(/^(.*?)\b(?:process|workflow|procedure)\b/i);
+  if (heading?.[1]) {
+    const words = wordsOf(heading[1]).filter((word) => !rejectedToken(word) && !ORDINARY.has(word) && !NAME_FILLER.has(word));
+    if (words.length >= 1 && words.length <= 6) return words.map((word) => displayToken(word)).join(" ");
+  }
   return null;
 }
 

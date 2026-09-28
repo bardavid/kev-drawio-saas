@@ -13,8 +13,14 @@ import { architectureDecision, isBareDraw, isBetweenEdit, operationsForPlan, res
 import { KEPT_CANVAS_REPLY, UNCHANGED_DIAGRAM_REPLY } from "@/lib/kev/reply";
 import type { ChatMessage, DiagramOperation, DiagramSlots, KevDecision } from "@/lib/kev/types";
 
-const COLOR_NAMES = Object.keys(PALETTE).join("|");
+const COLOR_ALIAS: Record<string, string> = { violet: "purple" };
+const COLOR_NAMES = [...new Set([...Object.keys(PALETTE), ...Object.keys(COLOR_ALIAS)])].join("|");
 const COLOR_RE = new RegExp(`\\b(${COLOR_NAMES})\\b`, "i");
+
+function canonicalColor(name: string): string {
+  const key = name.toLowerCase();
+  return COLOR_ALIAS[key] ?? key;
+}
 const HEX_RE = /#([0-9a-f]{6})\b/i;
 
 const HELP = "Describe a diagram change.";
@@ -80,7 +86,10 @@ function titleLabel(input: string): string {
 }
 
 function namedColor(text: string): string | null {
-  return text.match(COLOR_RE)?.[1]?.toLowerCase() ?? null;
+  const raw = text.match(COLOR_RE)?.[1]?.toLowerCase() ?? null;
+  if (!raw || raw.startsWith("#")) return null;
+  const name = canonicalColor(raw);
+  return PALETTE[name] ? name : null;
 }
 
 function hexColor(text: string): string | null {
@@ -156,7 +165,7 @@ export function parseEdgeRestyle(message: string): EdgeRestyleRequest | null {
   if (!color) return null;
   const subject = edgeSubject(text, color);
   const hex = color.token.startsWith("#") ? color.token : null;
-  const colorName = hex ? null : color.token;
+  const colorName = hex ? null : canonicalColor(color.token);
   const scope = parseEdgeSubject(subject);
   if (!scope) return null;
   return { word: scope.word, colorName, fillColor: hex, from: scope.from, to: scope.to };
@@ -274,8 +283,8 @@ export function shapeRestyleDecision(message: string): KevDecision | null {
   const rawTarget = colorCommand[1].trim();
   const edges = edgeQuery(rawTarget);
   if (edges) {
-    const colorToken = colorCommand[2].toLowerCase();
-    const hex = colorToken.startsWith("#") ? colorToken : null;
+    const colorToken = canonicalColor(colorCommand[2].toLowerCase());
+    const hex = colorCommand[2].startsWith("#") ? colorCommand[2].toLowerCase() : null;
     const slots = withPalette({
       target: edges,
       colorName: hex ? null : colorToken,
@@ -284,14 +293,14 @@ export function shapeRestyleDecision(message: string): KevDecision | null {
     return decision("style", `Set the ${edges} to ${colorToken}.`, slots, [{ intent: "style", slots }]);
   }
   if (isAllTarget(rawTarget)) {
-    const colorToken = colorCommand[2].toLowerCase();
-    const hex = colorToken.startsWith("#") ? colorToken : null;
+    const colorToken = canonicalColor(colorCommand[2].toLowerCase());
+    const hex = colorCommand[2].startsWith("#") ? colorCommand[2].toLowerCase() : null;
     const slots = withPalette({ target: null, colorName: hex ? null : colorToken, fillColor: hex });
     return decision("style", `Set every shape to ${colorToken}.`, slots, [{ intent: "style", slots }]);
   }
   const namedTarget = titleLabel(rawTarget);
-  const colorToken = colorCommand[2].toLowerCase();
-  const hex = colorToken.startsWith("#") ? colorToken : null;
+  const colorToken = canonicalColor(colorCommand[2].toLowerCase());
+  const hex = colorCommand[2].startsWith("#") ? colorCommand[2].toLowerCase() : null;
   const colorName = hex ? null : colorToken;
   if (isVagueTarget(namedTarget)) {
     return decision("clarify", `Which shape should be ${colorToken}? Name it, for example “Make the API red.”`);
@@ -390,6 +399,8 @@ export function decideDemo(message: string): KevDecision {
 
 function parseRename(text: string): { target: string; next: string } | null {
   const patterns = [
+    /\b(?:change|set|update)\s+(?:the\s+)?(.+?)['’]s\s+name\s+to\s+(.+)$/i,
+    /\b(?:change|set|update)\s+(?:the\s+)?name\s+of\s+(?:the\s+)?(.+?)\s+to\s+(.+)$/i,
     /\b(?:rename|relabel)\s+(?:the\s+)?(?:label\s+(?:of\s+)?)?(.+?)\s+(?:to|as|so\s+it\s+reads)\s+(.+)$/i,
     /\bchange\s+(?:the\s+)?label\s+(?:of\s+|on\s+)?(.+?)\s+(?:so\s+it\s+reads|to)\s+(.+)$/i,
   ];
@@ -432,7 +443,21 @@ const ANCHOR_FLUFF = new Set([
 ]);
 
 /** Locatives after a new stage name ("into place", "here"). Trailing only, so a name may start with Place. */
-const PLACEMENT_FLUFF = new Set(["place", "here", "there", "somewhere", "anywhere"]);
+const PLACEMENT_FLUFF = new Set(["place", "here", "there", "somewhere", "anywhere", "midway", "halfway"]);
+
+/** Words that locate a stage. They are not part of its name, wherever they sit. */
+const INTERNAL_FLUFF = new Set([
+  "named",
+  "called",
+  "so",
+  "it",
+  "its",
+  "sits",
+  "sit",
+  "sitting",
+  "midway",
+  "halfway",
+]);
 
 function tokenKey(word: string): string {
   return word.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -451,25 +476,67 @@ function anchorLabel(value: string): string {
   return titleLabel(trimmedWords(value, fluffToken).join(" "));
 }
 
-/** Stage name for a between-insert: anchor fluff plus trailing placement adverbs. */
-function insertedLabel(value: string): string {
-  return titleLabel(trimmedWords(value, (word) => fluffToken(word) || placementToken(word)).join(" "));
+/** Stage name for a between-insert: anchor fluff plus placement words, not a memorized sentence. */
+function insertedLabel(value: string, stripVerb = false): string {
+  const source = (stripVerb ? value.replace(LEAD_INSERT, "") : value).replace(/[—–]/g, " ");
+  const words = trimmedWords(source, (word) => fluffToken(word) || placementToken(word) || internalFluff(word));
+  return titleLabel(words.filter((word) => !internalFluff(word)).join(" "));
 }
+
+function internalFluff(word: string): boolean {
+  return INTERNAL_FLUFF.has(tokenKey(word));
+}
+
+const LEAD_INSERT =
+  /^(?:please\s+)?(?:add|insert|place|put|drop|splice|wedge|park|stick|tuck|slot|nest)\s+/i;
 
 function trimmedWords(value: string, trailing: (word: string) => boolean): string[] {
   const words = cleanNoun(value).split(/\s+/).filter(Boolean);
   while (words.length > 1 && trailing(words[words.length - 1] ?? "")) words.pop();
-  while (words.length > 1 && fluffToken(words[0] ?? "")) words.shift();
+  while (words.length > 1 && (fluffToken(words[0] ?? "") || internalFluff(words[0] ?? ""))) words.shift();
   return words;
 }
 
 function insertionRest(text: string): string {
-  const between = text.match(/\b(?:add|insert|place|put|drop|splice|wedge)\b\s+([\s\S]*\bbetween\b[\s\S]*)$/i);
+  const between = text.match(
+    /\b(?:add|insert|place|put|drop|splice|wedge|park|stick|tuck|slot|nest)\b\s+([\s\S]*\bbetween\b[\s\S]*)$/i,
+  );
   if (between?.[1]) return between[1];
-  return text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place|put|drop|splice|wedge)\s+/i, "");
+  return text.replace(/^(?:please\s+)?(?:add|insert|create|draw|place|put|drop|splice|wedge|park|stick|tuck|slot|nest)\s+/i, "");
+}
+
+/** "after Build, before Deploy" / "after Build and before Deploy", with the stage name in front. */
+function parseAfterBefore(text: string): { label: string; from: string; to: string } | null {
+  const patterns = [
+    /\bafter\s+(?:the\s+)?(.+?)\s*(?:,|—|–|-)\s*before\s+(?:the\s+)?(.+)$/i,
+    /\bafter\s+(?:the\s+)?(.+?)\s+(?:and\s+)?before\s+(?:the\s+)?(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match || match.index === undefined || !match[1] || !match[2]) continue;
+    const from = anchorLabel(match[1]);
+    const to = anchorLabel(match[2]);
+    const label = insertedLabel(text.slice(0, match.index), true);
+    if (!label || !from || !to) continue;
+    if (label.toLowerCase() === from.toLowerCase() || label.toLowerCase() === to.toLowerCase()) continue;
+    return { label, from, to };
+  }
+  return null;
 }
 
 function parseAdd(text: string): KevDecision {
+  if (!/\bbetween\b/i.test(text)) {
+    const positioned = parseAfterBefore(text);
+    if (positioned) {
+      const slots: DiagramSlots = { ...shapeSlots(positioned.label, text), from: positioned.from, to: positioned.to };
+      return decision(
+        "add_shape",
+        `Added ${positioned.label} between ${positioned.from} and ${positioned.to}.`,
+        slots,
+        [{ intent: "add_shape", slots }],
+      );
+    }
+  }
   let rest = insertionRest(text);
   rest = rest.replace(/^(?:a|an|the)\s+/i, "");
   rest = firstClause(rest);
