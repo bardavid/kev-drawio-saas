@@ -1,5 +1,5 @@
 import { PALETTE, inferShape, type ShapeKind } from "@/lib/drawio/styles";
-import { PLACEMENT_MANNER_TOKENS } from "@/lib/kev/plan";
+import { hasEnumeratedBoxes, PLACEMENT_MANNER_TOKENS } from "@/lib/kev/plan";
 
 /**
  * Named services, steps, actors, and states pulled from the words the user
@@ -443,6 +443,7 @@ const FLUFF = new Set([
   "styling",
   "each",
   "own",
+  "only",
   "per",
   "both",
   "either",
@@ -1191,6 +1192,77 @@ function listedActorPair(left: string, right: string, text: string): boolean {
 }
 
 /**
+ * Finite verbs that name what something does, not a box.
+ * Stems only. Inflection is applied in isClauseVerb. Role nouns are not verbs.
+ */
+const CLAUSE_VERB = new Set([
+  "leave",
+  "walk",
+  "picture",
+  "pull",
+  "drain",
+  "consume",
+  "reach",
+  "deliver",
+  "travel",
+  "follow",
+  "trace",
+  "describe",
+  "explain",
+  "notify",
+  "publish",
+  "replicate",
+  "persist",
+  "fetch",
+  "invoke",
+  "arrive",
+  "depart",
+  "fan",
+  "go",
+  "come",
+  "take",
+  "make",
+  "get",
+  "give",
+  "see",
+  "say",
+]);
+
+/** A predicate such as "leaves" or "walk". Not a product, and not a role noun. */
+export function isClauseVerb(word: string): boolean {
+  const token = word.toLowerCase();
+  if (!token || ROLE_WORDS.has(token) || roleish(token) || DIAGRAM_KIND.has(token)) return false;
+  if (CLAUSE_VERB.has(token)) return true;
+  let stem: string | null = null;
+  if (token.endsWith("ies") && token.length > 4) stem = `${token.slice(0, -3)}y`;
+  else if (token.endsWith("ing") && token.length > 5) stem = token.slice(0, -3);
+  else if (token.endsWith("ed") && token.length > 4) stem = token.slice(0, -2);
+  else if (token.endsWith("es") && token.length > 4) stem = token.slice(0, -2);
+  else if (token.endsWith("s") && !token.endsWith("ss") && token.length > 4) stem = token.slice(0, -1);
+  if (!stem) return false;
+  return CLAUSE_VERB.has(stem) || CLAUSE_VERB.has(`${stem}e`);
+}
+
+/**
+ * Another content word still belongs to this noun phrase.
+ * A following verb ("hosts", "leaves") or a preposition ends the name.
+ */
+function continuesNounPhrase(text: string, end: number): boolean {
+  const next = text.slice(end).match(/^\s+([A-Za-z][A-Za-z0-9-]*)/);
+  const token = next?.[1]?.toLowerCase() ?? "";
+  if (!token || token.length < 3) return false;
+  if (isClauseVerb(token)) return false;
+  if (/^(?:hosts?|holds?|keeps?|runs?|stores?|uses?|handles?|sits?|backed|backing|carrying|carries|carry)$/.test(token)) {
+    return false;
+  }
+  if (rejectedToken(token) || CUE.has(token) || FLUFF.has(token) || ORDINARY.has(token) || CRUMB.has(token)) return false;
+  if (/^(?:and|or|with|for|to|of|in|on|via|using|then|its|their|his|her|a|an|the|as|by|at|into|onto)$/.test(token)) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * A cue or modifier stuck to the next word is one name.
  * "app platform" must not become Platform. "managed redis" must not drop Redis.
  * An uncommon brand still replaces its role word ("upstash redis" → Upstash).
@@ -1217,7 +1289,8 @@ function salvageBigrams(
     // "stores sessions" is what the product does. "store" is also a role noun, so the
     // plural verb looks like a fragment and must not become a node.
     if (/^(?:stores?|hosts?|holds?|keeps?|handles?|uses?|runs?|carries|carry|carrying)$/.test(left)) continue;
-    // "app requests" is a verb, not a product. "app platform" still joins.
+    // "notification leaves" and "workers pull" are predicates. "app platform" still joins.
+    if (isClauseVerb(left) || isClauseVerb(right)) continue;
     if (/^(?:requests?|sends?|checks?|calls?|asks?|verifies?|validates?|talks?|speaks?|runs?|holds?|keeps?|stores?)$/.test(right)) {
       continue;
     }
@@ -1233,6 +1306,16 @@ function salvageBigrams(
     if (!leftIsModifier && !leftIsFragment && !actorPair) continue;
     if (headIsUncommon(left)) continue;
     if (rejectedToken(right) && !ROLE_WORDS.has(right)) continue;
+    // "distributed message delivery" and "key value caching" are one noun phrase.
+    // The first two words are not a box. "managed redis for …" and "app platform hosts" stop here.
+    const pairEnd = (second.index ?? 0) + second[0].length;
+    if (
+      (leftIsModifier || (leftIsFragment && !rightIsRole)) &&
+      !actorPair &&
+      continuesNounPhrase(segment.text, pairEnd)
+    ) {
+      continue;
+    }
     const start = segment.start + first.index;
     const end = segment.start + second.index + second[0].length;
     // "app servers handling business rules" already named the tier. "business rules"
@@ -1317,6 +1400,22 @@ function leadingImperative(label: string, text: string): boolean {
   if (before && !/^(?:please|kindly)$/.test(before)) return false;
   const after = hay.slice(at + word.length);
   return /^\s+(?:me\s+)?(?:a|an|the|our|my|this|these|those|\d+|two|three|four|five)\b/.test(after);
+}
+
+/**
+ * A clause fragment minted as a box: "Walk", "Picture", "Notification Leaves", "Workers Pull".
+ * A one-word name in an explicit list ("Draw Walk and API") stays. A verb at the end of a
+ * longer label is the predicate, not the product.
+ */
+function clauseCrumb(label: string, text: string): boolean {
+  const words = label.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  const last = words[words.length - 1] ?? "";
+  if (words.length === 1) {
+    if (!isClauseVerb(last)) return false;
+    return !hasEnumeratedBoxes(text);
+  }
+  return isClauseVerb(last);
 }
 
 /** "Careful sketch" / "Passwordless sign-in" — an adjective glued to the diagram kind is not a service. */
@@ -1842,7 +1941,13 @@ export function extractNamedEntities(message: string): NamedEntity[] {
   const consumed = new Set<Span>();
 
   function pushDraft(draft: Draft) {
-    if (draft.origin === "adhoc" && (junkLabel(draft.label) || leadingImperative(draft.label, text) || diagramAdjective(draft.label, text))) {
+    if (
+      draft.origin === "adhoc" &&
+      (junkLabel(draft.label) ||
+        leadingImperative(draft.label, text) ||
+        diagramAdjective(draft.label, text) ||
+        clauseCrumb(draft.label, text))
+    ) {
       return;
     }
     const key = draft.origin === "catalog" ? draft.id : draft.label.toLowerCase();
@@ -1865,10 +1970,24 @@ export function extractNamedEntities(message: string): NamedEntity[] {
     });
   }
 
-  if (!steps) for (const segment of segmentsOf(text)) {
+    if (!steps) for (const segment of segmentsOf(text)) {
     const overlapping = spans.filter((span) => span.start < segment.end && segment.start < span.end);
     const blocked = new Set<string>();
     for (const local of compoundsIn(segment.text)) {
+      // "Distributed Message delivery" is the start of a longer noun, not a box.
+      // "App Platform hosts" ends at the verb, so the product stays.
+      const head = local.words[0] ?? "";
+      const tail = local.words[local.words.length - 1] ?? "";
+      if (
+        continuesNounPhrase(segment.text, local.end) &&
+        !headIsUncommon(head) &&
+        !isUncommonBrand(head, segment.text) &&
+        !roleish(tail) &&
+        !phraseEntry(tail, text)
+      ) {
+        for (const word of local.words) blocked.add(word);
+        continue;
+      }
       const compound: Compound = {
         ...local,
         start: segment.start + local.start,
